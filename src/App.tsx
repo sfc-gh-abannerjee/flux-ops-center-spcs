@@ -578,6 +578,9 @@ function App() {
   const limitsReachedRef = useRef(false); // Track if we've hit asset/circuit limits (prevents retry spam)
   const lastLoadAttemptViewportRef = useRef<{ lng: number; lat: number; zoom: number } | null>(null); // Track last viewport for change detection
   const lastCullTimeRef = useRef<number>(0); // Track last culling operation timestamp (prevents rapid-fire culls)
+  const pinnedCircuitsRef = useRef<Set<string>>(new Set()); // Track circuits that should never be culled (selected asset circuits)
+  const pinnedAssetIdsRef = useRef<Set<string>>(new Set()); // Track connected asset IDs that must be loaded
+  const lastSelectionTimeRef = useRef<number>(0); // Track when asset was last selected (to prevent culling during loading)
   // REMOVED: Old topology state - now derived from topologyBatches (see line 561)
   const [metroTopologyData, setMetroTopologyData] = useState<any[]>([]);
   const [feederTopologyData, setFeederTopologyData] = useState<any[]>([]);
@@ -774,6 +777,16 @@ function App() {
     const interval = setInterval(fetchSubstationStatus, 10000); // Every 10 seconds
     return () => clearInterval(interval);
   }, [fetchSubstationStatus]);
+
+  // ONE-TIME CLEANUP: Clear stuck circuits in loading state on mount
+  useEffect(() => {
+    const stuckCount = loadingCircuitsRef.current.size;
+    if (stuckCount > 0) {
+      console.log(`🧹 Cleaning up ${stuckCount} stuck circuits from previous session`);
+      loadingCircuitsRef.current.clear();
+    }
+  }, []); // Empty deps = runs once on mount
+
 
   useEffect(() => {
     if (!draggedCardId) return;
@@ -1361,6 +1374,255 @@ function App() {
     };
   }, [viewState.longitude, viewState.latitude]);
 
+  // SELECTED ASSET PINNING: Pin circuits for selected asset and its connections
+  useEffect(() => {
+    const previousPinned = new Set(pinnedCircuitsRef.current);
+    
+    if (!selectedAsset) {
+      // When deselecting, immediately cull previously pinned circuits if they're outside viewport
+      if (previousPinned.size > 0) {
+        console.log(`🗑️ Deselected asset - checking ${previousPinned.size} previously pinned circuits for cleanup`);
+        
+        // Remove pinned circuits that are no longer needed
+        // The next viewport/culling cycle will handle the actual asset removal
+        previousPinned.forEach(cid => {
+          loadedCircuitsRef.current.delete(cid);
+        });
+        
+        // Trigger immediate cull by removing their batches
+        setCircuitBatches(prev => {
+          const filtered = prev.filter(batch => {
+            // Keep substations
+            if (batch.batchId === 'batch-substations') return true;
+            
+            // Remove connected assets batch when deselecting
+            if (batch.batchId === 'batch-connected-assets') {
+              console.log(`   🗑️ Removing connected assets batch`);
+              return false;
+            }
+            
+            // Remove batches that only contain previously pinned circuits
+            const allCircuitsPinned = batch.circuitIds.every(cid => previousPinned.has(cid));
+            if (allCircuitsPinned) {
+              console.log(`   🗑️ Removing batch for deselected circuits: ${batch.circuitIds.join(', ')}`);
+              return false;
+            }
+            return true;
+          });
+          return filtered;
+        });
+        
+        // Also remove their topology
+        setTopologyBatches(prev => {
+          const remainingAssetIds = new Set(
+            circuitBatches.flatMap(b => b.assets).map(a => a.id)
+          );
+          
+          return prev.map(batch => ({
+            ...batch,
+            connections: batch.connections.filter(t => 
+              remainingAssetIds.has(t.from_asset_id) && remainingAssetIds.has(t.to_asset_id)
+            )
+          })).filter(batch => batch.connections.length > 0);
+        });
+      }
+      
+      // Clear pinned circuits when nothing selected
+      pinnedCircuitsRef.current.clear();
+      pinnedAssetIdsRef.current.clear();
+      return;
+    }
+
+    const pinnedCircuits = new Set<string>();
+    
+    // Pin the selected asset's circuit (if not a substation)
+    if (selectedAsset.circuit_id) {
+      pinnedCircuits.add(selectedAsset.circuit_id);
+    }
+    
+    // For substations: Find circuits from service areas that belong to this substation
+    if (selectedAsset.type === 'substation') {
+      console.log(`🔍 Checking serviceAreas for ${selectedAsset.id}: ${serviceAreas.length} total areas loaded`);
+      
+      serviceAreas.forEach(sa => {
+        if (sa.SUBSTATION_ID === selectedAsset.id && sa.CIRCUIT_ID) {
+          pinnedCircuits.add(sa.CIRCUIT_ID);
+        }
+      });
+      
+      // DEBUG: Show first matching service area
+      const matching = serviceAreas.filter(sa => sa.SUBSTATION_ID === selectedAsset.id);
+      if (matching.length > 0) {
+        console.log(`   ✅ Found ${matching.length} matching service areas, first one:`, matching[0]);
+      } else {
+        console.log(`   ❌ No matching service areas found. Sample IDs:`, serviceAreas.slice(0, 3).map(sa => sa.SUBSTATION_ID));
+      }
+      
+      console.log(`📌 Substation ${selectedAsset.id}: Found ${pinnedCircuits.size} circuits to pin and load`);
+    }
+    
+    // Find all connected assets via topology and pin their circuits too
+    const connectedAssetIds = new Set<string>();
+    
+    // For substations: Find connections to assets in the pinned circuits
+    if (selectedAsset.type === 'substation' && pinnedCircuits.size > 0) {
+      // Get all assets that belong to the pinned circuits
+      const circuitAssets = assets.filter(a => 
+        a.circuit_id && pinnedCircuits.has(a.circuit_id)
+      );
+      
+      console.log(`🔍 Checking topology for ${circuitAssets.length} assets in ${pinnedCircuits.size} pinned circuits`);
+      
+      // Find all topology connections to/from these circuit assets
+      topology.forEach(link => {
+        circuitAssets.forEach(asset => {
+          if (link.from_asset_id === asset.id) {
+            connectedAssetIds.add(link.to_asset_id);
+          }
+          if (link.to_asset_id === asset.id) {
+            connectedAssetIds.add(link.from_asset_id);
+          }
+        });
+      });
+    } else {
+      // For regular assets: Direct topology lookup
+      topology.forEach(link => {
+        if (link.from_asset_id === selectedAsset.id) {
+          connectedAssetIds.add(link.to_asset_id);
+        }
+        if (link.to_asset_id === selectedAsset.id) {
+          connectedAssetIds.add(link.from_asset_id);
+        }
+      });
+    }
+    
+    // Store connected asset IDs for explicit loading
+    pinnedAssetIdsRef.current = connectedAssetIds;
+    
+    console.log(`🔗 Found ${connectedAssetIds.size} connected assets for ${selectedAsset.type} ${selectedAsset.id}`);
+    
+    // Map connected asset IDs to their circuit IDs
+    connectedAssetIds.forEach(assetId => {
+      // Try to find in loaded assets first
+      const connectedAsset = assets.find(a => a.id === assetId);
+      if (connectedAsset?.circuit_id) {
+        pinnedCircuits.add(connectedAsset.circuit_id);
+      } else {
+        // If not loaded, try to find circuit from service areas
+        serviceAreas.forEach(sa => {
+          // Check if this circuit might contain the asset (fuzzy match by ID pattern)
+          if (assetId.startsWith(sa.CIRCUIT_ID) && sa.CIRCUIT_ID) {
+            pinnedCircuits.add(sa.CIRCUIT_ID);
+          }
+        });
+      }
+    });
+    
+    pinnedCircuitsRef.current = pinnedCircuits;
+    
+    if (pinnedCircuits.size > 0) {
+      console.log(`📌 Pinned ${pinnedCircuits.size} circuits for selected ${selectedAsset.type} ${selectedAsset.id}`);
+    }
+  }, [selectedAsset, topology, assets, circuitBatches]);
+
+  // CONNECTED ASSETS LOADING: Fetch assets at the other end of topology connections
+  // For substations: This effect won't do much since substations don't appear in topology
+  // Assets will be loaded via the pinned circuits in the main loading effect
+  useEffect(() => {
+    if (!selectedAsset) return;
+    
+    // For substations, skip this - assets will come from pinned circuits
+    if (selectedAsset.type === 'substation') {
+      console.log(`   ℹ️ Substation selected - assets will load via ${pinnedCircuitsRef.current.size} pinned circuits`);
+      return;
+    }
+    
+    // For non-substations, check for connected assets in topology
+    if (pinnedAssetIdsRef.current.size === 0) return;
+    
+    const fetchConnectedAssets = async () => {
+      const connectedIds = Array.from(pinnedAssetIdsRef.current);
+      
+      // Filter out already loaded assets
+      const loadedAssetIds = new Set(assets.map(a => a.id));
+      const missingAssetIds = connectedIds.filter(id => !loadedAssetIds.has(id));
+      
+      if (missingAssetIds.length === 0) {
+        console.log(`✅ All ${connectedIds.length} connected assets already loaded`);
+        return;
+      }
+      
+      console.log(`🔗 Fetching ${missingAssetIds.length} missing connected assets for ${selectedAsset.type} ${selectedAsset.id}`);
+      
+      try {
+        // Fetch specific assets by ID
+        const assetIdsParam = missingAssetIds.join(',');
+        const response = await fetch(`/api/assets?asset_ids=${encodeURIComponent(assetIdsParam)}`);
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch connected assets: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        // Transform to Asset format
+        const newAssets: Asset[] = data.map((row: any) => ({
+          id: row.ASSET_ID,
+          name: row.ASSET_NAME || row.ASSET_ID,
+          type: row.ASSET_TYPE,
+          latitude: row.LATITUDE,
+          longitude: row.LONGITUDE,
+          health_score: row.HEALTH_SCORE,
+          load_percent: row.LOAD_PERCENT,
+          usage_kwh: row.USAGE_KWH,
+          status: row.STATUS,
+          voltage: row.VOLTAGE,
+          circuit_id: row.CIRCUIT_ID
+        }));
+        
+        if (newAssets.length === 0) {
+          console.log(`   ⚠️ No connected assets found in database`);
+          return;
+        }
+        
+        console.log(`   ✅ Fetched ${newAssets.length} connected assets`);
+        
+        // Add to circuit batches (create special batch for connected assets)
+        setCircuitBatches(prev => {
+          // Check if we already have a connected-assets batch
+          const existingBatch = prev.find(b => b.batchId === 'batch-connected-assets');
+          
+          if (existingBatch) {
+            // Update existing batch
+            const existingIds = new Set(existingBatch.assets.map(a => a.id));
+            const uniqueNew = newAssets.filter(a => !existingIds.has(a.id));
+            
+            if (uniqueNew.length === 0) return prev;
+            
+            return prev.map(b => 
+              b.batchId === 'batch-connected-assets' 
+                ? { ...b, assets: [...b.assets, ...uniqueNew] }
+                : b
+            );
+          } else {
+            // Create new batch
+            return [...prev, {
+              batchId: 'batch-connected-assets',
+              circuitIds: [],
+              assets: newAssets,
+              loadedAt: Date.now()
+            }];
+          }
+        });
+        
+      } catch (error) {
+        console.error(`❌ Failed to fetch connected assets:`, error);
+      }
+    };
+    
+    fetchConnectedAssets();
+  }, [selectedAsset, assets.length]); // Removed pinnedAssetIdsRef.current.size to prevent re-runs
+
   // PROGRESSIVE LOADING: Aggressive parallel loading with zero debounce
   // CULLING: Remove assets far outside viewport to optimize memory
   useEffect(() => {
@@ -1501,6 +1763,15 @@ function App() {
         sampled.sort((a, b) => a.distance - b.distance);
         let sampledCircuits = sampled.map(c => c.circuit_id);
         
+        // PINNED CIRCUITS: Always include circuits for selected asset (prioritize at front)
+        if (pinnedCircuitsRef.current.size > 0) {
+          const pinnedArray = Array.from(pinnedCircuitsRef.current);
+          // Remove pinned from sampled to avoid duplicates, then prepend pinned
+          sampledCircuits = sampledCircuits.filter(cid => !pinnedCircuitsRef.current.has(cid));
+          sampledCircuits = [...pinnedArray, ...sampledCircuits];
+          console.log(`   📌 Prioritized ${pinnedArray.length} pinned circuits for selected asset`);
+        }
+        
         // HIGH ZOOM ENHANCEMENT: At zoom >= 14, include circuits from ALL visible topology
         // This ensures we load assets for every topology connection we're showing
         if (throttledZoom >= 14 && topology.length > 0) {
@@ -1575,19 +1846,34 @@ function App() {
         
         const circuitsToRemove: string[] = [];
         loadedCircuitsRef.current.forEach(cid => {
-          // Only remove if NOT sampled AND NOT in cull bounds
-          if (!sampledCircuitsSet.has(cid) && !circuitsInCullBounds.has(cid)) {
+          // Only remove if NOT sampled AND NOT in cull bounds AND NOT pinned
+          if (!sampledCircuitsSet.has(cid) && !circuitsInCullBounds.has(cid) && !pinnedCircuitsRef.current.has(cid)) {
             circuitsToRemove.push(cid);
           }
         });
         circuitsToRemove.forEach(cid => loadedCircuitsRef.current.delete(cid));
         if (circuitsToRemove.length > 0) {
-          console.log(`   🧹 Removed ${circuitsToRemove.length} circuits outside cull bounds (${loadedCircuitsRef.current.size} remain loaded)`);
+          console.log(`   🧹 Removed ${circuitsToRemove.length} circuits outside cull bounds (${loadedCircuitsRef.current.size} remain loaded, ${pinnedCircuitsRef.current.size} pinned)`);
         }
         
-        const newCircuits = sampledCircuits.filter(cid => 
+        // CRITICAL FIX: Include pinned circuits (from substation selection) in addition to viewport circuits
+        // Without this, selecting a substation pins circuits but they never get queued for loading
+        const circuitsToConsider = new Set([
+          ...sampledCircuits,
+          ...Array.from(pinnedCircuitsRef.current)
+        ]);
+        
+        const newCircuits = Array.from(circuitsToConsider).filter(cid => 
           !loadedCircuitsRef.current.has(cid) && !loadingCircuitsRef.current.has(cid)
         );
+        
+        // Log pinned circuits separately for visibility
+        const pinnedNewCircuits = Array.from(pinnedCircuitsRef.current).filter(cid => 
+          !loadedCircuitsRef.current.has(cid) && !loadingCircuitsRef.current.has(cid)
+        );
+        if (pinnedNewCircuits.length > 0) {
+          console.log(`   📍 ${pinnedNewCircuits.length} pinned circuits need loading`);
+        }
         
         // REDUCED LOGGING: Only log when there are new circuits to load or limits hit
         if (newCircuits.length > 0 || limitsReachedRef.current) {
@@ -1618,14 +1904,28 @@ function App() {
         // When zooming IN, limits decrease - must cull excess assets
         // TIGHTENED: Reduced limits by 60% to prevent 200K+ buildup
         // DEBOUNCED: Only cull every 500ms to prevent blocking during rapid pan/zoom
-        const maxAssetsForZoom = throttledZoom < 11 ? 40000 : throttledZoom < 12 ? 50000 : 80000;
+        // HIGH ZOOM: Much stricter limits at zoom >= 14 (small viewports)
+        let maxAssetsForZoom: number;
+        if (throttledZoom < 11) {
+          maxAssetsForZoom = 40000;
+        } else if (throttledZoom < 12) {
+          maxAssetsForZoom = 50000;
+        } else if (throttledZoom < 14) {
+          maxAssetsForZoom = 80000;
+        } else if (throttledZoom < 16) {
+          maxAssetsForZoom = 20000;  // Zoom 14-16: Small viewport, limit to 20k
+        } else {
+          maxAssetsForZoom = 10000;  // Zoom 16+: Tiny viewport, limit to 10k
+        }
+        
         const needsAggressiveCull = assets.length > maxAssetsForZoom; // Removed blocking condition
         const timeSinceLastCull = Date.now() - lastCullTimeRef.current;
-        const canCullNow = timeSinceLastCull >= 500; // Debounce: 500ms between culls
+        const timeSinceSelection = Date.now() - lastSelectionTimeRef.current;
+        const canCullNow = timeSinceLastCull >= 500 && timeSinceSelection >= 2000; // Wait 2s after selection for pinned circuits to load
         
         // 🔍 SIMPLE DEBUG: One-line status
         const willCull = needsAggressiveCull && canCullNow;
-        const blockedBy = !willCull ? (assets.length <= maxAssetsForZoom ? 'under-cap' : loadingCircuitsRef.current.size > 0 ? 'loading-circuits' : !canCullNow ? 'debounce' : 'unknown') : 'none';
+        const blockedBy = !willCull ? (assets.length <= maxAssetsForZoom ? 'under-cap' : timeSinceSelection < 2000 ? 'recent-selection' : loadingCircuitsRef.current.size > 0 ? 'loading-circuits' : !canCullNow ? 'debounce' : 'unknown') : 'none';
         console.log(`🔍 CULL CHECK: ${assets.length.toLocaleString()}/${maxAssetsForZoom.toLocaleString()} assets | zoom ${throttledZoom.toFixed(1)} | loading ${loadingCircuitsRef.current.size} circuits | ${willCull ? '✅ WILL CULL' : '❌ BLOCKED: ' + blockedBy}`);
         
         if (needsAggressiveCull && canCullNow) {
@@ -1653,6 +1953,13 @@ function App() {
             const filtered = prev.map(batch => {
               // Keep substations batch always (return SAME object to preserve batched rendering)
               if (batch.batchId === 'batch-substations') return batch;
+              
+              // Keep connected assets batch always (for selected asset topology)
+              if (batch.batchId === 'batch-connected-assets') return batch;
+              
+              // Keep pinned circuits (for selected asset) - return SAME object
+              const hasPinnedCircuit = batch.circuitIds.some(cid => pinnedCircuitsRef.current.has(cid));
+              if (hasPinnedCircuit) return batch;
               
               // Filter assets in this batch to only include those in tight viewport
               const remainingAssets = batch.assets.filter(a => {
@@ -1686,9 +1993,9 @@ function App() {
             return filtered;
           });
           
-          // Mark circuits as unloaded
+          // Mark circuits as unloaded (except pinned ones)
           culledCircuits.forEach(cid => {
-            if (loadedCircuitsRef.current.has(cid)) {
+            if (loadedCircuitsRef.current.has(cid) && !pinnedCircuitsRef.current.has(cid)) {
               loadedCircuitsRef.current.delete(cid);
             }
           });
@@ -1729,13 +2036,15 @@ function App() {
               });
             }, 0); // Run after current render cycle completes
           }
+          
+          // IMPORTANT: Don't return after culling - check if viewport needs circuit loading below
         }
         
         // STANDARD CULLING: Remove assets far outside viewport (MORE AGGRESSIVE)
         // IMPORTANT: Cull AFTER checking loaded circuits (don't affect load calculations)
         // TIGHTENED: Start culling much earlier (1000 instead of 2000)
         // Need at least 1000 assets before culling (275 substations + buffer for active circuits)
-        else if (assets.length > 1000 && loadingCircuitsRef.current.size === 0) { // Only cull when NOT actively loading
+        if (assets.length > 1000 && loadingCircuitsRef.current.size === 0 && !needsAggressiveCull) { // Only cull when NOT actively loading AND not already aggressively culled
           // OPTIMIZED CULLING: Work with batches directly instead of flattening/filtering entire asset array
           const assetsBeforeCull = assets.length;
           let totalRemoved = 0;
@@ -1746,6 +2055,13 @@ function App() {
             const filtered = prev.map(batch => {
               // Keep substations batch always (return SAME object to preserve batched rendering)
               if (batch.batchId === 'batch-substations') return batch;
+              
+              // Keep connected assets batch always (for selected asset topology)
+              if (batch.batchId === 'batch-connected-assets') return batch;
+              
+              // Keep pinned circuits (for selected asset) - return SAME object
+              const hasPinnedCircuit = batch.circuitIds.some(cid => pinnedCircuitsRef.current.has(cid));
+              if (hasPinnedCircuit) return batch;
               
               // Filter assets in this batch to only include those in cull bounds
               const remainingAssets = batch.assets.filter(a => {
@@ -1779,9 +2095,9 @@ function App() {
             return filtered;
           });
           
-          // Mark circuits as unloaded
+          // Mark circuits as unloaded (except pinned ones)
           culledCircuits.forEach(cid => {
-            if (loadedCircuitsRef.current.has(cid)) {
+            if (loadedCircuitsRef.current.has(cid) && !pinnedCircuitsRef.current.has(cid)) {
               loadedCircuitsRef.current.delete(cid);
             }
           });
@@ -1935,6 +2251,13 @@ function App() {
             for (const batch of batchesWithDistance) {
               if (removedCount >= assetsToRemove) break;
               
+              // CRITICAL: Don't unload batches containing pinned circuits (e.g., from selected substations)
+              const hasPinnedCircuit = batch.circuitIds.some(cid => pinnedCircuitsRef.current.has(cid));
+              if (hasPinnedCircuit) {
+                console.log(`   📍 Skipping batch ${batch.batchId} - contains ${batch.circuitIds.filter(cid => pinnedCircuitsRef.current.has(cid)).length} pinned circuits`);
+                continue;
+              }
+              
               batchIdsToRemove.add(batch.batchId);
               batch.circuitIds.forEach(cid => circuitsToUnload.add(cid));
               removedCount += batch.assets.length;
@@ -1991,10 +2314,28 @@ function App() {
         if (newCircuits.length > 0) {
           // SUBSTATION-BASED LIMITS: Prevent loading too many assets
           // With substation-based sampling, we expect ~118 substations × 3 circuits = ~354 circuits at zoom < 11.3
+          // HIGH ZOOM: Much stricter limits at zoom >= 14 (small viewports need fewer assets)
           // CRITICAL: Include pending assets to prevent parallel batch overshoot
           const totalAssets = assets.length + pendingAssetCountRef.current;
-          const maxAssetsAllowed = throttledZoom < 11 ? 40000 : throttledZoom < 12 ? 60000 : 100000;
-          const maxCircuitsAllowed = throttledZoom < 11 ? 200 : throttledZoom < 12 ? 400 : 600;
+          let maxAssetsAllowed: number;
+          let maxCircuitsAllowed: number;
+          
+          if (throttledZoom < 11) {
+            maxAssetsAllowed = 40000;
+            maxCircuitsAllowed = 200;
+          } else if (throttledZoom < 12) {
+            maxAssetsAllowed = 60000;
+            maxCircuitsAllowed = 400;
+          } else if (throttledZoom < 14) {
+            maxAssetsAllowed = 100000;
+            maxCircuitsAllowed = 600;
+          } else if (throttledZoom < 16) {
+            maxAssetsAllowed = 20000;  // Zoom 14-16: Small viewport
+            maxCircuitsAllowed = 100;
+          } else {
+            maxAssetsAllowed = 10000;  // Zoom 16+: Tiny viewport
+            maxCircuitsAllowed = 50;
+          }
           
           // Hard stop at 100% cap (no threshold needed with zoom-aware sampling)
           if (totalAssets >= maxAssetsAllowed) {
@@ -2037,13 +2378,23 @@ function App() {
           const batchPromises = batches.map(async (batch, idx) => {
             const circuitParam = batch.join(',');
             
+            // Helper: Add timeout to fetch requests
+            const fetchWithTimeout = (url: string, timeout = 30000) => {
+              return Promise.race([
+                fetch(url),
+                new Promise<Response>((_, reject) => 
+                  setTimeout(() => reject(new Error('Request timeout')), timeout)
+                )
+              ]);
+            };
+            
             // Load assets and topology in parallel for this circuit batch
             const [assetsData, topologyData] = await Promise.all([
-              fetch(`/api/assets?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
+              fetchWithTimeout(`/api/assets?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
                 if (!r.ok) throw new Error(`Assets HTTP ${r.status}: ${r.statusText}`);
                 return r.json();
               }),
-              fetch(`/api/topology?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
+              fetchWithTimeout(`/api/topology?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
                 if (!r.ok) throw new Error(`Topology HTTP ${r.status}: ${r.statusText}`);
                 return r.json();
               })
@@ -2121,10 +2472,22 @@ function App() {
                 const uniqueNew = newAssets.filter(a => !existingIds.has(a.id));
                 
                 // HARD CAP: Enforce max assets allowed (prevents overshoot from parallel loading)
-                // CRITICAL: Use same limits as main loading path (40k/50k/80k)
+                // CRITICAL: Use same limits as main loading path with high zoom restrictions
                 // RACE CONDITION FIX: Account for pending additions from parallel batches
                 const currentZoom = throttledZoom;
-                const maxAssetsAllowed = currentZoom < 11 ? 40000 : currentZoom < 12 ? 50000 : 80000;
+                let maxAssetsAllowed: number;
+                if (currentZoom < 11) {
+                  maxAssetsAllowed = 40000;
+                } else if (currentZoom < 12) {
+                  maxAssetsAllowed = 50000;
+                } else if (currentZoom < 14) {
+                  maxAssetsAllowed = 80000;
+                } else if (currentZoom < 16) {
+                  maxAssetsAllowed = 20000;
+                } else {
+                  maxAssetsAllowed = 10000;
+                }
+                
                 const spaceAvailable = Math.max(0, maxAssetsAllowed - currentTotal - pendingAssetCountRef.current);
                 
                 if (spaceAvailable === 0) {
@@ -2186,9 +2549,12 @@ function App() {
                 return prev;
               });
             }).catch(err => {
-              console.error(`Batch ${idx + 1} failed:`, err);
-              // Remove circuits from loading set on error
-              batches[idx]?.forEach(cid => loadingCircuitsRef.current.delete(cid));
+              console.error(`❌ Batch ${idx + 1}/${batches.length} failed (${batches[idx]?.length} circuits):`, err.message || err);
+              // Remove circuits from loading set on error (prevent permanent blocking)
+              batches[idx]?.forEach(cid => {
+                loadingCircuitsRef.current.delete(cid);
+                console.log(`   🧹 Cleaned up failed circuit: ${cid}`);
+              });
             });
           });
           
@@ -2204,7 +2570,7 @@ function App() {
     };
     
     loadAssets();
-  }, [throttledViewport.longitude, throttledViewport.latitude, currentZoom, serviceAreas.length]);
+  }, [throttledViewport.longitude, throttledViewport.latitude, currentZoom, serviceAreas.length, selectedAsset]);
 
   // CONNECTED ASSETS: Compute all assets directly connected to selected assets
   const connectedAssets = useMemo(() => {
