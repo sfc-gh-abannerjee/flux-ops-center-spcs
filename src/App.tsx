@@ -511,6 +511,7 @@ function App() {
   const loadedCircuitsRef = useRef<Set<string>>(new Set()); // Track circuits that have been successfully loaded (PERSISTENT across frames)
   const substationsLoadedRef = useRef(false); // Track if substations have been loaded
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null); // Polling timer for service areas
+  const limitsReachedRef = useRef(false); // Track if we've hit asset/circuit limits (prevents retry spam)
   const [topology, setTopology] = useState<TopologyLink[]>([]);
   const [metroTopologyData, setMetroTopologyData] = useState<any[]>([]);
   const [feederTopologyData, setFeederTopologyData] = useState<any[]>([]);
@@ -1228,6 +1229,13 @@ function App() {
         
         console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${visibleCircuits.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
         
+        // EARLY EXIT: If limits were already reached, don't try again until user pans/zooms significantly
+        // This prevents infinite API call spam when viewport has more circuits than limits allow
+        if (limitsReachedRef.current && newCircuits.length > 0) {
+          console.log(`   ⏸️ Limits reached - waiting for user to pan/zoom to new area (${newCircuits.length} unloadable circuits)`);
+          return; // Don't retry loading until limits are cleared
+        }
+        
         // CULLING: Remove assets far outside viewport (LESS AGGRESSIVE)
         // IMPORTANT: Cull AFTER checking loaded circuits (don't affect load calculations)
         // Only cull when we have significant memory pressure
@@ -1257,6 +1265,9 @@ function App() {
                 loadedCircuitsRef.current.delete(cid);
               }
             });
+            
+            // CLEAR limits flag when culling (since we freed up memory)
+            limitsReachedRef.current = false;
             
             const removed = assetsBeforeCull - culledAssets.length;
             console.log(`   🗑️ Culled ${removed.toLocaleString()} assets from ${culledAssetIds.size} circuits outside ${cullBuffer}x viewport (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
@@ -1320,12 +1331,14 @@ function App() {
           const maxCircuitsAllowed = throttledZoom < 11 ? 50 : throttledZoom < 12 ? 100 : 200;
           
           if (totalAssets > maxAssetsAllowed) {
-            console.log(`   ⚠️ Asset limit reached: ${totalAssets.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} assets loaded. Skipping load.`);
+            console.log(`   ⚠️ Asset limit reached: ${totalAssets.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} assets loaded. Backing off until culling or user pans away.`);
+            limitsReachedRef.current = true; // Set flag to prevent retries
             return;
           }
           
           if (loadedCircuitsRef.current.size >= maxCircuitsAllowed) {
-            console.log(`   ⚠️ Circuit limit reached: ${loadedCircuitsRef.current.size}/${maxCircuitsAllowed} circuits loaded. Skipping load.`);
+            console.log(`   ⚠️ Circuit limit reached: ${loadedCircuitsRef.current.size}/${maxCircuitsAllowed} circuits loaded. Backing off until culling or user pans away.`);
+            limitsReachedRef.current = true; // Set flag to prevent retries
             return;
           }
           
@@ -1404,6 +1417,7 @@ function App() {
                 
                 if (spaceAvailable === 0) {
                   console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} REJECTED: Asset cap reached (${prev.length.toLocaleString()}/${maxAssetsAllowed.toLocaleString()})`);
+                  limitsReachedRef.current = true; // Set flag when cap hit during batch processing
                   return prev;
                 }
                 
@@ -1428,6 +1442,7 @@ function App() {
                 
                 if (spaceAvailable === 0) {
                   console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} topology REJECTED: Cap reached (${(prev.length + pendingTopologyCountRef.current).toLocaleString()}/${maxTopologyAllowed.toLocaleString()})`);
+                  limitsReachedRef.current = true; // Set flag when topology cap hit
                   return prev;
                 }
                 
