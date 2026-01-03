@@ -513,7 +513,41 @@ function App() {
   };
   const [circuitBatches, setCircuitBatches] = useState<CircuitBatch[]>([]);
   
-  // Flatten batches into single array for backward compatibility with existing logic
+  // BATCHED RENDERING: Derive asset type arrays directly from circuitBatches
+  // This avoids flattening and re-filtering, preserving batch structure for GPU optimization
+  const { substationAssets, transformerAssets, poleAssets, meterAssets } = useMemo(() => {
+    const filtered = {
+      substationAssets: [] as Asset[],
+      transformerAssets: [] as Asset[],
+      poleAssets: [] as Asset[],
+      meterAssets: [] as Asset[]
+    };
+    
+    // Extract by type from each batch (maintains batch association for later filtering)
+    circuitBatches.forEach(batch => {
+      batch.assets.forEach(a => {
+        const type = a.type?.toLowerCase();
+        switch (type) {
+          case 'substation':
+            filtered.substationAssets.push(a);
+            break;
+          case 'transformer':
+            filtered.transformerAssets.push(a);
+            break;
+          case 'pole':
+            filtered.poleAssets.push(a);
+            break;
+          case 'meter':
+            filtered.meterAssets.push(a);
+            break;
+        }
+      });
+    });
+    
+    return filtered;
+  }, [circuitBatches]);
+  
+  // For backward compatibility with count displays and other non-rendering logic
   const assets = useMemo(() => {
     return circuitBatches.flatMap(batch => batch.assets);
   }, [circuitBatches]);
@@ -1262,7 +1296,10 @@ function App() {
           !loadedCircuitsRef.current.has(cid) && !loadingCircuitsRef.current.has(cid)
         );
         
-        console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${visibleCircuits.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
+        // REDUCED LOGGING: Only log when there are new circuits to load or limits hit
+        if (newCircuits.length > 0 || limitsReachedRef.current) {
+          console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${visibleCircuits.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
+        }
         
         // VIEWPORT CHANGE DETECTION: Clear limits flag when user significantly changes viewport
         // This allows reloading in new areas after limits were reached in previous viewport
@@ -2240,39 +2277,9 @@ function App() {
   // PERFORMANCE: Use throttledZoom to prevent recalculation on every pixel
   const heightScale = 1 + Math.max(0, (12 - throttledZoom)) * 0.05;
 
-  const { substationAssets, transformerAssets, poleAssets, meterAssets } = useMemo(() => {
-    // OPTIMIZATION: Single-pass filter instead of 4 separate passes (10-15ms improvement)
-    const filtered = {
-      substationAssets: [] as Asset[],
-      transformerAssets: [] as Asset[],
-      poleAssets: [] as Asset[],
-      meterAssets: [] as Asset[]
-    };
-    
-    // Early bailout
-    if (assets.length === 0) return filtered;
-    
-    // Single pass with type normalization
-    assets.forEach(a => {
-      const type = a.type?.toLowerCase();
-      switch (type) {
-        case 'substation':
-          filtered.substationAssets.push(a);
-          break;
-        case 'transformer':
-          filtered.transformerAssets.push(a);
-          break;
-        case 'pole':
-          filtered.poleAssets.push(a);
-          break;
-        case 'meter':
-          filtered.meterAssets.push(a);
-          break;
-      }
-    });
-    
-    return filtered;
-  }, [assets]);
+  // REMOVED: Duplicate type filtering - now done directly from circuitBatches at line ~517
+  // Asset type arrays (substationAssets, transformerAssets, poleAssets, meterAssets) 
+  // are now derived from circuitBatches in a single pass, avoiding this redundant filtering
 
   // PERFORMANCE OPTIMIZATION: Viewport culling for individual assets
   // ACCURATE VIEWPORT BOUNDS: Use deck.gl's WebMercatorViewport for precise bounds
@@ -3449,12 +3456,12 @@ function App() {
     // ),
 
     ...(layersVisible.transformers && currentZoom >= ZOOM_THRESHOLD - 1.5 ?
-      [
-        // Transformers - OPTIMIZED: Switched from PolygonLayer to ColumnLayer for 10k+ objects
-        // ColumnLayer is simpler geometry (cylinder vs rectangular prism) = better GPU performance
+      viewportFilteredBatches.flatMap(batch =>
+        batch.transformers.length > 0 ? [
+        // Transformer base - BATCHED: One layer per circuit batch prevents GPU buffer regeneration
         new ColumnLayer({
-          id: 'transformers-individual',
-          data: viewportFilteredAssets.transformerAssets,
+          id: `transformers-individual-${batch.batchId}`,
+          data: batch.transformers,
           pickable: true,
           extruded: true,
           diskResolution: 4,  // Low-poly square shape (4-sided) for rectangular appearance
@@ -3544,10 +3551,10 @@ function App() {
             }
           }
         }),
-        // Health status cap - OPTIMIZED: Using ColumnLayer instead of PolygonLayer
+        // Transformer health cap - BATCHED: Matches base layer batching
         new ColumnLayer({
-          id: 'transformers-cap',
-          data: viewportFilteredAssets.transformerAssets,
+          id: `transformers-cap-${batch.batchId}`,
+          data: batch.transformers,
           extruded: true,
           pickable: false,
           diskResolution: 4,  // Match base shape (square-like)
@@ -3635,7 +3642,8 @@ function App() {
             getLineColor: [assetScaleAnimation, animationFrame]
           }
         })
-      ] : []
+        ] : []
+      ) : []
     ),
 
     // COMMENTED OUT: Transformer meter count badges (floating labels)
@@ -3685,11 +3693,12 @@ function App() {
     // ] : []),
 
     ...(layersVisible.poles && currentZoom >= ZOOM_THRESHOLD - 2.0 ?
-      [
-        // Poles base layer - Primary color (full height)
+      viewportFilteredBatches.flatMap(batch =>
+        batch.poles.length > 0 ? [
+        // Poles base layer - BATCHED: One layer per circuit batch
         new ColumnLayer({
-          id: 'poles-individual-base',
-          data: viewportFilteredAssets.poleAssets,
+          id: `poles-individual-base-${batch.batchId}`,
+          data: batch.poles,
           pickable: true,
           extruded: true,
           diskResolution: 6,  // Reduced from 8 for GPU performance (30k poles)
@@ -3758,10 +3767,10 @@ function App() {
           }
         }
         }),
-        // Poles health cap - OPTIMIZED: Cap on top for health indication
+        // Poles health cap - BATCHED: Cap on top for health indication
         new ColumnLayer({
-          id: 'poles-individual-cap',
-          data: viewportFilteredAssets.poleAssets,
+          id: `poles-individual-cap-${batch.batchId}`,
+          data: batch.poles,
           pickable: false,
           extruded: true,
           diskResolution: 6,  // Match base shape
@@ -3828,7 +3837,8 @@ function App() {
             getLineColor: [assetScaleAnimation, animationFrame]
           }
         })
-      ] : []
+        ] : []
+      ) : []
     ),
 
 
@@ -3838,10 +3848,12 @@ function App() {
     // SHAPE: OPTIMIZED ColumnLayer with diskResolution=4 for square/rectangular meter housing
     // PERFORMANCE: 3-5x faster than PolygonLayer - GPU-optimized geometry
     // EMERGENCE: Meters appear LAST - delayed start + slowest emergence
-    ...(layersVisible.meters && viewState.zoom > 13.5 ? [
+    ...(layersVisible.meters && viewState.zoom > 13.5 ?
+      viewportFilteredBatches.flatMap(batch =>
+        batch.meters.length > 0 ? [
       new ColumnLayer({
-        id: 'meters',
-        data: viewportFilteredAssets.meterAssets,
+        id: `meters-${batch.batchId}`,
+        data: batch.meters,
         pickable: true,
         extruded: true,
         diskResolution: 4,  // Square base for rectangular meter housing
@@ -3920,7 +3932,8 @@ function App() {
           }
         }
       })
-    ] : []),
+      ] : []
+      ) : []),
 
     // ENGINEERING SELECTION - Impact-aware, category-specific bloom for aggregate towers
     ...(selectedAsset && selectedAsset.type === 'aggregate' ? (() => {
