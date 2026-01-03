@@ -513,6 +513,16 @@ function App() {
   };
   const [circuitBatches, setCircuitBatches] = useState<CircuitBatch[]>([]);
   
+  // BATCHED TOPOLOGY: Track topology batches to prevent replacement on new loads
+  type TopologyBatch = {
+    batchId: string;
+    circuitIds: string[];
+    connections: TopologyLink[];
+    loadedAt: number;
+    viewportCenter: { lng: number; lat: number };  // Track where this was loaded from
+  };
+  const [topologyBatches, setTopologyBatches] = useState<TopologyBatch[]>([]);
+  
   // BATCHED RENDERING: Derive asset type arrays directly from circuitBatches
   // This avoids flattening and re-filtering, preserving batch structure for GPU optimization
   const { substationAssets, transformerAssets, poleAssets, meterAssets } = useMemo(() => {
@@ -547,6 +557,12 @@ function App() {
     return filtered;
   }, [circuitBatches]);
   
+  // Flatten topology batches into single array for rendering
+  // Only recalculates when batches added/removed, not on every viewport change
+  const topology = useMemo(() => {
+    return topologyBatches.flatMap(batch => batch.connections);
+  }, [topologyBatches]);
+  
   // For backward compatibility with count displays and other non-rendering logic
   const assets = useMemo(() => {
     return circuitBatches.flatMap(batch => batch.assets);
@@ -560,7 +576,7 @@ function App() {
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null); // Polling timer for service areas
   const limitsReachedRef = useRef(false); // Track if we've hit asset/circuit limits (prevents retry spam)
   const lastLoadAttemptViewportRef = useRef<{ lng: number; lat: number; zoom: number } | null>(null); // Track last viewport for change detection
-  const [topology, setTopology] = useState<TopologyLink[]>([]);
+  // REMOVED: Old topology state - now derived from topologyBatches (see line 561)
   const [metroTopologyData, setMetroTopologyData] = useState<any[]>([]);
   const [feederTopologyData, setFeederTopologyData] = useState<any[]>([]);
   const [serviceAreas, setServiceAreas] = useState<any[]>([]);
@@ -1174,11 +1190,21 @@ function App() {
           }));
           
           // Deduplicate with existing assets before adding as batch
+          // Use loadedCircuitsRef to avoid circular dependency with assets array
           setCircuitBatches(prev => {
-            const existingIds = new Set(assets.map(a => a.id));
-            const uniqueNew = mappedAssets.filter(a => !existingIds.has(a.id));
+            // Check if any of these circuits are already loaded
+            const newCircuitsOnly = circuitsToLoad.filter(cid => !loadedCircuitsRef.current.has(cid));
+            if (newCircuitsOnly.length === 0) return prev; // All circuits already loaded
+            
+            // Deduplicate assets by ID (in case of duplicate data from API)
+            const existingAssetIds = new Set<string>();
+            prev.forEach(batch => batch.assets.forEach(a => existingAssetIds.add(a.id)));
+            const uniqueNew = mappedAssets.filter(a => !existingAssetIds.has(a.id));
             
             if (uniqueNew.length === 0) return prev;
+            
+            // Mark these circuits as loaded
+            newCircuitsOnly.forEach(cid => loadedCircuitsRef.current.add(cid));
             
             return [...prev, {
               batchId: `batch-viewport-${Date.now()}`,
@@ -1187,7 +1213,32 @@ function App() {
               loadedAt: Date.now()
             }];
           });
-          setTopology(mappedTopology);
+          
+          // BATCHED TOPOLOGY: Append to topology batches instead of replacing
+          // Store viewport center for distance-based priority calculation
+          setTopologyBatches(prev => {
+            // Deduplicate connections by from-to pair
+            const existingConnections = new Set<string>();
+            prev.forEach(batch => 
+              batch.connections.forEach(c => 
+                existingConnections.add(`${c.from_asset_id}-${c.to_asset_id}`)
+              )
+            );
+            const uniqueTopology = mappedTopology.filter(c => 
+              !existingConnections.has(`${c.from_asset_id}-${c.to_asset_id}`)
+            );
+            
+            if (uniqueTopology.length === 0) return prev;
+            
+            return [...prev, {
+              batchId: `topology-batch-${Date.now()}`,
+              circuitIds: circuitsToLoad,
+              connections: uniqueTopology,
+              loadedAt: Date.now(),
+              viewportCenter: { lng: viewState.longitude, lat: viewState.latitude }
+            }];
+          });
+          
           console.log(`   ✅ Viewport assets loaded: ${mappedAssets.length.toLocaleString()} assets, ${mappedTopology.length.toLocaleString()} connections`);
           console.log(`   🎯 Loaded ${circuitsToLoad.length} circuits: ${circuitsToLoad.slice(0, 3).join(', ')}${circuitsToLoad.length > 3 ? '...' : ''}`);
         } catch (error) {
@@ -1245,10 +1296,10 @@ function App() {
         
         // BUFFER STRATEGY (OPTIMIZED):
         // - Load buffer: 1.2x (load just around viewport)
-        // - Cull buffer: 2.5x (cull sooner to prevent bloat)
+        // - Cull buffer: 2.0x (cull much sooner to prevent 200K+ buildup - TIGHTENED from 2.5x)
         // - This ensures: cull buffer > load buffer (no thrashing)
         const loadBuffer = 1.2;
-        const cullBuffer = 2.5;
+        const cullBuffer = 2.0;  // REDUCED from 2.5 for aggressive memory management
         
         // Calculate load bounds with buffer
         const loadLngRange = (east - west) * (loadBuffer - 1) / 2;
@@ -1330,19 +1381,20 @@ function App() {
         // This ensures we compare against the LAST LOAD ATTEMPT, not the previous frame
         lastLoadAttemptViewportRef.current = { lng: centerLng, lat: centerLat, zoom: throttledZoom };
         
-        // ZOOM-LEVEL AGGRESSIVE CULLING: Enforce zoom-based asset limits
+        // ZOOM-LEVEL AGGRESSIVE CULLING: Enforce zoom-based asset limits (MUCH MORE AGGRESSIVE)
         // When zooming IN, limits decrease - must cull excess assets
-        const maxAssetsForZoom = throttledZoom < 11 ? 30000 : throttledZoom < 12 ? 60000 : 120000;
+        // TIGHTENED: Reduced limits by 60% to prevent 200K+ buildup
+        const maxAssetsForZoom = throttledZoom < 11 ? 12000 : throttledZoom < 12 ? 25000 : 50000;
         const needsAggressiveCull = assets.length > maxAssetsForZoom && loadingCircuitsRef.current.size === 0;
         
         if (needsAggressiveCull) {
           console.log(`   ⚠️ Zoom-level limit exceeded: ${assets.length.toLocaleString()} > ${maxAssetsForZoom.toLocaleString()} at zoom ${throttledZoom.toFixed(1)}. Culling to viewport...`);
           
-          // Aggressive cull: Keep only viewport assets (1x buffer, not 3.5x)
+          // Aggressive cull: Keep only viewport assets (1.5x buffer, not 3.5x)
           // Calculate viewport span from bounds
           const lngSpan = (east - west) / 2;
           const latSpan = (north - south) / 2;
-          const viewportBuffer = 1.0;
+          const viewportBuffer = 1.5;  // Increased from 1.0 to 1.5 for smoother panning
           const aggCullMinLng = viewState.longitude - (lngSpan * viewportBuffer);
           const aggCullMaxLng = viewState.longitude + (lngSpan * viewportBuffer);
           const aggCullMinLat = viewState.latitude - (latSpan * viewportBuffer);
@@ -1400,24 +1452,30 @@ function App() {
               }).filter((batch): batch is CircuitBatch => batch !== null);
             });
             
-            // Cull topology
+            // Cull topology batches (filter connections in each batch)
             const remainingAssetIds = new Set(culledAssets.map(a => a.id));
             const topologyBeforeCull = topology.length;
             
-            setTopology(prev => {
-              const filtered = prev.filter(t => {
-                if (!remainingAssetIds.has(t.from_asset_id) || !remainingAssetIds.has(t.to_asset_id)) {
-                  return false;
-                }
-                const fromInBounds = t.from_longitude >= aggCullMinLng && t.from_longitude <= aggCullMaxLng &&
-                                   t.from_latitude >= aggCullMinLat && t.from_latitude <= aggCullMaxLat;
-                const toInBounds = t.to_longitude >= aggCullMinLng && t.to_longitude <= aggCullMaxLng &&
-                                 t.to_latitude >= aggCullMinLat && t.to_latitude <= aggCullMaxLat;
-                return fromInBounds || toInBounds;
-              });
+            setTopologyBatches(prev => {
+              const filtered = prev.map(batch => {
+                const filteredConnections = batch.connections.filter(t => {
+                  if (!remainingAssetIds.has(t.from_asset_id) || !remainingAssetIds.has(t.to_asset_id)) {
+                    return false;
+                  }
+                  const fromInBounds = t.from_longitude >= aggCullMinLng && t.from_longitude <= aggCullMaxLng &&
+                                     t.from_latitude >= aggCullMinLat && t.from_latitude <= aggCullMaxLat;
+                  const toInBounds = t.to_longitude >= aggCullMinLng && t.to_longitude <= aggCullMaxLng &&
+                                   t.to_latitude >= aggCullMinLat && t.to_latitude <= aggCullMaxLat;
+                  return fromInBounds || toInBounds;
+                });
+                
+                return { ...batch, connections: filteredConnections };
+              }).filter(batch => batch.connections.length > 0); // Remove empty batches
               
-              if (filtered.length < topologyBeforeCull) {
-                console.log(`   🗑️ Culled ${(topologyBeforeCull - filtered.length).toLocaleString()} topology connections (${topologyBeforeCull.toLocaleString()} → ${filtered.length.toLocaleString()})`);
+              // Calculate from filtered result, not stale state
+              const topologyAfterCull = filtered.flatMap(b => b.connections).length;
+              if (topologyAfterCull < topologyBeforeCull) {
+                console.log(`   🗑️ Culled ${(topologyBeforeCull - topologyAfterCull).toLocaleString()} topology connections (${topologyBeforeCull.toLocaleString()} → ${topologyAfterCull.toLocaleString()})`);
               }
               
               return filtered;
@@ -1425,16 +1483,16 @@ function App() {
           }
         }
         
-        // STANDARD CULLING: Remove assets far outside viewport (LESS AGGRESSIVE)
+        // STANDARD CULLING: Remove assets far outside viewport (MORE AGGRESSIVE)
         // IMPORTANT: Cull AFTER checking loaded circuits (don't affect load calculations)
-        // Only cull when we have significant memory pressure
-        // Need at least 2000 assets before culling (275 substations + buffer for active circuits)
-        else if (assets.length > 2000 && loadingCircuitsRef.current.size === 0) { // Only cull when NOT actively loading
+        // TIGHTENED: Start culling much earlier (1000 instead of 2000)
+        // Need at least 1000 assets before culling (275 substations + buffer for active circuits)
+        else if (assets.length > 1000 && loadingCircuitsRef.current.size === 0) { // Only cull when NOT actively loading
           const assetsBeforeCull = assets.length;
           const culledAssets = assets.filter(a => {
             // Always keep substations (needed for service area visualization)
             if (a.type === 'substation') return true;
-            // Keep assets within culling bounds (3.5x viewport)
+            // Keep assets within culling bounds (2.0x viewport - TIGHTENED from 3.5x)
             return a.longitude >= cullMinLng && a.longitude <= cullMaxLng &&
                    a.latitude >= cullMinLat && a.latitude <= cullMaxLat;
           });
@@ -1459,7 +1517,7 @@ function App() {
             limitsReachedRef.current = false;
             
             const removed = assetsBeforeCull - culledAssets.length;
-            console.log(`   🗑️ Culled ${removed.toLocaleString()} assets from ${culledAssetIds.size} circuits outside ${cullBuffer}x viewport (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
+            console.log(`   🗑️ Culled ${removed.toLocaleString()} assets from ${culledAssetIds.size} circuits outside 2.0x viewport (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
             
             // CHUNKED LAYER: Remove entire batches or filter batch assets
             setCircuitBatches(prev => {
@@ -1488,22 +1546,28 @@ function App() {
             const remainingAssetIds = new Set(culledAssets.map(a => a.id));
             const topologyBeforeCull = topology.length;
             
-            setTopology(prev => {
-              const filtered = prev.filter(t => {
-                // Must have both endpoints still loaded
-                if (!remainingAssetIds.has(t.from_asset_id) || !remainingAssetIds.has(t.to_asset_id)) {
-                  return false;
-                }
-                // AND at least one endpoint must be in viewport cull bounds
-                const fromInBounds = t.from_longitude >= cullMinLng && t.from_longitude <= cullMaxLng &&
-                                   t.from_latitude >= cullMinLat && t.from_latitude <= cullMaxLat;
-                const toInBounds = t.to_longitude >= cullMinLng && t.to_longitude <= cullMaxLng &&
-                                 t.to_latitude >= cullMinLat && t.to_latitude <= cullMaxLat;
-                return fromInBounds || toInBounds;
-              });
+            setTopologyBatches(prev => {
+              const filtered = prev.map(batch => {
+                const filteredConnections = batch.connections.filter(t => {
+                  // Must have both endpoints still loaded
+                  if (!remainingAssetIds.has(t.from_asset_id) || !remainingAssetIds.has(t.to_asset_id)) {
+                    return false;
+                  }
+                  // AND at least one endpoint must be in viewport cull bounds
+                  const fromInBounds = t.from_longitude >= cullMinLng && t.from_longitude <= cullMaxLng &&
+                                     t.from_latitude >= cullMinLat && t.from_latitude <= cullMaxLat;
+                  const toInBounds = t.to_longitude >= cullMinLng && t.to_longitude <= cullMaxLng &&
+                                   t.to_latitude >= cullMinLat && t.to_latitude <= cullMaxLat;
+                  return fromInBounds || toInBounds;
+                });
+                
+                return { ...batch, connections: filteredConnections };
+              }).filter(batch => batch.connections.length > 0);
               
-              if (filtered.length < topologyBeforeCull) {
-                console.log(`   🗑️ Culled ${(topologyBeforeCull - filtered.length).toLocaleString()} topology connections (${topologyBeforeCull.toLocaleString()} → ${filtered.length.toLocaleString()})`);
+              // Calculate from filtered result, not stale state
+              const topologyAfterCull = filtered.flatMap(b => b.connections).length;
+              if (topologyAfterCull < topologyBeforeCull) {
+                console.log(`   🗑️ Culled ${(topologyBeforeCull - topologyAfterCull).toLocaleString()} topology connections (${topologyBeforeCull.toLocaleString()} → ${topologyAfterCull.toLocaleString()})`);
               }
               
               return filtered;
@@ -1511,23 +1575,64 @@ function App() {
           }
         }
         
-        // PERIODIC TOPOLOGY CLEANUP: Remove topology outside viewport
+        // PERIODIC TOPOLOGY CLEANUP: Remove topology outside viewport (PRIORITY-BASED)
         // Only cleanup when NOT actively loading to prevent state churn
-        if (topology.length > 5000 && loadingCircuitsRef.current.size === 0) {
+        // PRIORITY SYSTEM: Keep 'active' (current viewport) topology, aggressively remove 'inactive'
+        if (topology.length > 2000 && loadingCircuitsRef.current.size === 0) {
           const topologyBeforeCleanup = topology.length;
           
-          setTopology(prev => {
-            const cleaned = prev.filter(t => {
-              // Keep if either endpoint is in viewport cull bounds (accurate calculation)
-              const fromInBounds = t.from_longitude >= cullMinLng && t.from_longitude <= cullMaxLng &&
-                                 t.from_latitude >= cullMinLat && t.from_latitude <= cullMaxLat;
-              const toInBounds = t.to_longitude >= cullMinLng && t.to_longitude <= cullMaxLng &&
-                               t.to_latitude >= cullMinLat && t.to_latitude <= cullMaxLat;
-              return fromInBounds || toInBounds;
-            });
+          // DISTANCE-BASED PRIORITY: Use tight bounds for distant batches, wide for nearby
+          // Calculate distance from current viewport center to each batch's original load location
+          const centerLng = (east + west) / 2;
+          const centerLat = (north + south) / 2;
+          const tightCleanupBuffer = 1.5;
+          const activeCleanupBuffer = 2.5;
+          
+          const tightLngRange = (east - west) * (tightCleanupBuffer - 1) / 2;
+          const tightLatRange = (north - south) * (tightCleanupBuffer - 1) / 2;
+          const tightMinLng = west - tightLngRange;
+          const tightMaxLng = east + tightLngRange;
+          const tightMinLat = south - tightLatRange;
+          const tightMaxLat = north + tightLatRange;
+          
+          const activeLngRange = (east - west) * (activeCleanupBuffer - 1) / 2;
+          const activeLatRange = (north - south) * (activeCleanupBuffer - 1) / 2;
+          const activeMinLng = west - activeLngRange;
+          const activeMaxLng = east + activeLngRange;
+          const activeMinLat = south - activeLatRange;
+          const activeMaxLat = north + activeLatRange;
+          
+          setTopologyBatches(prev => {
+            const cleaned = prev.map(batch => {
+              // Calculate distance from current viewport to batch's load location
+              // Use simple lat/lng distance (good enough for priority calculation)
+              const latDiff = batch.viewportCenter.lat - centerLat;
+              const lngDiff = batch.viewportCenter.lng - centerLng;
+              const distance = Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
+              
+              // Threshold: ~0.1 degrees (~10km) - batches closer than this get wide bounds
+              const isNearby = distance < 0.1;
+              const minLng = isNearby ? activeMinLng : tightMinLng;
+              const maxLng = isNearby ? activeMaxLng : tightMaxLng;
+              const minLat = isNearby ? activeMinLat : tightMinLat;
+              const maxLat = isNearby ? activeMaxLat : tightMaxLat;
+              
+              const cleanedConnections = batch.connections.filter(t => {
+                // Keep if either endpoint is in bounds
+                const fromInBounds = t.from_longitude >= minLng && t.from_longitude <= maxLng &&
+                                   t.from_latitude >= minLat && t.from_latitude <= maxLat;
+                const toInBounds = t.to_longitude >= minLng && t.to_longitude <= maxLng &&
+                                 t.to_latitude >= minLat && t.to_latitude <= maxLat;
+                return fromInBounds || toInBounds;
+              });
+              
+              return { ...batch, connections: cleanedConnections };
+            }).filter(batch => batch.connections.length > 0);
             
-            if (cleaned.length < topologyBeforeCleanup) {
-              console.log(`   🧹 Periodic topology cleanup: ${(topologyBeforeCleanup - cleaned.length).toLocaleString()} removed (${topologyBeforeCleanup.toLocaleString()} → ${cleaned.length.toLocaleString()})`);
+            // Calculate from filtered result, not stale state
+            const topologyAfterCleanup = cleaned.flatMap(b => b.connections).length;
+            if (topologyAfterCleanup < topologyBeforeCleanup) {
+              console.log(`   🧹 Periodic topology cleanup: ${(topologyBeforeCleanup - topologyAfterCleanup).toLocaleString()} removed (${topologyBeforeCleanup.toLocaleString()} → ${topologyAfterCleanup.toLocaleString()}) | Batches: ${cleaned.length}`);
             }
             
             return cleaned;
@@ -1535,11 +1640,11 @@ function App() {
         }
         
         if (newCircuits.length > 0) {
-          // AGGRESSIVE LIMITS: Prevent loading too many assets
-          // Safety checks BEFORE loading
+          // AGGRESSIVE LIMITS: Prevent loading too many assets (MUCH TIGHTER)
+          // Safety checks BEFORE loading - REDUCED by 60% from previous limits
           const totalAssets = assets.length;
-          const maxAssetsAllowed = throttledZoom < 11 ? 30000 : throttledZoom < 12 ? 60000 : 120000;
-          const maxCircuitsAllowed = throttledZoom < 11 ? 50 : throttledZoom < 12 ? 100 : 200;
+          const maxAssetsAllowed = throttledZoom < 11 ? 12000 : throttledZoom < 12 ? 25000 : 50000;
+          const maxCircuitsAllowed = throttledZoom < 11 ? 30 : throttledZoom < 12 ? 60 : 120;
           
           if (totalAssets > maxAssetsAllowed) {
             console.log(`   ⚠️ Asset limit reached: ${totalAssets.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} assets loaded. Backing off until culling or user pans away.`);
@@ -1657,28 +1762,40 @@ function App() {
                 return prev;
               });
               
-              // Append topology connections immediately (WITH HARD CAP + RACE CONDITION PROTECTION)
-              setTopology(prev => {
-                const existingIds = new Set(prev.map(t => `${t.from_asset_id}-${t.to_asset_id}`));
+              // Append topology connections as NEW BATCH (WITH HARD CAP + RACE CONDITION PROTECTION)
+              setTopologyBatches(prev => {
+                const existingIds = new Set<string>();
+                prev.forEach(b => b.connections.forEach(t => existingIds.add(`${t.from_asset_id}-${t.to_asset_id}`)));
                 const uniqueNew = newTopology.filter(t => !existingIds.has(`${t.from_asset_id}-${t.to_asset_id}`));
                 
                 // HARD CAP: Max 50K topology connections (prevents memory bloat)
                 // RACE CONDITION FIX: Account for pending additions from parallel batches
                 const maxTopologyAllowed = 50000;
-                const spaceAvailable = Math.max(0, maxTopologyAllowed - prev.length - pendingTopologyCountRef.current);
+                const currentTotal = prev.flatMap(b => b.connections).length;
+                const spaceAvailable = Math.max(0, maxTopologyAllowed - currentTotal - pendingTopologyCountRef.current);
                 
                 if (spaceAvailable === 0) {
-                  console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} topology REJECTED: Cap reached (${(prev.length + pendingTopologyCountRef.current).toLocaleString()}/${maxTopologyAllowed.toLocaleString()})`);
+                  console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} topology REJECTED: Cap reached (${(currentTotal + pendingTopologyCountRef.current).toLocaleString()}/${maxTopologyAllowed.toLocaleString()})`);
                   limitsReachedRef.current = true; // Set flag when topology cap hit
                   return prev;
                 }
                 
                 const topologyToAdd = uniqueNew.slice(0, spaceAvailable);
                 
-                // Update pending counter (will be decremented when state update completes)
-                pendingTopologyCountRef.current += topologyToAdd.length;
+                if (topologyToAdd.length > 0) {
+                  // Update pending counter (will be decremented when state update completes)
+                  pendingTopologyCountRef.current += topologyToAdd.length;
+                  
+                  return [...prev, {
+                    batchId: `topology-batch-${batchIdx}-${Date.now()}`,
+                    circuitIds: batch,
+                    connections: topologyToAdd,
+                    loadedAt: Date.now(),
+                    viewportCenter: { lng: viewState.longitude, lat: viewState.latitude }
+                  }];
+                }
                 
-                return [...prev, ...topologyToAdd];
+                return prev;
               });
             }).catch(err => {
               console.error(`Batch ${batchIdx + 1} failed:`, err);
@@ -2948,23 +3065,34 @@ function App() {
     return Math.min(1.0, elapsed / fadeDuration);
   }, []);
 
-  // CHUNKED LAYER HELPER: Generate viewport-filtered batches for layer rendering
-  // This avoids regenerating GPU buffers for batches outside viewport
-  const viewportFilteredBatches = useMemo(() => {
-    const { minLng, maxLng, minLat, maxLat } = viewportBounds;
-    
+  // BATCHED RENDERING HELPER: Derive type-specific batch arrays for GPU optimization
+  // NO viewport filtering - prevents GPU buffer regeneration on every pan!
+  // Each batch maintains stable data references. deck.gl's built-in culling handles visibility.
+  const batchesByType = useMemo(() => {
     return circuitBatches.map(batch => {
-      // Filter batch assets to viewport
-      const viewportAssets = batch.assets.filter(a =>
-        a.longitude >= minLng && a.longitude <= maxLng &&
-        a.latitude >= minLat && a.latitude <= maxLat
-      );
+      // Filter assets by type in single pass (no viewport check - batches are circuit-scoped and small)
+      const substations: Asset[] = [];
+      const transformers: Asset[] = [];
+      const poles: Asset[] = [];
+      const meters: Asset[] = [];
       
-      // Group by asset type
-      const substations = viewportAssets.filter(a => a.type === 'substation');
-      const transformers = viewportAssets.filter(a => a.type === 'transformer');
-      const poles = viewportAssets.filter(a => a.type === 'pole');
-      const meters = viewportAssets.filter(a => a.type === 'meter');
+      batch.assets.forEach(a => {
+        const type = a.type?.toLowerCase();
+        switch (type) {
+          case 'substation':
+            substations.push(a);
+            break;
+          case 'transformer':
+            transformers.push(a);
+            break;
+          case 'pole':
+            poles.push(a);
+            break;
+          case 'meter':
+            meters.push(a);
+            break;
+        }
+      });
       
       return {
         batchId: batch.batchId,
@@ -2973,14 +3101,8 @@ function App() {
         poles,
         meters
       };
-    }).filter(batch => 
-      // Only include batches with viewport assets
-      batch.substations.length > 0 ||
-      batch.transformers.length > 0 ||
-      batch.poles.length > 0 ||
-      batch.meters.length > 0
-    );
-  }, [circuitBatches, viewportBounds]);
+    });
+  }, [circuitBatches]);  // Only recalculates when batches added/removed, NOT on viewport changes!
 
   const layers = useMemo(() => [
     // FLUX WEATHER INTELLIGENCE - Broadcast-quality weather visualization
@@ -3325,7 +3447,7 @@ function App() {
     // INDIVIDUAL ASSETS - Full detail view (HIGH ZOOM ONLY)
     // CHUNKED LAYERS: Create one layer per batch to avoid GPU buffer regeneration
     ...(layersVisible.substations && currentZoom >= ZOOM_THRESHOLD - 1.5 ?
-      viewportFilteredBatches.flatMap(batch => 
+      batchesByType.flatMap(batch => 
         batch.substations.length > 0 ? [new PolygonLayer({
           id: `substations-individual-${batch.batchId}`,
           data: batch.substations,
@@ -3456,7 +3578,7 @@ function App() {
     // ),
 
     ...(layersVisible.transformers && currentZoom >= ZOOM_THRESHOLD - 1.5 ?
-      viewportFilteredBatches.flatMap(batch =>
+      batchesByType.flatMap(batch =>
         batch.transformers.length > 0 ? [
         // Transformer base - BATCHED: One layer per circuit batch prevents GPU buffer regeneration
         new ColumnLayer({
@@ -3517,9 +3639,9 @@ function App() {
             }
           },
           updateTriggers: {
-            getElevation: [assetScaleAnimation, heightScale, animationFrame],
-            getFillColor: [assetScaleAnimation, animationFrame],
-            getLineColor: [assetScaleAnimation, animationFrame]
+            getElevation: [assetScaleAnimation],
+            getFillColor: [assetScaleAnimation],
+            getLineColor: [assetScaleAnimation]
           },
           onClick: (info: any) => {
             if (info.object) {
@@ -3636,10 +3758,10 @@ function App() {
             }
           },
           updateTriggers: {
-            getPosition: [assetScaleAnimation, heightScale, animationFrame],
-            getElevation: [assetScaleAnimation, heightScale, animationFrame],
-            getFillColor: [assetScaleAnimation, animationFrame],
-            getLineColor: [assetScaleAnimation, animationFrame]
+            getPosition: [assetScaleAnimation],
+            getElevation: [assetScaleAnimation],
+            getFillColor: [assetScaleAnimation],
+            getLineColor: [assetScaleAnimation]
           }
         })
         ] : []
@@ -3693,7 +3815,7 @@ function App() {
     // ] : []),
 
     ...(layersVisible.poles && currentZoom >= ZOOM_THRESHOLD - 2.0 ?
-      viewportFilteredBatches.flatMap(batch =>
+      batchesByType.flatMap(batch =>
         batch.poles.length > 0 ? [
         // Poles base layer - BATCHED: One layer per circuit batch
         new ColumnLayer({
@@ -3731,9 +3853,9 @@ function App() {
             }
           },
           updateTriggers: {
-            getElevation: [assetScaleAnimation, heightScale, animationFrame],
-            getFillColor: [assetScaleAnimation, animationFrame],
-            getLineColor: [assetScaleAnimation, animationFrame]
+            getElevation: [assetScaleAnimation],
+            getFillColor: [assetScaleAnimation],
+            getLineColor: [assetScaleAnimation]
           },
           onClick: (info: any) => {
           if (info.object) {
@@ -3831,10 +3953,10 @@ function App() {
             }
           },
           updateTriggers: {
-            getPosition: [assetScaleAnimation, heightScale, animationFrame],
-            getElevation: [assetScaleAnimation, heightScale, animationFrame],
-            getFillColor: [assetScaleAnimation, animationFrame],
-            getLineColor: [assetScaleAnimation, animationFrame]
+            getPosition: [assetScaleAnimation],
+            getElevation: [assetScaleAnimation],
+            getFillColor: [assetScaleAnimation],
+            getLineColor: [assetScaleAnimation]
           }
         })
         ] : []
@@ -3849,7 +3971,7 @@ function App() {
     // PERFORMANCE: 3-5x faster than PolygonLayer - GPU-optimized geometry
     // EMERGENCE: Meters appear LAST - delayed start + slowest emergence
     ...(layersVisible.meters && viewState.zoom > 13.5 ?
-      viewportFilteredBatches.flatMap(batch =>
+      batchesByType.flatMap(batch =>
         batch.meters.length > 0 ? [
       new ColumnLayer({
         id: `meters-${batch.batchId}`,
@@ -3896,9 +4018,9 @@ function App() {
           }
         },
         updateTriggers: {
-          getElevation: [assetScaleAnimation, heightScale, animationFrame],
-          getFillColor: [assetScaleAnimation, animationFrame],
-          getLineColor: [assetScaleAnimation, animationFrame]
+          getElevation: [assetScaleAnimation],
+          getFillColor: [assetScaleAnimation],
+          getLineColor: [assetScaleAnimation]
         },
         onClick: (info: any) => {
           if (info.object) {
@@ -3983,8 +4105,8 @@ function App() {
           getPosition: (d: any) => d.position,
           getFillColor: [...substationColor, 30 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 12 * glow.pulseAmplitude],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
-            getFillColor: animationTimeRef.current
+            radiusMinPixels: animationFrame,
+            getFillColor: animationFrame
           }
         }),
         // Middle ring: Transformers (magenta base, health+load colored)
@@ -4001,8 +4123,8 @@ function App() {
           getPosition: (d: any) => d.position,
           getFillColor: [...transformerColor, 60 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 25 * glow.pulseAmplitude],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
-            getFillColor: animationTimeRef.current
+            radiusMinPixels: animationFrame,
+            getFillColor: animationFrame
           }
         }),
         // Inner ring: Poles (purple base, health colored)
@@ -4021,9 +4143,9 @@ function App() {
           getFillColor: [...poleColor, 80 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.04)) * 30 * glow.pulseAmplitude],
           getLineColor: [...poleColor.map(c => Math.min(255, c + 50)), 180 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.04)) * 75 * glow.strokeIntensity],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
+            radiusMinPixels: animationFrame,
             getFillColor: animationFrame,
-            getLineColor: animationTimeRef.current
+            getLineColor: animationFrame
           }
         })
       ];
@@ -4047,8 +4169,8 @@ function App() {
           getPosition: (d: any) => d.position,
           getFillColor: [...glow.baseColor, 30 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 12 * glow.pulseAmplitude],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
-            getFillColor: animationTimeRef.current
+            radiusMinPixels: animationFrame,
+            getFillColor: animationFrame
           }
         }),
         // Inner glow
@@ -4067,9 +4189,9 @@ function App() {
           getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 80 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 25 * glow.pulseAmplitude],
           getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 160 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 60 * glow.strokeIntensity],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
+            radiusMinPixels: animationFrame,
             getFillColor: animationFrame,
-            getLineColor: animationTimeRef.current
+            getLineColor: animationFrame
           }
         })
       ];
@@ -4093,8 +4215,8 @@ function App() {
           getPosition: (d: any) => d.position,
           getFillColor: [...glow.baseColor, 35 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 15 * glow.pulseAmplitude],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
-            getFillColor: animationTimeRef.current
+            radiusMinPixels: animationFrame,
+            getFillColor: animationFrame
           }
         }),
         // Inner glow
@@ -4139,8 +4261,8 @@ function App() {
           getPosition: (d: any) => d.position,
           getFillColor: [...glow.baseColor, 40 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 18 * glow.pulseAmplitude],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
-            getFillColor: animationTimeRef.current
+            radiusMinPixels: animationFrame,
+            getFillColor: animationFrame
           }
         }),
         // Inner glow
@@ -4159,9 +4281,9 @@ function App() {
           getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 100 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 35 * glow.pulseAmplitude],
           getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 180 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 70 * glow.strokeIntensity],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
+            radiusMinPixels: animationFrame,
             getFillColor: animationFrame,
-            getLineColor: animationTimeRef.current
+            getLineColor: animationFrame
           }
         })
       ];
@@ -4185,8 +4307,8 @@ function App() {
           getPosition: (d: any) => d.position,
           getFillColor: [...glow.baseColor, 45 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 20 * glow.pulseAmplitude],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
-            getFillColor: animationTimeRef.current
+            radiusMinPixels: animationFrame,
+            getFillColor: animationFrame
           }
         }),
         // Inner glow
@@ -4205,9 +4327,9 @@ function App() {
           getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 110 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 40 * glow.pulseAmplitude],
           getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 190 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 65 * glow.strokeIntensity],
           updateTriggers: {
-            radiusMinPixels: animationTimeRef.current,
+            radiusMinPixels: animationFrame,
             getFillColor: animationFrame,
-            getLineColor: animationTimeRef.current
+            getLineColor: animationFrame
           }
         })
       ];
