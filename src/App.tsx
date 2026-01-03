@@ -1639,6 +1639,90 @@ function App() {
           });
         }
         
+        // INTELLIGENT BACKOFF: Prevent struggling at 80k-100k+ assets
+        // Prioritize unloading distant batches based on viewport distance and zoom level
+        // This keeps the app performant by staying under 100k assets
+        const PERFORMANCE_CEILING = 100000; // Hard performance ceiling
+        const BACKOFF_THRESHOLD = 80000;    // Start aggressive unloading here
+        
+        if (assets.length > BACKOFF_THRESHOLD && loadingCircuitsRef.current.size === 0) {
+          console.log(`   ⚡ BACKOFF TRIGGERED: ${assets.length.toLocaleString()} assets loaded (threshold: ${BACKOFF_THRESHOLD.toLocaleString()})`);
+          
+          const centerLng = (east + west) / 2;
+          const centerLat = (north + south) / 2;
+          
+          // Calculate distance from viewport center for each batch
+          // Priority: Keep batches closest to current viewport, unload furthest first
+          type BatchWithDistance = CircuitBatch & { distance: number };
+          
+          const batchesWithDistance: BatchWithDistance[] = circuitBatches
+            .filter(b => b.batchId !== 'batch-substations') // Never unload substations
+            .map(batch => {
+              // Calculate average position of assets in this batch
+              const avgLng = batch.assets.reduce((sum, a) => sum + a.longitude, 0) / batch.assets.length;
+              const avgLat = batch.assets.reduce((sum, a) => sum + a.latitude, 0) / batch.assets.length;
+              
+              // Simple Euclidean distance from viewport center
+              const latDiff = avgLat - centerLat;
+              const lngDiff = avgLng - centerLng;
+              const distance = Math.sqrt(latDiff * latDiff + lngDiff * lngDiff);
+              
+              return { ...batch, distance };
+            })
+            .sort((a, b) => b.distance - a.distance); // Sort furthest first
+          
+          // Calculate how many assets we need to remove
+          const targetAssetCount = Math.floor(BACKOFF_THRESHOLD * 0.85); // Target 85% of threshold
+          const assetsToRemove = assets.length - targetAssetCount;
+          
+          if (assetsToRemove > 0) {
+            // Unload batches starting from furthest until we hit target
+            let removedCount = 0;
+            const batchIdsToRemove = new Set<string>();
+            const circuitsToUnload = new Set<string>();
+            
+            for (const batch of batchesWithDistance) {
+              if (removedCount >= assetsToRemove) break;
+              
+              batchIdsToRemove.add(batch.batchId);
+              batch.circuitIds.forEach(cid => circuitsToUnload.add(cid));
+              removedCount += batch.assets.length;
+            }
+            
+            console.log(`   🎯 Unloading ${batchIdsToRemove.size} distant batches (${removedCount.toLocaleString()} assets, ${circuitsToUnload.size} circuits)`);
+            console.log(`   📍 Furthest batch distance: ${batchesWithDistance[0]?.distance.toFixed(4)} degrees (~${(batchesWithDistance[0]?.distance * 111).toFixed(1)}km)`);
+            
+            // Remove batches from state
+            setCircuitBatches(prev => 
+              prev.filter(b => !batchIdsToRemove.has(b.batchId))
+            );
+            
+            // Remove associated topology
+            setTopologyBatches(prev => {
+              const filtered = prev.filter(batch => {
+                // Keep if none of its circuits are being unloaded
+                return !batch.circuitIds.some(cid => circuitsToUnload.has(cid));
+              });
+              
+              const removedTopology = prev.flatMap(b => b.connections).length - 
+                                     filtered.flatMap(b => b.connections).length;
+              if (removedTopology > 0) {
+                console.log(`   🗑️ Also removed ${removedTopology.toLocaleString()} topology connections from distant batches`);
+              }
+              
+              return filtered;
+            });
+            
+            // Mark circuits as unloaded
+            circuitsToUnload.forEach(cid => {
+              loadedCircuitsRef.current.delete(cid);
+              loadingCircuitsRef.current.delete(cid);
+            });
+            
+            console.log(`   ✅ Backoff complete: ${assets.length.toLocaleString()} → ~${(assets.length - removedCount).toLocaleString()} assets`);
+          }
+        }
+        
         if (newCircuits.length > 0) {
           // AGGRESSIVE LIMITS: Prevent loading too many assets (MUCH TIGHTER)
           // Safety checks BEFORE loading - REDUCED by 60% from previous limits
@@ -1722,7 +1806,7 @@ function App() {
           });
           
           // Process batches as they complete (don't wait for all)
-          batchPromises.forEach(promise => {
+          batchPromises.forEach((promise, idx) => {
             promise.then(({ batchIdx, batch, assets: newAssets, topology: newTopology }) => {
               // Remove circuits from loading set AND mark as loaded (PERSISTENT)
               batch.forEach(cid => {
@@ -1798,9 +1882,9 @@ function App() {
                 return prev;
               });
             }).catch(err => {
-              console.error(`Batch ${batchIdx + 1} failed:`, err);
+              console.error(`Batch ${idx + 1} failed:`, err);
               // Remove circuits from loading set on error
-              batches[batchIdx]?.forEach(cid => loadingCircuitsRef.current.delete(cid));
+              batches[idx]?.forEach(cid => loadingCircuitsRef.current.delete(cid));
             });
           });
           
