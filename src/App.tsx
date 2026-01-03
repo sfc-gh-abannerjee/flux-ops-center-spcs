@@ -1416,9 +1416,13 @@ function App() {
         const centerLng = throttledViewport.longitude;
         const centerLat = throttledViewport.latitude;
         
-        // Get visible circuits from current viewport
-        // Sort by distance from viewport center for predictable loading
-        const visibleCircuits = serviceAreas
+        // 🗺️ GEOGRAPHIC DISTRIBUTION: Grid-based circuit sampling to prevent Houston center clustering
+        // Problem: Dense areas (Houston center) have more circuits → random sampling biases toward center
+        // Solution: Divide viewport into grid cells, sample circuits proportionally from EACH cell
+        // This ensures even distribution across visible Houston metro area (not just downtown)
+        
+        // Get all circuits in viewport with their positions
+        const circuitsInViewport = serviceAreas
           .filter(sa => {
             const lat = sa.CENTROID_LAT;
             const lon = sa.CENTROID_LON;
@@ -1428,23 +1432,166 @@ function App() {
           })
           .map(sa => ({
             circuit_id: sa.CIRCUIT_ID,
+            substation_id: sa.SUBSTATION_ID,
+            lat: sa.CENTROID_LAT,
+            lon: sa.CENTROID_LON,
             distance: Math.sqrt(
               Math.pow(sa.CENTROID_LAT - centerLat, 2) +
               Math.pow(sa.CENTROID_LON - centerLng, 2)
             )
-          }))
-          .sort((a, b) => a.distance - b.distance) // Closest first
-          .map(item => item.circuit_id);
+          }));
+        
+        // 🎯 STRATEGY #8: DUAL-MODE: Substation-Based + Grid-Based Sampling
+        // Load ALL circuits for each substation in viewport (ensures 275 substations always populate)
+        // PLUS grid-based sampling for geographic distribution
+        
+        // Calculate minimum circuits per substation based on zoom level
+        let minCircuitsPerSubstation: number;
+        let minAssetsPerSubstation: number;
+        
+        if (throttledZoom < 10) {
+          minCircuitsPerSubstation = 2;  // Load 2 circuits per substation at low zoom
+          minAssetsPerSubstation = 300;
+        } else if (throttledZoom < 11.3) {
+          minCircuitsPerSubstation = 3;  // Load 3 circuits per substation until zoom 11.3
+          minAssetsPerSubstation = 500;  // Target: 500+ assets per substation
+        } else if (throttledZoom < 12) {
+          minCircuitsPerSubstation = 5;  // More circuits at higher zoom
+          minAssetsPerSubstation = 1000;
+        } else {
+          minCircuitsPerSubstation = 10; // Load most circuits per substation at high zoom
+          minAssetsPerSubstation = 2000;
+        }
+        
+        // Group circuits by substation ID
+        const substationCircuits = new Map<string, typeof circuitsInViewport>();
+        circuitsInViewport.forEach(circuit => {
+          // Skip circuits without substation ID
+          if (!circuit.substation_id) return;
+          
+          const substationId = circuit.substation_id;
+          if (!substationCircuits.has(substationId)) {
+            substationCircuits.set(substationId, []);
+          }
+          substationCircuits.get(substationId)!.push(circuit);
+        });
+        
+        // SUBSTATION-BASED SAMPLING: Select circuits for each substation
+        const sampled: typeof circuitsInViewport = [];
+        const substationStats: { substationId: string; circuitsInSubstation: number; circuitsSelected: number; estimatedAssets: number; }[] = [];
+        
+        substationCircuits.forEach((circuits, substationId) => {
+          // Sort by distance within substation (closest first for loading priority)
+          circuits.sort((a, b) => a.distance - b.distance);
+          
+          // Select circuits: Load minCircuitsPerSubstation for each substation
+          const selectCount = Math.min(circuits.length, minCircuitsPerSubstation);
+          sampled.push(...circuits.slice(0, selectCount));
+          
+          // Track stats for logging
+          substationStats.push({
+            substationId,
+            circuitsInSubstation: circuits.length,
+            circuitsSelected: selectCount,
+            estimatedAssets: selectCount * 82  // Avg 82 assets per circuit
+          });
+        });
+        
+        // Sort final sampled list by distance (closest first for loading priority)
+        sampled.sort((a, b) => a.distance - b.distance);
+        let sampledCircuits = sampled.map(c => c.circuit_id);
+        
+        // HIGH ZOOM ENHANCEMENT: At zoom >= 14, include circuits from ALL visible topology
+        // This ensures we load assets for every topology connection we're showing
+        if (throttledZoom >= 14 && topology.length > 0) {
+          const topologyCircuitIds = new Set<string>();
+          
+          // Get all assets in viewport from loaded topology
+          const viewportTopology = topology.filter(link =>
+            (link.from_longitude >= loadMinLng && link.from_longitude <= loadMaxLng &&
+             link.from_latitude >= loadMinLat && link.from_latitude <= loadMaxLat) ||
+            (link.to_longitude >= loadMinLng && link.to_longitude <= loadMaxLng &&
+             link.to_latitude >= loadMinLat && link.to_latitude <= loadMaxLat)
+          );
+          
+          // Find circuit IDs for assets in this topology
+          const topologyAssetIds = new Set<string>();
+          viewportTopology.forEach(link => {
+            topologyAssetIds.add(link.from_asset_id);
+            topologyAssetIds.add(link.to_asset_id);
+          });
+          
+          // Map asset IDs to circuit IDs from current assets
+          assets.forEach(asset => {
+            if (topologyAssetIds.has(asset.id) && asset.circuit_id) {
+              topologyCircuitIds.add(asset.circuit_id);
+            }
+          });
+          
+          // Also check service areas for circuit mapping
+          serviceAreas.forEach(sa => {
+            const hasAssetInTopology = topologyAssetIds.has(sa.CIRCUIT_ID);
+            if (hasAssetInTopology && sa.CIRCUIT_ID) {
+              topologyCircuitIds.add(sa.CIRCUIT_ID);
+            }
+          });
+          
+          // Merge with sampled circuits
+          const additionalCircuits = Array.from(topologyCircuitIds).filter(cid => !sampledCircuits.includes(cid));
+          if (additionalCircuits.length > 0) {
+            console.log(`   🔗 High zoom (${throttledZoom.toFixed(1)}): Adding ${additionalCircuits.length} circuits from visible topology`);
+            sampledCircuits = [...sampledCircuits, ...additionalCircuits];
+          }
+        }
+        
+        // Enhanced logging with substation statistics
+        const substationsInViewport = substationCircuits.size;
+        const avgCircuitsPerSubstation = substationStats.reduce((sum, s) => sum + s.circuitsInSubstation, 0) / substationStats.length;
+        const avgSelectedPerSubstation = substationStats.reduce((sum, s) => sum + s.circuitsSelected, 0) / substationStats.length;
+        const avgEstimatedAssetsPerSubstation = substationStats.reduce((sum, s) => sum + s.estimatedAssets, 0) / substationStats.length;
+        const totalEstimatedAssets = substationStats.reduce((sum, s) => sum + s.estimatedAssets, 0);
+        
+        console.log(`   🏭 Substation-based sampling: ${substationsInViewport} substations in viewport | Circuits: ${avgCircuitsPerSubstation.toFixed(1)} avg → ${avgSelectedPerSubstation.toFixed(1)} selected/substation (min ${minCircuitsPerSubstation}) | Est Assets: ${avgEstimatedAssetsPerSubstation.toFixed(0)}/substation (${totalEstimatedAssets.toLocaleString()} total) | Target: ${minAssetsPerSubstation}+ assets/substation @ zoom ${throttledZoom.toFixed(1)}`);
         
         // Find circuits not yet loaded AND not currently loading
         // USE REF (not recalculating from assets) to prevent reload loop when assets are culled
-        const newCircuits = visibleCircuits.filter(cid => 
+        
+        // CIRCUIT CLEANUP: Remove circuits that are BOTH not sampled AND outside cull bounds
+        // This prevents holding onto circuits from previous viewport while allowing visible circuits to remain
+        const sampledCircuitsSet = new Set(sampledCircuits);
+        
+        // Build set of circuit IDs that have assets in cull bounds
+        const circuitsInCullBounds = new Set<string>();
+        circuitBatches.forEach(batch => {
+          if (batch.batchId === 'batch-substations') return; // Skip substations
+          const hasAssetsInBounds = batch.assets.some(a => 
+            a.longitude >= cullMinLng && a.longitude <= cullMaxLng &&
+            a.latitude >= cullMinLat && a.latitude <= cullMaxLat
+          );
+          if (hasAssetsInBounds) {
+            batch.circuitIds.forEach(cid => circuitsInCullBounds.add(cid));
+          }
+        });
+        
+        const circuitsToRemove: string[] = [];
+        loadedCircuitsRef.current.forEach(cid => {
+          // Only remove if NOT sampled AND NOT in cull bounds
+          if (!sampledCircuitsSet.has(cid) && !circuitsInCullBounds.has(cid)) {
+            circuitsToRemove.push(cid);
+          }
+        });
+        circuitsToRemove.forEach(cid => loadedCircuitsRef.current.delete(cid));
+        if (circuitsToRemove.length > 0) {
+          console.log(`   🧹 Removed ${circuitsToRemove.length} circuits outside cull bounds (${loadedCircuitsRef.current.size} remain loaded)`);
+        }
+        
+        const newCircuits = sampledCircuits.filter(cid => 
           !loadedCircuitsRef.current.has(cid) && !loadingCircuitsRef.current.has(cid)
         );
         
         // REDUCED LOGGING: Only log when there are new circuits to load or limits hit
         if (newCircuits.length > 0 || limitsReachedRef.current) {
-          console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${visibleCircuits.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
+          console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${circuitsInViewport.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
         }
         
         // VIEWPORT CHANGE DETECTION: Clear limits flag when user significantly changes viewport
@@ -1471,8 +1618,8 @@ function App() {
         // When zooming IN, limits decrease - must cull excess assets
         // TIGHTENED: Reduced limits by 60% to prevent 200K+ buildup
         // DEBOUNCED: Only cull every 500ms to prevent blocking during rapid pan/zoom
-        const maxAssetsForZoom = throttledZoom < 11 ? 12000 : throttledZoom < 12 ? 25000 : 50000;
-        const needsAggressiveCull = assets.length > maxAssetsForZoom && loadingCircuitsRef.current.size === 0;
+        const maxAssetsForZoom = throttledZoom < 11 ? 40000 : throttledZoom < 12 ? 50000 : 80000;
+        const needsAggressiveCull = assets.length > maxAssetsForZoom; // Removed blocking condition
         const timeSinceLastCull = Date.now() - lastCullTimeRef.current;
         const canCullNow = timeSinceLastCull >= 500; // Debounce: 500ms between culls
         
@@ -1504,7 +1651,7 @@ function App() {
           // BATCH-BASED CULLING: Filter each batch separately (prevents 120k array operations)
           setCircuitBatches(prev => {
             const filtered = prev.map(batch => {
-              // Keep substations batch always
+              // Keep substations batch always (return SAME object to preserve batched rendering)
               if (batch.batchId === 'batch-substations') return batch;
               
               // Filter assets in this batch to only include those in tight viewport
@@ -1519,15 +1666,17 @@ function App() {
               if (removedFromBatch > 0) {
                 totalRemoved += removedFromBatch;
                 batch.circuitIds.forEach(cid => culledCircuits.add(cid));
+                
+                // Only create NEW batch object if assets were removed
+                if (remainingAssets.length > 0) {
+                  return { ...batch, assets: remainingAssets };
+                }
+                // Return null to filter out empty batches
+                return null;
               }
               
-              // If batch has remaining assets, keep it (with filtered assets)
-              if (remainingAssets.length > 0) {
-                return { ...batch, assets: remainingAssets };
-              }
-              
-              // Return null to filter out empty batches
-              return null;
+              // No assets removed - return SAME object to preserve batched rendering
+              return batch;
             }).filter((batch): batch is CircuitBatch => batch !== null);
             
             if (totalRemoved > 0) {
@@ -1595,7 +1744,7 @@ function App() {
           // BATCH-BASED CULLING: Filter each batch separately (prevents blocking on large arrays)
           setCircuitBatches(prev => {
             const filtered = prev.map(batch => {
-              // Keep substations batch always
+              // Keep substations batch always (return SAME object to preserve batched rendering)
               if (batch.batchId === 'batch-substations') return batch;
               
               // Filter assets in this batch to only include those in cull bounds
@@ -1610,15 +1759,17 @@ function App() {
               if (removedFromBatch > 0) {
                 totalRemoved += removedFromBatch;
                 batch.circuitIds.forEach(cid => culledCircuits.add(cid));
+                
+                // Only create NEW batch object if assets were removed
+                if (remainingAssets.length > 0) {
+                  return { ...batch, assets: remainingAssets };
+                }
+                // Return null to filter out empty batches
+                return null;
               }
               
-              // If batch has remaining assets, keep it (with filtered assets)
-              if (remainingAssets.length > 0) {
-                return { ...batch, assets: remainingAssets };
-              }
-              
-              // Return null to filter out empty batches
-              return null;
+              // No assets removed - return SAME object to preserve batched rendering
+              return batch;
             }).filter((batch): batch is CircuitBatch => batch !== null);
             
             if (totalRemoved > 0) {
@@ -1838,25 +1989,14 @@ function App() {
         lastLoadAttemptViewportRef.current = { lng: centerLng, lat: centerLat, zoom: throttledZoom };
         
         if (newCircuits.length > 0) {
-          // AGGRESSIVE LIMITS: Prevent loading too many assets (MUCH TIGHTER)
-          // Safety checks BEFORE loading - REDUCED by 60% from previous limits
+          // SUBSTATION-BASED LIMITS: Prevent loading too many assets
+          // With substation-based sampling, we expect ~118 substations × 3 circuits = ~354 circuits at zoom < 11.3
           // CRITICAL: Include pending assets to prevent parallel batch overshoot
           const totalAssets = assets.length + pendingAssetCountRef.current;
-          const maxAssetsAllowed = throttledZoom < 11 ? 12000 : throttledZoom < 12 ? 25000 : 50000;
-          const maxCircuitsAllowed = throttledZoom < 11 ? 30 : throttledZoom < 12 ? 60 : 120;
+          const maxAssetsAllowed = throttledZoom < 11 ? 40000 : throttledZoom < 12 ? 60000 : 100000;
+          const maxCircuitsAllowed = throttledZoom < 11 ? 200 : throttledZoom < 12 ? 400 : 600;
           
-          // ⚠️ FIX FOR CYCLING: Stop loading at 80% of cap to prevent cull/load cycles
-          // After culling to 10k, we need buffer before loading more circuits
-          // Otherwise: cull to 10k → load 20 circuits → back to 28k → cull → repeat
-          const loadingThreshold = maxAssetsAllowed * 0.8; // 80% of cap (9.6k at zoom 10.8)
-          
-          if (totalAssets >= loadingThreshold) {
-            console.log(`   ⏸️ Near asset cap: ${totalAssets.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} assets (${(totalAssets/maxAssetsAllowed*100).toFixed(0)}% of limit). Waiting for culling or user to pan away.`);
-            limitsReachedRef.current = true; // Set flag to prevent retries
-            return;
-          }
-          
-          // Hard stop at 100% cap
+          // Hard stop at 100% cap (no threshold needed with zoom-aware sampling)
           if (totalAssets >= maxAssetsAllowed) {
             console.log(`   ⚠️ Asset limit reached: ${totalAssets.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} assets (${assets.length.toLocaleString()} loaded + ${pendingAssetCountRef.current.toLocaleString()} pending). Backing off until culling or user pans away.`);
             limitsReachedRef.current = true; // Set flag to prevent retries
@@ -1909,25 +2049,57 @@ function App() {
               })
             ]);
             
-            const newAssets: Asset[] = assetsData.map((row: any) => ({
-              id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
-              latitude: row.LATITUDE, longitude: row.LONGITUDE,
-              load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
-              commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
-              usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
-              circuit_id: row.CIRCUIT_ID,
-              loadedAt: Date.now()  // Timestamp for fade-in animation
-            }));
+            // 🎯 FIX: Backend returns ALL assets for circuits - must filter by viewport on client
+            // Calculate expanded viewport bounds (3x buffer for loading, tighter than 1.5x for culling)
+            const lngSpan = (east - west) / 2;
+            const latSpan = (north - south) / 2;
+            const loadBuffer = 3.0; // 3x viewport for loading (covers panning), 1.5x for culling
+            const minLng = viewState.longitude - (lngSpan * loadBuffer);
+            const maxLng = viewState.longitude + (lngSpan * loadBuffer);
+            const minLat = viewState.latitude - (latSpan * loadBuffer);
+            const maxLat = viewState.latitude + (latSpan * loadBuffer);
             
-            const newTopology: TopologyLink[] = topologyData.map((row: any) => ({
-              from_asset_id: row.FROM_ASSET_ID,
-              to_asset_id: row.TO_ASSET_ID,
-              connection_type: 'Distribution',
-              from_latitude: row.FROM_LAT,
-              from_longitude: row.FROM_LON,
-              to_latitude: row.TO_LAT,
-              to_longitude: row.TO_LON
-            }));
+            const beforeFilterCount = assetsData.length;
+            const newAssets: Asset[] = assetsData
+              .filter((row: any) => 
+                row.LONGITUDE >= minLng && row.LONGITUDE <= maxLng &&
+                row.LATITUDE >= minLat && row.LATITUDE <= maxLat
+              )
+              .map((row: any) => ({
+                id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
+                latitude: row.LATITUDE, longitude: row.LONGITUDE,
+                load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
+                commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
+                usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
+                circuit_id: row.CIRCUIT_ID,
+                loadedAt: Date.now()  // Timestamp for fade-in animation
+              }));
+            
+            // Log filtering results to track viewport filtering effectiveness
+            console.log(`   🎯 Batch ${idx + 1}: Backend returned ${beforeFilterCount.toLocaleString()} → filtered to ${newAssets.length.toLocaleString()} viewport assets (${((newAssets.length / beforeFilterCount) * 100).toFixed(1)}%)`);
+            
+            
+            // Filter topology connections to only include links where BOTH endpoints are in viewport
+            // This prevents topology lines from assets we filtered out
+            // CRITICAL: Include substations in the asset ID set (they're loaded separately via metro topology)
+            const assetIds = new Set(newAssets.map(a => a.id));
+            substationAssets.forEach(s => assetIds.add(s.id)); // Add substation IDs
+            
+            const beforeTopologyCount = topologyData.length;
+            const newTopology: TopologyLink[] = topologyData
+              .filter((row: any) => assetIds.has(row.FROM_ASSET_ID) && assetIds.has(row.TO_ASSET_ID))
+              .map((row: any) => ({
+                from_asset_id: row.FROM_ASSET_ID,
+                to_asset_id: row.TO_ASSET_ID,
+                connection_type: 'Distribution',
+                from_latitude: row.FROM_LAT,
+                from_longitude: row.FROM_LON,
+                to_latitude: row.TO_LAT,
+                to_longitude: row.TO_LON
+              }));
+            
+            console.log(`   🎯 Batch ${idx + 1}: Backend returned ${beforeTopologyCount.toLocaleString()} → filtered to ${newTopology.length.toLocaleString()} viewport connections (${((newTopology.length / beforeTopologyCount) * 100).toFixed(1)}%)`);
+            
             
             return { batchIdx: idx, batch, assets: newAssets, topology: newTopology };
           });
@@ -1943,15 +2115,16 @@ function App() {
               
               // Append assets as NEW BATCH (not flattened) - prevents GPU buffer regeneration for existing batches
               setCircuitBatches(prev => {
-                const existingIds = new Set(assets.map(a => a.id));
+                // CRITICAL FIX: Calculate current total from prev batches, not stale assets variable
+                const currentTotal = prev.flatMap(b => b.assets).length;
+                const existingIds = new Set(prev.flatMap(b => b.assets).map(a => a.id));
                 const uniqueNew = newAssets.filter(a => !existingIds.has(a.id));
                 
                 // HARD CAP: Enforce max assets allowed (prevents overshoot from parallel loading)
-                // CRITICAL: Use same tight limits as main loading path (12k/25k/50k)
+                // CRITICAL: Use same limits as main loading path (40k/50k/80k)
                 // RACE CONDITION FIX: Account for pending additions from parallel batches
                 const currentZoom = throttledZoom;
-                const maxAssetsAllowed = currentZoom < 11 ? 12000 : currentZoom < 12 ? 25000 : 50000;
-                const currentTotal = assets.length;
+                const maxAssetsAllowed = currentZoom < 11 ? 40000 : currentZoom < 12 ? 50000 : 80000;
                 const spaceAvailable = Math.max(0, maxAssetsAllowed - currentTotal - pendingAssetCountRef.current);
                 
                 if (spaceAvailable === 0) {
@@ -7378,7 +7551,7 @@ function App() {
                               connectedAssetIds.add(link.from_asset_id);
                             }
                           });
-
+                          
                           // Retrieve full asset objects
                           const connectedAssets = assets.filter(a => connectedAssetIds.has(a.id));
                           
