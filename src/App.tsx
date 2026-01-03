@@ -4,7 +4,7 @@ import { ScatterplotLayer, ArcLayer, ColumnLayer, PolygonLayer, BitmapLayer, Pat
 import { HeatmapLayer, GridLayer } from '@deck.gl/aggregation-layers';
 import { DataFilterExtension } from '@deck.gl/extensions';
 import { FlyToInterpolator, COORDINATE_SYSTEM, WebMercatorViewport } from '@deck.gl/core';
-import { Map as MapGL } from 'react-map-gl';
+import { Map as MapGL } from 'react-map-gl/maplibre';
 import maplibregl from 'maplibre-gl';
 import { 
   ThemeProvider, createTheme, CssBaseline, Box, AppBar, Toolbar, Typography, 
@@ -512,6 +512,7 @@ function App() {
   const substationsLoadedRef = useRef(false); // Track if substations have been loaded
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null); // Polling timer for service areas
   const limitsReachedRef = useRef(false); // Track if we've hit asset/circuit limits (prevents retry spam)
+  const lastLoadAttemptViewportRef = useRef<{ lng: number; lat: number; zoom: number } | null>(null); // Track last viewport for change detection
   const [topology, setTopology] = useState<TopologyLink[]>([]);
   const [metroTopologyData, setMetroTopologyData] = useState<any[]>([]);
   const [feederTopologyData, setFeederTopologyData] = useState<any[]>([]);
@@ -1229,6 +1230,27 @@ function App() {
         
         console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${visibleCircuits.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
         
+        // VIEWPORT CHANGE DETECTION: Clear limits flag when user significantly changes viewport
+        // This allows reloading in new areas after limits were reached in previous viewport
+        // Calculate distance moved from last load attempt
+        const lastViewport = lastLoadAttemptViewportRef.current;
+        if (lastViewport) {
+          const lngDiff = Math.abs(centerLng - lastViewport.lng);
+          const latDiff = Math.abs(centerLat - lastViewport.lat);
+          const zoomDiff = Math.abs(throttledZoom - lastViewport.zoom);
+          
+          // If viewport moved significantly (>0.1 degrees or >0.5 zoom levels), clear limits flag
+          const viewportChangedSignificantly = lngDiff > 0.1 || latDiff > 0.1 || zoomDiff > 0.5;
+          
+          if (viewportChangedSignificantly && limitsReachedRef.current) {
+            console.log(`   🔄 Viewport changed significantly - clearing limits flag to allow loading in new area`);
+            limitsReachedRef.current = false;
+          }
+        }
+        
+        // Track current viewport for next comparison
+        lastLoadAttemptViewportRef.current = { lng: centerLng, lat: centerLat, zoom: throttledZoom };
+        
         // EARLY EXIT: If limits were already reached, don't try again until user pans/zooms significantly
         // This prevents infinite API call spam when viewport has more circuits than limits allow
         if (limitsReachedRef.current && newCircuits.length > 0) {
@@ -1236,11 +1258,80 @@ function App() {
           return; // Don't retry loading until limits are cleared
         }
         
-        // CULLING: Remove assets far outside viewport (LESS AGGRESSIVE)
+        // ZOOM-LEVEL AGGRESSIVE CULLING: Enforce zoom-based asset limits
+        // When zooming IN, limits decrease - must cull excess assets
+        const maxAssetsForZoom = throttledZoom < 11 ? 30000 : throttledZoom < 12 ? 60000 : 120000;
+        const needsAggressiveCull = assets.length > maxAssetsForZoom && loadingCircuitsRef.current.size === 0;
+        
+        if (needsAggressiveCull) {
+          console.log(`   ⚠️ Zoom-level limit exceeded: ${assets.length.toLocaleString()} > ${maxAssetsForZoom.toLocaleString()} at zoom ${throttledZoom.toFixed(1)}. Culling to viewport...`);
+          
+          // Aggressive cull: Keep only viewport assets (1x buffer, not 3.5x)
+          const viewportBuffer = 1.0;
+          const aggCullMinLng = viewState.longitude - (lngSpan * viewportBuffer);
+          const aggCullMaxLng = viewState.longitude + (lngSpan * viewportBuffer);
+          const aggCullMinLat = viewState.latitude - (latSpan * viewportBuffer);
+          const aggCullMaxLat = viewState.latitude + (latSpan * viewportBuffer);
+          
+          const assetsBeforeCull = assets.length;
+          const culledAssets = assets.filter(a => {
+            // Always keep substations
+            if (a.type === 'substation') return true;
+            // Keep only assets in tight viewport
+            return a.longitude >= aggCullMinLng && a.longitude <= aggCullMaxLng &&
+                   a.latitude >= aggCullMinLat && a.latitude <= aggCullMaxLat;
+          });
+          
+          if (culledAssets.length < assetsBeforeCull) {
+            const culledAssetIds = new Set(
+              assets
+                .filter(a => !culledAssets.some(ca => ca.id === a.id))
+                .map(a => a.circuit_id)
+                .filter((cid): cid is string => !!cid)
+            );
+            
+            culledAssetIds.forEach(cid => {
+              if (loadedCircuitsRef.current.has(cid)) {
+                loadedCircuitsRef.current.delete(cid);
+              }
+            });
+            
+            limitsReachedRef.current = false;
+            
+            const removed = assetsBeforeCull - culledAssets.length;
+            console.log(`   🗑️ Aggressively culled ${removed.toLocaleString()} assets from ${culledAssetIds.size} circuits (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
+            setAssets(culledAssets);
+            
+            // Cull topology
+            const remainingAssetIds = new Set(culledAssets.map(a => a.id));
+            const topologyBeforeCull = topology.length;
+            
+            setTopology(prev => {
+              const filtered = prev.filter(t => {
+                if (!remainingAssetIds.has(t.from_asset_id) || !remainingAssetIds.has(t.to_asset_id)) {
+                  return false;
+                }
+                const fromInBounds = t.from_longitude >= aggCullMinLng && t.from_longitude <= aggCullMaxLng &&
+                                   t.from_latitude >= aggCullMinLat && t.from_latitude <= aggCullMaxLat;
+                const toInBounds = t.to_longitude >= aggCullMinLng && t.to_longitude <= aggCullMaxLng &&
+                                 t.to_latitude >= aggCullMinLat && t.to_latitude <= aggCullMaxLat;
+                return fromInBounds || toInBounds;
+              });
+              
+              if (filtered.length < topologyBeforeCull) {
+                console.log(`   🗑️ Culled ${(topologyBeforeCull - filtered.length).toLocaleString()} topology connections (${topologyBeforeCull.toLocaleString()} → ${filtered.length.toLocaleString()})`);
+              }
+              
+              return filtered;
+            });
+          }
+        }
+        
+        // STANDARD CULLING: Remove assets far outside viewport (LESS AGGRESSIVE)
         // IMPORTANT: Cull AFTER checking loaded circuits (don't affect load calculations)
         // Only cull when we have significant memory pressure
         // Need at least 2000 assets before culling (275 substations + buffer for active circuits)
-        if (assets.length > 2000 && loadingCircuitsRef.current.size === 0) { // Only cull when NOT actively loading
+        else if (assets.length > 2000 && loadingCircuitsRef.current.size === 0) { // Only cull when NOT actively loading
           const assetsBeforeCull = assets.length;
           const culledAssets = assets.filter(a => {
             // Always keep substations (needed for service area visualization)
@@ -1338,6 +1429,15 @@ function App() {
           
           if (loadedCircuitsRef.current.size >= maxCircuitsAllowed) {
             console.log(`   ⚠️ Circuit limit reached: ${loadedCircuitsRef.current.size}/${maxCircuitsAllowed} circuits loaded. Backing off until culling or user pans away.`);
+            limitsReachedRef.current = true; // Set flag to prevent retries
+            return;
+          }
+          
+          // PRE-CHECK: Also check topology cap BEFORE loading (prevents overshoot)
+          const currentTopologyCount = topology.length;
+          const maxTopologyAllowed = 50000;
+          if (currentTopologyCount >= maxTopologyAllowed) {
+            console.log(`   ⚠️ Topology limit reached: ${currentTopologyCount.toLocaleString()}/${maxTopologyAllowed.toLocaleString()} connections loaded. Backing off until culling or user pans away.`);
             limitsReachedRef.current = true; // Set flag to prevent retries
             return;
           }
@@ -2346,6 +2446,7 @@ function App() {
           });
         });
         
+        console.timeEnd('⚡ unifiedClusters calculation');
         return updatedClusters;
       }
       
@@ -2361,6 +2462,7 @@ function App() {
       cachedSubstationHashRef.current = substationHash;
       clusterCacheRef.current = result;
       
+      console.timeEnd('⚡ unifiedClusters calculation');
       return result;
     }
     
@@ -2452,6 +2554,7 @@ function App() {
       
       console.log(`✅ Circuit-based clustering: ${clusters.length} circuits, ${clusters.reduce((sum, c) => sum + c.assets.length, 0)} assets assigned`);
       
+      console.timeEnd('⚡ unifiedClusters calculation');
       return clusters;
     }
     
@@ -2482,6 +2585,7 @@ function App() {
     poleAssets.forEach(a => assignAsset(a, 'poles'));
     meterAssets.forEach(a => assignAsset(a, 'meters'));
     
+    console.timeEnd('⚡ unifiedClusters calculation');
     return updatedClusters;
   }, [serviceAreas, substationAssets, transformerAssets, poleAssets, meterAssets]);
 
@@ -2662,9 +2766,9 @@ function App() {
       });
       
       console.log(`📊 Towers created: ${aggregateTowers.length} substations (from ${unifiedClusters.length} circuits)`);
-      console.timeEnd('🔍 flattenedClusterData calculation');
     }
 
+    console.timeEnd('🔍 flattenedClusterData calculation');
     return { aggregateTowers };
   }, [unifiedClusters, serviceAreas.length, substationStatusMap]);
 
