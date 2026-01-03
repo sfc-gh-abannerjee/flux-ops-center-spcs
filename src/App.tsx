@@ -503,7 +503,20 @@ function App() {
   const spinTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [lastUpdateTime, setLastUpdateTime] = useState(new Date());
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [assets, setAssets] = useState<Asset[]>([]);
+  // CHUNKED LAYER ARCHITECTURE: Track circuit batches separately to avoid GPU buffer regeneration
+  // Each batch maintains stable data reference - only new batches trigger buffer creation
+  type CircuitBatch = {
+    batchId: string;           // Unique identifier for this batch
+    circuitIds: string[];      // Circuits included in this batch
+    assets: Asset[];           // Assets for this batch (stable reference)
+    loadedAt: number;          // Timestamp when batch was loaded
+  };
+  const [circuitBatches, setCircuitBatches] = useState<CircuitBatch[]>([]);
+  
+  // Flatten batches into single array for backward compatibility with existing logic
+  const assets = useMemo(() => {
+    return circuitBatches.flatMap(batch => batch.assets);
+  }, [circuitBatches]);
   const dataFetchedRef = useRef(false); // Prevent duplicate fetches
   const lastDataHashRef = useRef<string>(''); // Track data changes
   const loadingCircuitsRef = useRef<Set<string>>(new Set()); // Track in-flight requests
@@ -960,8 +973,14 @@ function App() {
               };
             });
             
-            setAssets(prev => [...prev, ...substations]);
-            console.log(`   ✅ Added ${substations.length} substations instantly`);
+            // Add substations as first batch (batch-0)
+            setCircuitBatches(prev => [...prev, {
+              batchId: 'batch-substations',
+              circuitIds: [], // Substations don't have circuit IDs
+              assets: substations,
+              loadedAt: Date.now()
+            }]);
+            console.log(`   ✅ Added ${substations.length} substations instantly (batch-substations)`);
           }
         } catch (error) {
           console.error('Failed to load metro/feeders:', error);
@@ -969,8 +988,10 @@ function App() {
       }
       
       // Zoom 10+: Load topology connections (one-time load with reasonable limit)
-      // Progressive asset loading happens separately in the next effect
-      if (zoom >= 10 && topology.length === 0 && serviceAreas.length > 0) {
+      // REMOVED: Old topology loading without circuit filtering
+      // Progressive loading (separate effect below) now handles topology with circuit filtering for Postgres cache
+      // This old pattern hit Snowflake fallback and loaded 200K random connections
+      if (false && zoom >= 10 && topology.length === 0 && serviceAreas.length > 0) {
         console.log(`📊 Zoom ${zoom.toFixed(1)}: Loading topology connections (limited for performance)...`);
         try {
           // Load topology data with 200k limit for reasonable performance
@@ -1076,19 +1097,24 @@ function App() {
             
             // Substations are loaded separately in the dedicated block above (line 965)
             // Don't add them here to prevent duplicates
-            setAssets(mappedAssets);
-            console.log(`   ✅ Sample assets loaded: ${mappedAssets.length.toLocaleString()} assets (substations loaded separately)`);
+            setCircuitBatches(prev => [...prev, {
+              batchId: 'batch-sample-assets',
+              circuitIds: [],
+              assets: mappedAssets,
+              loadedAt: Date.now()
+            }]);
+            console.log(`   ✅ Sample assets loaded: ${mappedAssets.length.toLocaleString()} assets (batch-sample-assets)`);
             return;
           }
           
-          // Load assets for visible circuits only
+          // Load assets AND topology for visible circuits (Postgres cache)
           const circuitParam = circuitsToLoad.join(',');
           const [assetsData, topologyData] = await Promise.all([
             fetch(`/api/assets?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
               if (!r.ok) throw new Error(`Assets HTTP ${r.status}: ${r.statusText}`);
               return r.json();
             }),
-            fetch('/api/topology?limit=50000').then(async r => {
+            fetch(`/api/topology?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
               if (!r.ok) throw new Error(`Topology HTTP ${r.status}: ${r.statusText}`);
               return r.json();
             })
@@ -1113,11 +1139,19 @@ function App() {
             to_latitude: row.TO_LAT, to_longitude: row.TO_LON
           }));
           
-          // Deduplicate with existing assets before setting
-          setAssets(prev => {
-            const existingIds = new Set(prev.map(a => a.id));
+          // Deduplicate with existing assets before adding as batch
+          setCircuitBatches(prev => {
+            const existingIds = new Set(assets.map(a => a.id));
             const uniqueNew = mappedAssets.filter(a => !existingIds.has(a.id));
-            return [...prev, ...uniqueNew];
+            
+            if (uniqueNew.length === 0) return prev;
+            
+            return [...prev, {
+              batchId: `batch-viewport-${Date.now()}`,
+              circuitIds: circuitsToLoad,
+              assets: uniqueNew,
+              loadedAt: Date.now()
+            }];
           });
           setTopology(mappedTopology);
           console.log(`   ✅ Viewport assets loaded: ${mappedAssets.length.toLocaleString()} assets, ${mappedTopology.length.toLocaleString()} connections`);
@@ -1243,13 +1277,10 @@ function App() {
           const viewportChangedSignificantly = lngDiff > 0.1 || latDiff > 0.1 || zoomDiff > 0.5;
           
           if (viewportChangedSignificantly && limitsReachedRef.current) {
-            console.log(`   🔄 Viewport changed significantly - clearing limits flag to allow loading in new area`);
+            console.log(`   🔄 Viewport changed significantly (lng: ${lngDiff.toFixed(3)}, lat: ${latDiff.toFixed(3)}, zoom: ${zoomDiff.toFixed(3)}) - clearing limits flag to allow loading in new area`);
             limitsReachedRef.current = false;
           }
         }
-        
-        // Track current viewport for next comparison
-        lastLoadAttemptViewportRef.current = { lng: centerLng, lat: centerLat, zoom: throttledZoom };
         
         // EARLY EXIT: If limits were already reached, don't try again until user pans/zooms significantly
         // This prevents infinite API call spam when viewport has more circuits than limits allow
@@ -1257,6 +1288,10 @@ function App() {
           console.log(`   ⏸️ Limits reached - waiting for user to pan/zoom to new area (${newCircuits.length} unloadable circuits)`);
           return; // Don't retry loading until limits are cleared
         }
+        
+        // Track current viewport ONLY when we're about to attempt loading
+        // This ensures we compare against the LAST LOAD ATTEMPT, not the previous frame
+        lastLoadAttemptViewportRef.current = { lng: centerLng, lat: centerLat, zoom: throttledZoom };
         
         // ZOOM-LEVEL AGGRESSIVE CULLING: Enforce zoom-based asset limits
         // When zooming IN, limits decrease - must cull excess assets
@@ -1267,6 +1302,9 @@ function App() {
           console.log(`   ⚠️ Zoom-level limit exceeded: ${assets.length.toLocaleString()} > ${maxAssetsForZoom.toLocaleString()} at zoom ${throttledZoom.toFixed(1)}. Culling to viewport...`);
           
           // Aggressive cull: Keep only viewport assets (1x buffer, not 3.5x)
+          // Calculate viewport span from bounds
+          const lngSpan = (east - west) / 2;
+          const latSpan = (north - south) / 2;
           const viewportBuffer = 1.0;
           const aggCullMinLng = viewState.longitude - (lngSpan * viewportBuffer);
           const aggCullMaxLng = viewState.longitude + (lngSpan * viewportBuffer);
@@ -1300,7 +1338,30 @@ function App() {
             
             const removed = assetsBeforeCull - culledAssets.length;
             console.log(`   🗑️ Aggressively culled ${removed.toLocaleString()} assets from ${culledAssetIds.size} circuits (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
-            setAssets(culledAssets);
+            
+            // CHUNKED LAYER: Remove entire batches that are outside viewport
+            setCircuitBatches(prev => {
+              return prev.map(batch => {
+                // Keep substations batch always
+                if (batch.batchId === 'batch-substations') return batch;
+                
+                // Filter assets in this batch to only include those in tight viewport
+                const remainingAssets = batch.assets.filter(a => {
+                  if (a.type === 'substation') return true;
+                  return a.longitude >= aggCullMinLng && a.longitude <= aggCullMaxLng &&
+                         a.latitude >= aggCullMinLat && a.latitude <= aggCullMaxLat;
+                });
+                
+                // If batch has remaining assets, keep it (with filtered assets)
+                // This maintains stable batch references for assets that remain
+                if (remainingAssets.length > 0) {
+                  return { ...batch, assets: remainingAssets };
+                }
+                
+                // Return null to filter out empty batches
+                return null;
+              }).filter((batch): batch is CircuitBatch => batch !== null);
+            });
             
             // Cull topology
             const remainingAssetIds = new Set(culledAssets.map(a => a.id));
@@ -1362,7 +1423,29 @@ function App() {
             
             const removed = assetsBeforeCull - culledAssets.length;
             console.log(`   🗑️ Culled ${removed.toLocaleString()} assets from ${culledAssetIds.size} circuits outside ${cullBuffer}x viewport (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
-            setAssets(culledAssets);
+            
+            // CHUNKED LAYER: Remove entire batches or filter batch assets
+            setCircuitBatches(prev => {
+              return prev.map(batch => {
+                // Keep substations batch always
+                if (batch.batchId === 'batch-substations') return batch;
+                
+                // Filter assets in this batch to only include those in cull bounds
+                const remainingAssets = batch.assets.filter(a => {
+                  if (a.type === 'substation') return true;
+                  return a.longitude >= cullMinLng && a.longitude <= cullMaxLng &&
+                         a.latitude >= cullMinLat && a.latitude <= cullMaxLat;
+                });
+                
+                // If batch has remaining assets, keep it (with filtered assets)
+                if (remainingAssets.length > 0) {
+                  return { ...batch, assets: remainingAssets };
+                }
+                
+                // Return null to filter out empty batches
+                return null;
+              }).filter((batch): batch is CircuitBatch => batch !== null);
+            });
             
             // CRITICAL: Also cull topology connections for culled assets AND viewport
             const remainingAssetIds = new Set(culledAssets.map(a => a.id));
@@ -1505,18 +1588,19 @@ function App() {
                 loadedCircuitsRef.current.add(cid); // Mark circuit as successfully loaded
               });
               
-              // Append assets immediately as each batch completes (WITH HARD CAP)
-              setAssets(prev => {
-                const existingIds = new Set(prev.map(a => a.id));
+              // Append assets as NEW BATCH (not flattened) - prevents GPU buffer regeneration for existing batches
+              setCircuitBatches(prev => {
+                const existingIds = new Set(assets.map(a => a.id));
                 const uniqueNew = newAssets.filter(a => !existingIds.has(a.id));
                 
                 // HARD CAP: Enforce max assets allowed (prevents overshoot from parallel loading)
                 const currentZoom = throttledZoom;
                 const maxAssetsAllowed = currentZoom < 11 ? 30000 : currentZoom < 12 ? 60000 : 120000;
-                const spaceAvailable = Math.max(0, maxAssetsAllowed - prev.length);
+                const currentTotal = assets.length;
+                const spaceAvailable = Math.max(0, maxAssetsAllowed - currentTotal);
                 
                 if (spaceAvailable === 0) {
-                  console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} REJECTED: Asset cap reached (${prev.length.toLocaleString()}/${maxAssetsAllowed.toLocaleString()})`);
+                  console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} REJECTED: Asset cap reached (${currentTotal.toLocaleString()}/${maxAssetsAllowed.toLocaleString()})`);
                   limitsReachedRef.current = true; // Set flag when cap hit during batch processing
                   return prev;
                 }
@@ -1525,9 +1609,15 @@ function App() {
                 
                 if (assetsToAdd.length > 0) {
                   console.log(`   ✅ Batch ${batchIdx + 1}/${batches.length} added ${assetsToAdd.length.toLocaleString()}/${uniqueNew.length.toLocaleString()} assets + ${newTopology.length.toLocaleString()} connections`);
+                  return [...prev, {
+                    batchId: `batch-${batchIdx}-${Date.now()}`,
+                    circuitIds: batch,
+                    assets: assetsToAdd,
+                    loadedAt: Date.now()
+                  }];
                 }
                 
-                return [...prev, ...assetsToAdd];
+                return prev;
               });
               
               // Append topology connections immediately (WITH HARD CAP + RACE CONDITION PROTECTION)
@@ -2851,6 +2941,40 @@ function App() {
     return Math.min(1.0, elapsed / fadeDuration);
   }, []);
 
+  // CHUNKED LAYER HELPER: Generate viewport-filtered batches for layer rendering
+  // This avoids regenerating GPU buffers for batches outside viewport
+  const viewportFilteredBatches = useMemo(() => {
+    const { minLng, maxLng, minLat, maxLat } = viewportBounds;
+    
+    return circuitBatches.map(batch => {
+      // Filter batch assets to viewport
+      const viewportAssets = batch.assets.filter(a =>
+        a.longitude >= minLng && a.longitude <= maxLng &&
+        a.latitude >= minLat && a.latitude <= maxLat
+      );
+      
+      // Group by asset type
+      const substations = viewportAssets.filter(a => a.type === 'substation');
+      const transformers = viewportAssets.filter(a => a.type === 'transformer');
+      const poles = viewportAssets.filter(a => a.type === 'pole');
+      const meters = viewportAssets.filter(a => a.type === 'meter');
+      
+      return {
+        batchId: batch.batchId,
+        substations,
+        transformers,
+        poles,
+        meters
+      };
+    }).filter(batch => 
+      // Only include batches with viewport assets
+      batch.substations.length > 0 ||
+      batch.transformers.length > 0 ||
+      batch.poles.length > 0 ||
+      batch.meters.length > 0
+    );
+  }, [circuitBatches, viewportBounds]);
+
   const layers = useMemo(() => [
     // FLUX WEATHER INTELLIGENCE - Broadcast-quality weather visualization
     // Server-rendered smooth gradient image displayed as single texture (GPU-optimized)
@@ -3192,49 +3316,51 @@ function App() {
     ),
 
     // INDIVIDUAL ASSETS - Full detail view (HIGH ZOOM ONLY)
+    // CHUNKED LAYERS: Create one layer per batch to avoid GPU buffer regeneration
     ...(layersVisible.substations && currentZoom >= ZOOM_THRESHOLD - 1.5 ?
-      [new PolygonLayer({
-        id: 'substations-individual',
-        data: viewportFilteredAssets.substationAssets,
-        pickable: true,
-        extruded: true,
-        wireframe: true,
-        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-        getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 428.4),
-        getElevation: (d: Asset) => {
-          const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score);
-          return 102 * heightScale * staggeredScale;
-        },
-        getFillColor: (d: Asset) => {
-          const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score);
-          return [0, 200, 255, 200 * staggeredScale];
-        },
-        getLineColor: (d: Asset) => {
-          const staggeredScale = getStaggerDelay(
-            d.longitude, 
-            d.latitude, 
-            assetScaleAnimation,
-            d.health_score,
-            undefined,
-            'substation'
-          );
-          return [255, 255, 255, 80 * staggeredScale];
-        },
-        elevationScale: 1,
-        lineWidthMinPixels: 1,
-        transitions: {
-          getElevation: {
-            duration: 800,
-            easing: t => t * (2 - t)
+      viewportFilteredBatches.flatMap(batch => 
+        batch.substations.length > 0 ? [new PolygonLayer({
+          id: `substations-individual-${batch.batchId}`,
+          data: batch.substations,
+          pickable: true,
+          extruded: true,
+          wireframe: true,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 371),  // 25% area reduction (428.4 * √0.75)
+          getElevation: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score);
+            return 102 * heightScale * staggeredScale;
           },
-          getFillColor: {
-            duration: 600,
-            easing: t => t * (2 - t)
-          }
-        },
-        updateTriggers: {
-          getElevation: [assetScaleAnimation, heightScale],
-          getFillColor: assetScaleAnimation,
+          getFillColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score);
+            return [0, 200, 255, 200 * staggeredScale];
+          },
+          getLineColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(
+              d.longitude, 
+              d.latitude, 
+              assetScaleAnimation,
+              d.health_score,
+              undefined,
+              'substation'
+            );
+            return [255, 255, 255, 80 * staggeredScale];
+          },
+          elevationScale: 1,
+          lineWidthMinPixels: 1,
+          transitions: {
+            getElevation: {
+              duration: 800,
+              easing: t => t * (2 - t)
+            },
+            getFillColor: {
+              duration: 600,
+              easing: t => t * (2 - t)
+            }
+          },
+          updateTriggers: {
+            getElevation: [assetScaleAnimation, heightScale],
+            getFillColor: assetScaleAnimation,
           getLineColor: assetScaleAnimation
         },
         onClick: (info: any) => {
@@ -3268,54 +3394,59 @@ function App() {
             setHoverPosition(null);
           }
         }
-      })] : []
+      })] : []) : []
     ),
 
     // Substation connection count badges - IconLayer with custom SVG badges
-    ...(layersVisible.substations && currentZoom >= ZOOM_THRESHOLD - 1.5 && assetConnectionCounts.size > 0 ? [
-      new IconLayer({
-        id: 'substation-badge',
-        data: viewportFilteredAssets.substationAssets.filter(s => {
-          const counts = assetConnectionCounts.get(s.id);
-          return counts && counts.transformers > 0;
-        }),
-        pickable: false,
-        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-        getPosition: (d: Asset) => [
-          d.longitude,
-          d.latitude,
-          120 * heightScale
-        ],
-        getIcon: (d: Asset) => {
-          const counts = assetConnectionCounts.get(d.id);
-          const count = counts?.transformers || 0;
-          const displayCount = count >= 1000 ? `${Math.floor(count / 1000)}k` : count;
-          // Material UI Power icon SVG path
-          const powerIconPath = 'M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z';
-          
-          const svg = `<svg width="32" height="40" xmlns="http://www.w3.org/2000/svg">
-            <rect x="2" y="2" width="28" height="36" rx="4" fill="rgb(236, 72, 153)" stroke="white" stroke-width="2"/>
-            <g transform="translate(8, 6)">
-              <path d="${powerIconPath}" fill="white"/>
-            </g>
-            <text x="16" y="34" font-family="Arial, sans-serif" font-size="10" font-weight="700" fill="white" text-anchor="middle">${displayCount}</text>
-          </svg>`;
-          
-          return {
-            url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
-            width: 32,
-            height: 40
-          };
-        },
-        getSize: 32,
-        sizeUnits: 'pixels',
-        billboard: true,
-        updateTriggers: {
-          getPosition: [heightScale],
-          getIcon: [assetConnectionCounts]
-        }
-      })
-    ] : []),
+    // COMMENTED OUT: Substation transformer count badges (floating labels)
+    // ...(layersVisible.substations && currentZoom >= ZOOM_THRESHOLD - 1.5 && assetConnectionCounts.size > 0 ? 
+    //   viewportFilteredBatches.flatMap(batch => {
+    //     const badgeData = batch.substations.filter(s => {
+    //       const counts = assetConnectionCounts.get(s.id);
+    //       return counts && counts.transformers > 0;
+    //     });
+    //     
+    //     return badgeData.length > 0 ? [new IconLayer({
+    //       id: `substation-badge-${batch.batchId}`,
+    //       data: badgeData,
+    //     pickable: false,
+    //     coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+    //     getPosition: (d: Asset) => [
+    //       d.longitude,
+    //       d.latitude,
+    //       120 * heightScale
+    //     ],
+    //     getIcon: (d: Asset) => {
+    //       const counts = assetConnectionCounts.get(d.id);
+    //       const count = counts?.transformers || 0;
+    //       const displayCount = count >= 1000 ? `${Math.floor(count / 1000)}k` : count;
+    //       // Material UI Power icon SVG path
+    //       const powerIconPath = 'M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z';
+    //       
+    //       const svg = `<svg width="32" height="40" xmlns="http://www.w3.org/2000/svg">
+    //         <rect x="2" y="2" width="28" height="36" rx="4" fill="rgb(236, 72, 153)" stroke="white" stroke-width="2"/>
+    //         <g transform="translate(8, 6)">
+    //           <path d="${powerIconPath}" fill="white"/>
+    //         </g>
+    //         <text x="16" y="34" font-family="Arial, sans-serif" font-size="10" font-weight="700" fill="white" text-anchor="middle">${displayCount}</text>
+    //       </svg>`;
+    //       
+    //       return {
+    //         url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+    //         width: 32,
+    //         height: 40
+    //       };
+    //     },
+    //     getSize: 32,
+    //     sizeUnits: 'pixels',
+    //     billboard: true,
+    //     updateTriggers: {
+    //       getPosition: [heightScale],
+    //       getIcon: [assetConnectionCounts]
+    //     }
+    //   })] : [];
+    //   }) : []
+    // ),
 
     ...(layersVisible.transformers && currentZoom >= ZOOM_THRESHOLD - 1.5 ?
       [
@@ -3339,7 +3470,7 @@ function App() {
               'transformer'
             );
             const fadeProgress = getAssetFadeProgress(d);
-            return 37.5 * heightScale * staggeredScale * fadeProgress;  // Rise animation
+            return 23.4375 * heightScale * staggeredScale * fadeProgress;  // Rise animation (50% reduction, then +25% height)
           },
           getFillColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
@@ -3365,7 +3496,7 @@ function App() {
             const fadeProgress = getAssetFadeProgress(d);
             return [255, 100, 180, 100 * staggeredScale * fadeProgress];  // Fade-in
           },
-          radius: 30,  // 25% size reduction (was 40m equivalent for 120×80 rect)
+          radius: 15,  // 50% size reduction from original 30m
           elevationScale: 1,
           lineWidthMinPixels: 2,
           transitions: {
@@ -3421,11 +3552,22 @@ function App() {
           pickable: false,
           diskResolution: 4,  // Match base shape (square-like)
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPosition: (d: Asset) => [
-            d.longitude,
-            d.latitude,
-            37.5 * heightScale  // Start cap at top of base (37.5m base height)
-          ],
+          getPosition: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(
+              d.longitude, 
+              d.latitude, 
+              assetScaleAnimation,
+              d.health_score,
+              d.load_percent,
+              'transformer'
+            );
+            const fadeProgress = getAssetFadeProgress(d);
+            return [
+              d.longitude,
+              d.latitude,
+              23.4375 * heightScale * staggeredScale * fadeProgress  // Start cap at top of base (23.4375m base height)
+            ];
+          },
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
               d.longitude, 
@@ -3435,7 +3577,8 @@ function App() {
               d.load_percent,
               'transformer'
             );
-            return 9.375 * heightScale * staggeredScale;  // 25% of base height (37.5 * 0.25)
+            const fadeProgress = getAssetFadeProgress(d);
+            return 4.6875 * heightScale * staggeredScale * fadeProgress;  // 25% of base height (23.4375 * 0.2 = 4.6875)
           },
           getFillColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
@@ -3446,13 +3589,14 @@ function App() {
               d.load_percent,
               'transformer'
             );
+            const fadeProgress = getAssetFadeProgress(d);
             
             const health = d.health_score != null ? d.health_score : 100;
             const load = d.load_percent != null ? d.load_percent : 0;
             
-            if (load > 85 || health < 50) return [239, 68, 68, 220 * staggeredScale]; // Red
-            if (load > 70 || health < 70) return [251, 191, 36, 220 * staggeredScale]; // Yellow
-            return [34, 197, 94, 220 * staggeredScale]; // Green
+            if (load > 85 || health < 50) return [239, 68, 68, 220 * staggeredScale * fadeProgress]; // Red
+            if (load > 70 || health < 70) return [251, 191, 36, 220 * staggeredScale * fadeProgress]; // Yellow
+            return [34, 197, 94, 220 * staggeredScale * fadeProgress]; // Green
           },
           getLineColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
@@ -3463,14 +3607,15 @@ function App() {
               d.load_percent,
               'transformer'
             );
+            const fadeProgress = getAssetFadeProgress(d);
             const health = d.health_score != null ? d.health_score : 100;
             const load = d.load_percent != null ? d.load_percent : 0;
             
-            if (load > 85 || health < 50) return [185, 28, 28, 180 * staggeredScale];
-            if (load > 70 || health < 70) return [217, 119, 6, 180 * staggeredScale];
-            return [21, 128, 61, 180 * staggeredScale];
+            if (load > 85 || health < 50) return [185, 28, 28, 180 * staggeredScale * fadeProgress];
+            if (load > 70 || health < 70) return [217, 119, 6, 180 * staggeredScale * fadeProgress];
+            return [21, 128, 61, 180 * staggeredScale * fadeProgress];
           },
-          radius: 22.5,  // 75% of base radius (30m)
+          radius: 8.4375,  // 75% of previous cap radius (11.25 * 0.75, 25% area reduction)
           elevationScale: 1,
           lineWidthMinPixels: 2,
           transitions: {
@@ -3484,60 +3629,60 @@ function App() {
             }
           },
           updateTriggers: {
-            getPosition: [heightScale],
-            getElevation: [assetScaleAnimation, heightScale],
-            getFillColor: assetScaleAnimation,
-            getLineColor: assetScaleAnimation
+            getPosition: [assetScaleAnimation, heightScale, animationFrame],
+            getElevation: [assetScaleAnimation, heightScale, animationFrame],
+            getFillColor: [assetScaleAnimation, animationFrame],
+            getLineColor: [assetScaleAnimation, animationFrame]
           }
         })
       ] : []
     ),
 
-    // Transformer meter count indicator - IconLayer with custom SVG badges
-    ...(layersVisible.transformers && currentZoom >= ZOOM_THRESHOLD && assetConnectionCounts.size > 0 ? [
-      new IconLayer({
-        id: 'transformer-badge',
-        data: viewportFilteredAssets.transformerAssets.filter(t => {
-          const counts = assetConnectionCounts.get(t.id);
-          return counts && counts.meters > 0;
-        }),
-        pickable: false,
-        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-        getPosition: (d: Asset) => [
-          d.longitude,
-          d.latitude,
-          45 * heightScale
-        ],
-        getIcon: (d: Asset) => {
-          const counts = assetConnectionCounts.get(d.id);
-          const count = counts?.meters || 0;
-          const displayCount = count >= 1000 ? `${Math.floor(count / 1000)}k` : count;
-          // Material UI Power icon SVG path
-          const powerIconPath = 'M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z';
-          
-          const svg = `<svg width="28" height="36" xmlns="http://www.w3.org/2000/svg">
-            <rect x="2" y="2" width="24" height="32" rx="3" fill="rgb(147, 51, 234)" stroke="white" stroke-width="2"/>
-            <g transform="translate(6, 5) scale(0.67)">
-              <path d="${powerIconPath}" fill="white"/>
-            </g>
-            <text x="14" y="29" font-family="Arial, sans-serif" font-size="9" font-weight="700" fill="white" text-anchor="middle">${displayCount}</text>
-          </svg>`;
-          
-          return {
-            url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
-            width: 28,
-            height: 36
-          };
-        },
-        getSize: 28,
-        sizeUnits: 'pixels',
-        billboard: true,
-        updateTriggers: {
-          getPosition: [heightScale],
-          getIcon: [assetConnectionCounts]
-        }
-      })
-    ] : []),
+    // COMMENTED OUT: Transformer meter count badges (floating labels)
+    // ...(layersVisible.transformers && currentZoom >= ZOOM_THRESHOLD && assetConnectionCounts.size > 0 ? [
+    //   new IconLayer({
+    //     id: 'transformer-badge',
+    //     data: viewportFilteredAssets.transformerAssets.filter(t => {
+    //       const counts = assetConnectionCounts.get(t.id);
+    //       return counts && counts.meters > 0;
+    //     }),
+    //     pickable: false,
+    //     coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+    //     getPosition: (d: Asset) => [
+    //       d.longitude,
+    //       d.latitude,
+    //       45 * heightScale
+    //     ],
+    //     getIcon: (d: Asset) => {
+    //       const counts = assetConnectionCounts.get(d.id);
+    //       const count = counts?.meters || 0;
+    //       const displayCount = count >= 1000 ? `${Math.floor(count / 1000)}k` : count;
+    //       // Material UI Power icon SVG path
+    //       const powerIconPath = 'M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z';
+    //       
+    //       const svg = `<svg width="28" height="36" xmlns="http://www.w3.org/2000/svg">
+    //         <rect x="2" y="2" width="24" height="32" rx="3" fill="rgb(147, 51, 234)" stroke="white" stroke-width="2"/>
+    //         <g transform="translate(6, 5) scale(0.67)">
+    //           <path d="${powerIconPath}" fill="white"/>
+    //         </g>
+    //         <text x="14" y="29" font-family="Arial, sans-serif" font-size="9" font-weight="700" fill="white" text-anchor="middle">${displayCount}</text>
+    //       </svg>`;
+    //       
+    //       return {
+    //         url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+    //         width: 28,
+    //         height: 36
+    //       };
+    //     },
+    //     getSize: 28,
+    //     sizeUnits: 'pixels',
+    //     billboard: true,
+    //     updateTriggers: {
+    //       getPosition: [heightScale],
+    //       getIcon: [assetConnectionCounts]
+    //     }
+    //   })
+    // ] : []),
 
     ...(layersVisible.poles && currentZoom >= ZOOM_THRESHOLD - 2.0 ?
       [
