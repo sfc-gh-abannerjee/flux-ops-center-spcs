@@ -1228,22 +1228,38 @@ function App() {
         
         console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${visibleCircuits.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
         
-        // CULLING: Remove assets far outside viewport (AGGRESSIVE)
+        // CULLING: Remove assets far outside viewport (LESS AGGRESSIVE)
         // IMPORTANT: Cull AFTER checking loaded circuits (don't affect load calculations)
-        // More aggressive culling to prevent memory bloat
-        if (assets.length > 500) { // Cull sooner (was 1000)
+        // Only cull when we have significant memory pressure
+        // Need at least 2000 assets before culling (275 substations + buffer for active circuits)
+        if (assets.length > 2000 && loadingCircuitsRef.current.size === 0) { // Only cull when NOT actively loading
           const assetsBeforeCull = assets.length;
           const culledAssets = assets.filter(a => {
             // Always keep substations (needed for service area visualization)
             if (a.type === 'substation') return true;
-            // Keep assets within culling bounds (2.5x viewport)
+            // Keep assets within culling bounds (3.5x viewport)
             return a.longitude >= cullMinLng && a.longitude <= cullMaxLng &&
                    a.latitude >= cullMinLat && a.latitude <= cullMaxLat;
           });
           
           if (culledAssets.length < assetsBeforeCull) {
+            // Track which circuits had assets removed (need to mark them for reload)
+            const culledAssetIds = new Set(
+              assets
+                .filter(a => !culledAssets.some(ca => ca.id === a.id))
+                .map(a => a.circuit_id)
+                .filter((cid): cid is string => !!cid)
+            );
+            
+            // Remove culled circuits from loadedCircuitsRef so they can reload when panning back
+            culledAssetIds.forEach(cid => {
+              if (loadedCircuitsRef.current.has(cid)) {
+                loadedCircuitsRef.current.delete(cid);
+              }
+            });
+            
             const removed = assetsBeforeCull - culledAssets.length;
-            console.log(`   🗑️ Culled ${removed.toLocaleString()} assets outside ${cullBuffer}x viewport (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
+            console.log(`   🗑️ Culled ${removed.toLocaleString()} assets from ${culledAssetIds.size} circuits outside ${cullBuffer}x viewport (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
             setAssets(culledAssets);
             
             // CRITICAL: Also cull topology connections for culled assets AND viewport
@@ -1273,9 +1289,9 @@ function App() {
           }
         }
         
-        // PERIODIC TOPOLOGY CLEANUP: Aggressively remove topology outside viewport
-        // This ensures topology doesn't accumulate even when assets are not selected
-        if (topology.length > 1000) {
+        // PERIODIC TOPOLOGY CLEANUP: Remove topology outside viewport
+        // Only cleanup when NOT actively loading to prevent state churn
+        if (topology.length > 5000 && loadingCircuitsRef.current.size === 0) {
           const topologyBeforeCleanup = topology.length;
           
           setTopology(prev => {
