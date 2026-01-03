@@ -1,0 +1,8 @@
+flask
+flask-cors
+flask-compress
+snowflake-connector-python
+matplotlib
+pillow
+numpy
+scipy

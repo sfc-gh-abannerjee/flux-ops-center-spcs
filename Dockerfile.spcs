@@ -1,0 +1,53 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install nginx and required packages
+RUN apt-get update && apt-get install -y nginx && rm -rf /var/lib/apt/lists/*
+
+# Install backend dependencies
+COPY backend/requirements.txt ./backend/
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# Copy pre-built frontend dist
+COPY dist/ ./dist/
+
+# Copy backend
+COPY backend/ ./backend/
+
+# Create nginx config
+RUN echo 'server { \n\
+    listen 8080; \n\
+    server_name _; \n\
+    \n\
+    # CSP headers for SPCS \n\
+    add_header Content-Security-Policy "default-src '\''self'\''; connect-src '\''self'\'' https://*.cartocdn.com https://*.mapbox.com; style-src '\''self'\'' '\''unsafe-inline'\'' https://*.cartocdn.com https://unpkg.com; style-src-elem '\''self'\'' '\''unsafe-inline'\'' https://*.cartocdn.com https://unpkg.com; img-src '\''self'\'' data: https://*.cartocdn.com https://*.mapbox.com blob:; worker-src '\''self'\'' blob:; script-src '\''self'\'' '\''unsafe-eval'\'';" always; \n\
+    \n\
+    # Frontend \n\
+    location / { \n\
+        root /app/dist; \n\
+        try_files $uri $uri/ /index.html; \n\
+    } \n\
+    \n\
+    # Backend API proxy \n\
+    location /api/ { \n\
+        proxy_pass http://127.0.0.1:3001/api/; \n\
+        proxy_set_header Host $host; \n\
+        proxy_set_header X-Real-IP $remote_addr; \n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; \n\
+    } \n\
+}' > /etc/nginx/sites-available/default
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080')"
+
+# Start script
+RUN echo '#!/bin/bash\n\
+python /app/backend/server.py &\n\
+nginx -g "daemon off;"' > /app/start.sh && chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]

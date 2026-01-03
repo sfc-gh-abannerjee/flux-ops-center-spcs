@@ -1,0 +1,7301 @@
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import DeckGL from '@deck.gl/react';
+import { ScatterplotLayer, ArcLayer, ColumnLayer, PolygonLayer, BitmapLayer, PathLayer, TextLayer, IconLayer } from '@deck.gl/layers';
+import { HeatmapLayer, GridLayer } from '@deck.gl/aggregation-layers';
+import { DataFilterExtension } from '@deck.gl/extensions';
+import { FlyToInterpolator, COORDINATE_SYSTEM, WebMercatorViewport } from '@deck.gl/core';
+import { Map as MapGL } from 'react-map-gl';
+import maplibregl from 'maplibre-gl';
+import { 
+  ThemeProvider, createTheme, CssBaseline, Box, AppBar, Toolbar, Typography, 
+  Tabs, Tab, Grid, Card, CardContent, Paper, Chip, Stack, IconButton, 
+  Switch, FormControlLabel, Divider, Badge, alpha, Fade, Grow, Collapse, Button, LinearProgress, Tooltip
+} from '@mui/material';
+import { 
+  ElectricBolt, Assessment, Warning, Engineering, TrendingUp,
+  Speed, Memory, NetworkCheck, FilterList, Close, Refresh, ExpandMore, ExpandLess,
+  MyLocation, ZoomIn, GridOn, BarChart, PieChart, PushPin, FavoriteOutlined, ElectricMeter,
+  Whatshot, WbSunny, Thermostat, Opacity, SkipPrevious, FastRewind, PlayArrow, Pause, 
+  FastForward, SkipNext, Layers, Power, Hub
+} from '@mui/icons-material';
+import 'maplibre-gl/dist/maplibre-gl.css';
+
+const theme = createTheme({
+  palette: {
+    mode: 'dark',
+    primary: { main: '#0EA5E9' },
+    secondary: { main: '#FBBF24' },
+    background: { default: '#0F172A', paper: '#1E293B' },
+    success: { main: '#22C55E' },
+    error: { main: '#EF4444' },
+    warning: { main: '#F59E0B' },
+    info: { main: '#3B82F6' }
+  },
+  typography: { fontFamily: 'Inter, system-ui, sans-serif' },
+  components: {
+    MuiCard: {
+      styleOverrides: {
+        root: { borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }
+      }
+    }
+  }
+});
+
+const BASEMAP_URL = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+
+// PERFORMANCE: Pre-compute common colors to avoid alpha() calls in render
+const COLORS = {
+  substation: {
+    main: '#00C8FF',
+    bg: alpha('#00C8FF', 0.05),
+    chip: alpha('#00C8FF', 0.15),
+    border: alpha('#00C8FF', 0.3)
+  },
+  transformer: {
+    main: '#EC4899',
+    bg: alpha('#EC4899', 0.05),
+    chip: alpha('#EC4899', 0.15),
+    border: alpha('#EC4899', 0.3)
+  },
+  pole: {
+    main: '#8880ff',
+    bg: alpha('#8880ff', 0.05),
+    chip: alpha('#8880ff', 0.15),
+    border: alpha('#8880ff', 0.3)
+  },
+  meter: {
+    main: '#9333EA',
+    bg: alpha('#9333EA', 0.05),
+    chip: alpha('#9333EA', 0.15),
+    border: alpha('#9333EA', 0.3)
+  },
+  status: {
+    critical: { main: '#EF4444', chip: alpha('#EF4444', 0.15) },
+    warning: { main: '#FBBF24', chip: alpha('#FBBF24', 0.15) },
+    healthy: { main: '#22C55E', chip: alpha('#22C55E', 0.15) }
+  }
+} as const;
+
+const INITIAL_VIEW_STATE = {
+  longitude: -95.3698,
+  latitude: 29.7604,
+  zoom: 9.5,  // Zoom out to show full Houston metro area (real utility data spans lat 28.94-30.48, lon -96.04 to -94.36)
+  pitch: 45,
+  bearing: 0,
+  minPitch: 0,
+  maxPitch: 45,  // deck.gl default is 60°, but 45° prevents basemap desync in 3D views
+  minZoom: 8,    // Prevent zooming out too far (was 0)
+  maxZoom: 18    // Reasonable max for infrastructure detail (was 24)
+};
+interface AssetCluster {
+  centroid: [number, number];
+  assets: Asset[];
+  substations: Asset[];
+  transformers: Asset[];
+  poles: Asset[];
+  meters: Asset[];
+  districtId?: string; // CNP-style service district ID (e.g., "BA-SD1", "AD-SD2")
+}
+
+// ENGINEERING: Substation-based operational clustering
+// PROBLEM: Old approach used arbitrary 1km grid squares (unrealistic for utility operations)
+// SOLUTION: Cluster assets by substation service areas (natural operational boundaries)
+// BENEFIT: Aligns with utility actual grid management structure (competing with Grid 360)
+
+// Helper: Generate CNP-style substation code (e.g., "BAMMEL" → "BA", "ALDINE" → "AD")
+function generateSubstationCode(substationName: string): string {
+  // Extract first letters of each word, max 3 characters
+  const words = substationName.toUpperCase().split(/[\s_-]+/);
+  if (words.length === 1) {
+    return words[0].substring(0, 3);
+  }
+  // Take first letter of first 2-3 words
+  return words.slice(0, Math.min(3, words.length)).map(w => w[0]).join('');
+}
+
+// Geographic subdivision helper - splits oversized clusters into service districts
+function subdivideClusterGeographically(cluster: AssetCluster, numDistricts: number): AssetCluster[] {
+  if (cluster.assets.length <= 1 || numDistricts <= 1) {
+    return [cluster];
+  }
+  
+  // K-means clustering to create geographic service districts within substation territory
+  const assets = cluster.assets.filter(a => a.type !== 'substation'); // Exclude parent substation
+  const centroids: [number, number][] = [];
+  
+  // Initialize centroids using k-means++ for better distribution
+  centroids.push([assets[0].latitude, assets[0].longitude]);
+  
+  for (let i = 1; i < numDistricts && i < assets.length; i++) {
+    let maxMinDist = -1;
+    let bestAsset = assets[i];
+    
+    for (const asset of assets) {
+      let minDist = Infinity;
+      for (const centroid of centroids) {
+        const dist = Math.sqrt(
+          Math.pow(asset.latitude - centroid[0], 2) + 
+          Math.pow(asset.longitude - centroid[1], 2)
+        );
+        minDist = Math.min(minDist, dist);
+      }
+      if (minDist > maxMinDist) {
+        maxMinDist = minDist;
+        bestAsset = asset;
+      }
+    }
+    centroids.push([bestAsset.latitude, bestAsset.longitude]);
+  }
+  
+  // Assign assets to nearest centroid
+  // Generate substation code for service district naming
+  const substationCode = cluster.substations.length > 0 
+    ? generateSubstationCode(cluster.substations[0].name)
+    : 'GC'; // Fallback to "GC" (Grid Cell) if no substation
+  
+  const districts: AssetCluster[] = centroids.map((centroid, idx) => ({
+    centroid: [centroid[1], centroid[0]], // [lon, lat] for deck.gl
+    assets: [],
+    substations: cluster.substations, // Service districts reference parent substation
+    transformers: [],
+    poles: [],
+    meters: [],
+    // CNP-style service district ID: {SUBSTATION_CODE}-SD{NUMBER}
+    districtId: `${substationCode}-SD${idx + 1}`
+  }));
+  
+  assets.forEach(asset => {
+    let nearestDistrict = 0;
+    let minDist = Infinity;
+    
+    for (let i = 0; i < centroids.length; i++) {
+      const dist = Math.sqrt(
+        Math.pow(asset.latitude - centroids[i][0], 2) + 
+        Math.pow(asset.longitude - centroids[i][1], 2)
+      );
+      if (dist < minDist) {
+        minDist = dist;
+        nearestDistrict = i;
+      }
+    }
+    
+    const district = districts[nearestDistrict];
+    district.assets.push(asset);
+    
+    // Categorize by asset type
+    if (asset.type === 'transformer') {
+      district.transformers.push(asset);
+    } else if (asset.type === 'pole') {
+      district.poles.push(asset);
+    } else if (asset.type === 'meter') {
+      district.meters.push(asset);
+    }
+  });
+  
+  // Recalculate district centroids based on actual asset positions
+  districts.forEach(district => {
+    if (district.assets.length > 0) {
+      const avgLat = district.assets.reduce((sum, a) => sum + a.latitude, 0) / district.assets.length;
+      const avgLon = district.assets.reduce((sum, a) => sum + a.longitude, 0) / district.assets.length;
+      district.centroid = [avgLon, avgLat];
+    }
+  });
+  
+  // Filter out empty districts
+  return districts.filter(d => d.assets.length > 0);
+}
+
+function substationBasedClustering(substations: Asset[], transformers: Asset[], poles: Asset[], meters: Asset[]): AssetCluster[] {
+  // INSIGHT: Utilities organize operations by substations (not arbitrary geographic grids)
+  // Each substation serves ~5,000-10,000 customers and defines a natural operational zone
+  
+  // Haversine distance calculation for accurate geospatial clustering
+  const haversineDistance = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371; // Earth radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  };
+  
+  // PERFORMANCE: Fast squared distance approximation for initial filtering
+  // Avoids expensive trig operations for obvious non-matches
+  const fastDistanceSquared = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const dLat = lat2 - lat1;
+    const dLon = lon2 - lon1;
+    return dLat * dLat + dLon * dLon;
+  };
+  
+  // Create operational clusters centered on each substation
+  const clusters: AssetCluster[] = substations.map(substation => ({
+    centroid: [substation.longitude, substation.latitude],
+    assets: [substation], // Include the substation itself
+    substations: [substation],
+    transformers: [],
+    poles: [],
+    meters: []
+  }));
+  
+  // If no substations exist, fall back to geographic clustering
+  if (substations.length === 0) {
+    return gridBinAssets([...transformers, ...poles, ...meters], 0.01);
+  }
+  
+  // REALISTIC DISTRIBUTION: CNP-style service area boundaries with distance weighting
+  // Edge substations have smaller service areas (sparser), central have larger (denser)
+  // Distance penalty prevents edge substations from "vacuuming up" outlying assets
+  const MAX_SERVICE_RADIUS_KM = 25; // Extended for outlying areas
+  const MAX_RADIUS_SQUARED = 0.25; // ~25km in rough degree² units for fast filtering
+  
+  // PERFORMANCE: Unified asset assignment function
+  const assignAssetsToNearestCluster = (assets: Asset[], targetArray: 'transformers' | 'poles' | 'meters') => {
+    assets.forEach(asset => {
+      let nearestClusterIdx = -1;
+      let minDistanceSquared = Infinity;
+      
+      // OPTIMIZATION 1: Fast squared distance pre-filter
+      for (let i = 0; i < clusters.length; i++) {
+        const substation = clusters[i].substations[0];
+        const distSq = fastDistanceSquared(
+          asset.latitude, asset.longitude,
+          substation.latitude, substation.longitude
+        );
+        
+        if (distSq < minDistanceSquared && distSq < MAX_RADIUS_SQUARED) {
+          minDistanceSquared = distSq;
+          nearestClusterIdx = i;
+        }
+      }
+      
+      // OPTIMIZATION 2: Only calculate expensive haversine for nearest candidate
+      if (nearestClusterIdx !== -1) {
+        const nearestCluster = clusters[nearestClusterIdx];
+        const exactDistance = haversineDistance(
+          asset.latitude, asset.longitude,
+          nearestCluster.substations[0].latitude, nearestCluster.substations[0].longitude
+        );
+        
+        if (exactDistance <= MAX_SERVICE_RADIUS_KM) {
+          nearestCluster[targetArray].push(asset);
+          nearestCluster.assets.push(asset);
+        }
+      }
+    });
+  };
+  
+  // Assign all asset types using optimized function
+  assignAssetsToNearestCluster(transformers, 'transformers');
+  assignAssetsToNearestCluster(poles, 'poles');
+  assignAssetsToNearestCluster(meters, 'meters');
+  
+  // SERVICE DISTRICT SUBDIVISION: Split oversized clusters into geographic zones
+  // Realistic distribution: Average ~720 assets/substation, max ~1800 (2.5x avg) before subdivision
+  const SUBDIVISION_THRESHOLD = 1800;
+  const finalClusters: AssetCluster[] = [];
+  
+  clusters.forEach(cluster => {
+    if (cluster.assets.length <= SUBDIVISION_THRESHOLD) {
+      // Cluster is reasonably sized - keep as-is
+      finalClusters.push(cluster);
+    } else {
+      // Oversized cluster - subdivide into geographic service districts
+      const numDistricts = Math.ceil(cluster.assets.length / 900); // Target ~900 assets per district
+      const districts = subdivideClusterGeographically(cluster, numDistricts);
+      finalClusters.push(...districts);
+    }
+  });
+  
+  // Log operational clustering results with subdivision statistics
+  const totalAssigned = finalClusters.reduce((sum, c) => sum + c.assets.length, 0);
+  const totalAssets = transformers.length + poles.length + meters.length;
+  const subdivisionInfo = finalClusters.length > clusters.length ? 
+    ` (${finalClusters.length - clusters.length} service districts created)` : '';
+  
+  // Disable clustering logs in production for performance
+  // To enable: set localStorage.debug = 'flux:clustering' in console
+  
+  return finalClusters;
+}
+
+// LEGACY: Keep old gridBinAssets as fallback for non-substation scenarios
+function gridBinAssets(assets: Asset[], cellSize: number = 0.01): AssetCluster[] {
+  // cellSize in degrees (~1km at Houston latitude)
+  const gridMap = new Map<string, AssetCluster>();
+
+  assets.forEach(asset => {
+    // Calculate grid cell coordinates
+    const cellX = Math.floor(asset.longitude / cellSize);
+    const cellY = Math.floor(asset.latitude / cellSize);
+    const cellKey = `${cellX},${cellY}`;
+
+    if (!gridMap.has(cellKey)) {
+      // Initialize new grid cell with centroid at cell center
+      gridMap.set(cellKey, {
+        centroid: [
+          (cellX + 0.5) * cellSize,
+          (cellY + 0.5) * cellSize
+        ],
+        assets: [],
+        substations: [],
+        transformers: [],
+        poles: [],
+        meters: []
+      });
+    }
+
+    const cell = gridMap.get(cellKey)!;
+    cell.assets.push(asset);
+    
+    // Case-insensitive type matching
+    const assetType = asset.type?.toLowerCase();
+    if (assetType === 'substation') cell.substations.push(asset);
+    if (assetType === 'transformer') cell.transformers.push(asset);
+    if (assetType === 'pole') cell.poles.push(asset);
+    if (assetType === 'meter') cell.meters.push(asset);
+  });
+
+  return Array.from(gridMap.values());
+}
+
+function getJitteredPosition(asset: Asset, jitterDistance: number): [number, number] {
+  const hash = asset.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const angleRadians = ((hash % 360) * Math.PI) / 180;
+  const lonOffset = jitterDistance * Math.cos(angleRadians);
+  const latOffset = jitterDistance * Math.sin(angleRadians);
+  return [asset.longitude + lonOffset, asset.latitude + latOffset];
+}
+
+// Helper function to generate rectangular prism polygon (for transformers)
+function getRectangularPrism(centerLon: number, centerLat: number, widthMeters: number, depthMeters: number): number[][] {
+  // Convert meters to approximate degrees (rough approximation at Houston latitude ~30°)
+  const metersToDegreesLon = 1 / 111320 / Math.cos(29.7604 * Math.PI / 180);
+  const metersToDegreesLat = 1 / 110540;
+  
+  const halfWidth = (widthMeters * metersToDegreesLon) / 2;
+  const halfDepth = (depthMeters * metersToDegreesLat) / 2;
+  
+  return [
+    [centerLon - halfWidth, centerLat - halfDepth],
+    [centerLon + halfWidth, centerLat - halfDepth],
+    [centerLon + halfWidth, centerLat + halfDepth],
+    [centerLon - halfWidth, centerLat + halfDepth],
+    [centerLon - halfWidth, centerLat - halfDepth] // Close the polygon
+  ];
+}
+
+// Helper function to generate cube polygon (square base for extruded cube)
+function getCubePolygon(centerLon: number, centerLat: number, sizeMeters: number): number[][] {
+  return getRectangularPrism(centerLon, centerLat, sizeMeters, sizeMeters);
+}
+
+// Helper function to generate pyramid polygon (triangular base)
+function getPyramidPolygon(centerLon: number, centerLat: number, sizeMeters: number): number[][] {
+  const metersToDegreesLon = 1 / 111320 / Math.cos(29.7604 * Math.PI / 180);
+  const metersToDegreesLat = 1 / 110540;
+  
+  const halfSize = (sizeMeters * metersToDegreesLon) / 2;
+  const height = halfSize * Math.sqrt(3); // Equilateral triangle height
+  
+  return [
+    [centerLon, centerLat + height * 2/3], // Top vertex
+    [centerLon - halfSize, centerLat - height * 1/3], // Bottom left
+    [centerLon + halfSize, centerLat - height * 1/3], // Bottom right
+    [centerLon, centerLat + height * 2/3] // Close the polygon
+  ];
+}
+
+// Helper function to generate hexagon polygon (for substations)
+function getHexagonPolygon(centerLon: number, centerLat: number, sizeMeters: number): number[][] {
+  const metersToDegreesLon = 1 / 111320 / Math.cos(29.7604 * Math.PI / 180);
+  const metersToDegreesLat = 1 / 110540;
+  
+  const radiusLon = (sizeMeters * metersToDegreesLon) / 2;
+  const radiusLat = (sizeMeters * metersToDegreesLat) / 2;
+  
+  const vertices: number[][] = [];
+  for (let i = 0; i < 6; i++) {
+    const angle = (Math.PI / 3) * i; // 60 degrees between vertices
+    vertices.push([
+      centerLon + radiusLon * Math.cos(angle),
+      centerLat + radiusLat * Math.sin(angle)
+    ]);
+  }
+  vertices.push(vertices[0]); // Close the polygon
+  
+  return vertices;
+}
+
+interface Asset {
+  id: string;
+  name: string;
+  type: 'pole' | 'transformer' | 'meter' | 'substation';
+  latitude: number;
+  longitude: number;
+  health_score?: number;
+  load_percent?: number;
+  usage_kwh?: number;
+  voltage?: string;
+  status?: string;
+  last_maintenance?: string;
+  commissioned_date?: string;
+  pole_height_ft?: number;
+  circuit_id?: string;  // CIRCUIT_ID from source tables for utility-grade clustering
+  loadedAt?: number;  // Timestamp for fade-in animation
+}
+
+interface TopologyLink {
+  from_asset_id: string;
+  to_asset_id: string;
+  connection_type: string;
+  from_latitude: number;
+  from_longitude: number;
+  to_latitude: number;
+  to_longitude: number;
+}
+
+interface KPICardProps {
+  title: string;
+  value: string | number;
+  subtitle?: string;
+  icon: React.ReactNode;
+  color: string;
+  trend?: number;
+  sx?: any;
+}
+
+function KPICard({ title, value, subtitle, icon, color, trend, sx }: KPICardProps) {
+  return (
+    <Card sx={{ height: '100%', bgcolor: 'background.paper', borderLeft: `3px solid ${color}`, ...sx }}>
+      <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+          <Typography variant="overline" sx={{ fontSize: '0.65rem', letterSpacing: 0.5 }} color="text.secondary" fontWeight={600}>{title}</Typography>
+          <Box sx={{ color, fontSize: 16 }}>{icon}</Box>
+        </Box>
+        <Typography variant="h4" sx={{ fontWeight: 700, fontSize: '1.75rem', lineHeight: 1.2 }}>{value}</Typography>
+        {subtitle && <Typography variant="caption" sx={{ fontSize: '0.7rem' }} color="text.secondary">{subtitle}</Typography>}
+        {trend !== undefined && (
+          <Chip 
+            label={`${trend > 0 ? '+' : ''}${trend}%`} 
+            size="small" 
+            sx={{ 
+              mt: 0.5,
+              height: 18,
+              fontSize: '0.65rem',
+              bgcolor: trend > 0 ? alpha('#22C55E', 0.2) : alpha('#EF4444', 0.2),
+              color: trend > 0 ? '#22C55E' : '#EF4444',
+              fontWeight: 600
+            }} 
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function App() {
+  const [currentTab, setCurrentTab] = useState(0);
+  const [isLoadingData, setIsLoadingData] = useState(true);
+  const [isSpinning, setIsSpinning] = useState(true);
+  const [isSlowingDown, setIsSlowingDown] = useState(false);
+  const spinTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [lastUpdateTime, setLastUpdateTime] = useState(new Date());
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const dataFetchedRef = useRef(false); // Prevent duplicate fetches
+  const lastDataHashRef = useRef<string>(''); // Track data changes
+  const loadingCircuitsRef = useRef<Set<string>>(new Set()); // Track in-flight requests
+  const pendingTopologyCountRef = useRef<number>(0); // Track in-flight topology additions (prevents parallel batch overshoot)
+  const loadedCircuitsRef = useRef<Set<string>>(new Set()); // Track circuits that have been successfully loaded (PERSISTENT across frames)
+  const substationsLoadedRef = useRef(false); // Track if substations have been loaded
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null); // Polling timer for service areas
+  const [topology, setTopology] = useState<TopologyLink[]>([]);
+  const [metroTopologyData, setMetroTopologyData] = useState<any[]>([]);
+  const [feederTopologyData, setFeederTopologyData] = useState<any[]>([]);
+  const [serviceAreas, setServiceAreas] = useState<any[]>([]);
+  const [substationStatusMap, setSubstationStatusMap] = useState<Map<string, SubstationStatus>>(new Map());
+  const [weather, setWeather] = useState<any[]>([]);
+  const [weatherTimelineIndex, setWeatherTimelineIndex] = useState(0);
+  const [isWeatherPlaying, setIsWeatherPlaying] = useState(false);
+  const [weatherSpeed, setWeatherSpeed] = useState(1);
+  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set());
+  const [selectedAssetPosition, setSelectedAssetPosition] = useState<{ x: number; y: number } | null>(null);
+  const [animationFrame, setAnimationFrame] = useState(0);
+  const [hoveredAsset, setHoveredAsset] = useState<Asset | null>(null);
+  const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
+  const [clickPosition, setClickPosition] = useState<{ x: number; y: number } | null>(null);
+  const [pinnedAssets, setPinnedAssets] = useState<Array<{asset: Asset, position: {x: number, y: number}, id: string, collapsed: boolean}>>([]);
+  
+  // Clustering cache refs - work for both circuit-based and fallback clustering
+  const clusterCacheRef = useRef<AssetCluster[]>([]);
+  const cachedSubstationHashRef = useRef<string>('');
+  const assetToClusterMapRef = useRef<Map<string, number>>(new Map());
+  
+  // Circuit-based clustering cache refs (for O(1) performance)
+  const circuitMapRef = useRef<Map<string, number>>(new Map());  // CIRCUIT_ID → cluster index
+  const cachedServiceAreasHashRef = useRef<string>('');          // Hash of service areas for cache invalidation
+  
+  const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState<{x: number, y: number}>({x: 0, y: 0});
+  const [dragVelocity, setDragVelocity] = useState<{x: number, y: number}>({x: 0, y: 0});
+  const dragPositionHistory = useRef<Array<{x: number, y: number, time: number}>>([]);
+  const momentumAnimationRef = useRef<number | null>(null);
+  const dragAnimationFrameRef = useRef<number | null>(null);
+  const pendingDragPosition = useRef<{cardId: string, x: number, y: number} | null>(null);
+  const [viewState, setViewState] = useState(INITIAL_VIEW_STATE);
+  const isProgrammaticTransition = useRef(false);
+  const viewportUpdateTimer = useRef<NodeJS.Timeout | null>(null);
+  const pendingViewState = useRef<any>(null);
+  const [expandedSections, setExpandedSections] = useState({
+    infrastructure: true,
+    health: true,
+    distribution: false,
+    connected: false
+  });
+  const [expandedAssetCategories, setExpandedAssetCategories] = useState<{
+    [cardId: string]: {
+      substations: boolean;
+      transformers: boolean;
+      poles: boolean;
+      meters: boolean;
+    }
+  }>({});
+  
+  // Pagination for large lists in aggregate cards - show 50 initially
+  const [listPageSize, setListPageSize] = useState<{
+    [cardId: string]: {
+      substations: number;
+      transformers: number;
+      poles: number;
+      meters: number;
+      criticalAssets: number;
+      warningAssets: number;
+      healthyAssets: number;
+    }
+  }>({});
+  
+  const [snapEnabled, setSnapEnabled] = useState(true);
+
+  // Decouple spinner animation from data loading to prevent freeze-induced jank
+  useEffect(() => {
+    if (isLoadingData) {
+      // Start spinning immediately (runs independently of React freeze)
+      setIsSpinning(true);
+      setIsSlowingDown(false);
+      if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
+    } else {
+      // Trigger slowdown animation, then stop completely
+      setIsSlowingDown(true);
+      if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
+      
+      // After slowdown completes (1.5s), stop spinning
+      spinTimeoutRef.current = setTimeout(() => {
+        setIsSpinning(false);
+        setIsSlowingDown(false);
+      }, 1500);
+    }
+    
+    return () => {
+      if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
+    };
+  }, [isLoadingData]);
+
+  // Update timestamp display every second for "time ago" calculation
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Animation loop - OPTIMIZED: Only run when needed (selected asset exists)
+  // Use ref to avoid re-renders, update layers via updateTriggers
+  const animationTimeRef = useRef(0);
+  
+  useEffect(() => {
+    // Animate if there's a selected asset (for glow effects) OR if assets are fading in
+    const hasRecentAssets = assets.some(a => a.loadedAt && (Date.now() - a.loadedAt < 500));
+    if (!selectedAsset && !hasRecentAssets) return;
+    
+    let animationFrameId: number;
+    const animate = () => {
+      animationTimeRef.current = Date.now() * 0.002;
+      setAnimationFrame(prev => prev + 1); // Minimal state update to trigger layer refresh
+      animationFrameId = requestAnimationFrame(animate);
+    };
+    animationFrameId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [selectedAsset, assets.length]); // Run when selectedAsset changes or assets are added
+
+  // Fetch real-time substation status from Flask API (Postgres backend)
+  const fetchSubstationStatus = useCallback(async () => {
+    // Retry logic for transient Postgres connection failures (per Snowflake docs)
+    // Handles: connection pool exhaustion, checkpoint delays, log rotation
+    const maxRetries = 3;
+    const baseDelay = 500; // ms
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await fetch('/api/postgres/substations/status');
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Postgres HTTP ${response.status}: ${errorText || response.statusText}`);
+        }
+        const substations = await response.json();
+        const statusMap = new Map(
+          substations.map((sub: any) => [sub.substation_id, sub])
+        );
+        setSubstationStatusMap(statusMap);
+        console.log(`✅ Postgres: Fetched real-time status for ${substations.length} substations (${substations.filter((s: any) => s.status === 'critical').length} critical, ${substations.filter((s: any) => s.status === 'warning').length} warning)`);
+        return; // Success - exit retry loop
+      } catch (error) {
+        const isLastAttempt = attempt === maxRetries;
+        if (isLastAttempt) {
+          console.error('❌ Failed to fetch substation status from Postgres after retries:', error);
+        } else {
+          const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+          console.warn(`⚠️  Postgres fetch attempt ${attempt} failed, retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+  }, []);
+
+  // Auto-refresh substation status every 10 seconds
+  useEffect(() => {
+    fetchSubstationStatus(); // Initial fetch
+    
+    const interval = setInterval(fetchSubstationStatus, 10000); // Every 10 seconds
+    return () => clearInterval(interval);
+  }, [fetchSubstationStatus]);
+
+  useEffect(() => {
+    if (!draggedCardId) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newX = Math.max(0, Math.min(e.clientX - dragOffset.x, window.innerWidth - 380));
+      const newY = Math.max(0, Math.min(e.clientY - dragOffset.y, window.innerHeight - 100));
+      
+      // Track position history for velocity calculation
+      dragPositionHistory.current.push({ x: newX, y: newY, time: Date.now() });
+      if (dragPositionHistory.current.length > 5) {
+        dragPositionHistory.current.shift();
+      }
+      
+      // Store pending position for RAF-based update (throttles to 60fps max)
+      pendingDragPosition.current = { cardId: draggedCardId, x: newX, y: newY };
+      
+      // Schedule update if not already scheduled
+      if (!dragAnimationFrameRef.current) {
+        dragAnimationFrameRef.current = requestAnimationFrame(() => {
+          const pending = pendingDragPosition.current;
+          if (pending) {
+            // Batch both updates in single render cycle
+            setPinnedAssets(prev => prev.map(p => 
+              p.id === pending.cardId ? { ...p, position: { x: pending.x, y: pending.y } } : p
+            ));
+            
+            // Update selected asset position if dragging the selected card
+            if (selectedAsset && pending.cardId === selectedAsset.id) {
+              setSelectedAssetPosition({ x: pending.x, y: pending.y });
+            }
+          }
+          dragAnimationFrameRef.current = null;
+          pendingDragPosition.current = null;
+        });
+      }
+    };
+
+    const handleMouseUp = () => {
+      // Flush any pending drag update
+      if (dragAnimationFrameRef.current) {
+        cancelAnimationFrame(dragAnimationFrameRef.current);
+        dragAnimationFrameRef.current = null;
+      }
+      
+      // Calculate velocity from position history
+      if (dragPositionHistory.current.length >= 2) {
+        const last = dragPositionHistory.current[dragPositionHistory.current.length - 1];
+        const first = dragPositionHistory.current[0];
+        const timeDelta = (last.time - first.time) / 1000; // seconds
+        
+        if (timeDelta > 0) {
+          const velocityX = (last.x - first.x) / timeDelta;
+          const velocityY = (last.y - first.y) / timeDelta;
+          
+          // Start momentum animation
+          startMomentumAnimation(draggedCardId, velocityX, velocityY);
+        }
+      }
+      
+      setDraggedCardId(null);
+      dragPositionHistory.current = [];
+      pendingDragPosition.current = null;
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      if (dragAnimationFrameRef.current) {
+        cancelAnimationFrame(dragAnimationFrameRef.current);
+        dragAnimationFrameRef.current = null;
+      }
+    };
+  }, [draggedCardId, dragOffset, selectedAsset]);
+
+  // Momentum animation after drag release - OPTIMIZED: Batched updates, reduced friction calculations
+  const startMomentumAnimation = (cardId: string, initialVelocityX: number, initialVelocityY: number) => {
+    let velocityX = initialVelocityX;
+    let velocityY = initialVelocityY;
+    const friction = 0.92; // Reduced friction (was 0.85) - smoother, longer glide
+    const minVelocity = 0.5; // Lower threshold (was 1.5) - continues longer before stopping
+    let lastTimestamp = performance.now();
+    
+    const animate = (timestamp: number) => {
+      // Calculate actual time delta for smooth 60fps animation
+      const deltaTime = Math.min((timestamp - lastTimestamp) / 16.667, 2); // Cap at 2x for safety
+      lastTimestamp = timestamp;
+      
+      // Apply friction with time correction
+      const frictionFactor = Math.pow(friction, deltaTime);
+      velocityX *= frictionFactor;
+      velocityY *= frictionFactor;
+      
+      // Stop if velocity is too small
+      if (Math.abs(velocityX) < minVelocity && Math.abs(velocityY) < minVelocity) {
+        momentumAnimationRef.current = null;
+        return;
+      }
+      
+      // Update position with time-corrected delta
+      const deltaX = (velocityX / 60) * deltaTime;
+      const deltaY = (velocityY / 60) * deltaTime;
+      
+      // OPTIMIZATION: Single batched update for both pinned assets and selected asset
+      let newPositionForSelected: {x: number, y: number} | null = null;
+      
+      setPinnedAssets(prev => prev.map(p => {
+        if (p.id === cardId) {
+          const newX = Math.max(0, Math.min(p.position.x + deltaX, window.innerWidth - 380));
+          const newY = Math.max(0, Math.min(p.position.y + deltaY, window.innerHeight - 100));
+          
+          // Stop if hitting boundary
+          if (newX === 0 || newX === window.innerWidth - 380) velocityX = 0;
+          if (newY === 0 || newY === window.innerHeight - 100) velocityY = 0;
+          
+          // Cache for selected asset update
+          if (selectedAsset && cardId === selectedAsset.id) {
+            newPositionForSelected = { x: newX, y: newY };
+          }
+          
+          return { ...p, position: { x: newX, y: newY } };
+        }
+        return p;
+      }));
+      
+      // Update selected asset position in same frame if needed
+      if (newPositionForSelected) {
+        setSelectedAssetPosition(newPositionForSelected);
+      }
+      
+      // Continue or stop momentum
+      if (Math.abs(velocityX) > 0.1 || Math.abs(velocityY) > 0.1) {
+        momentumAnimationRef.current = requestAnimationFrame(animate);
+      } else {
+        momentumAnimationRef.current = null;
+      }
+    };
+    
+    momentumAnimationRef.current = requestAnimationFrame(animate);
+  };
+  
+  // Helper: Get paginated items for large lists (performance optimization)
+  // CRITICAL: Start with only 20 items for better performance, load more on demand
+  const getPaginatedItems = (items: any[] | undefined, cardId: string, category: string, defaultPageSize = 20) => {
+    if (!items || items.length === 0) return { visibleItems: [], hasMore: false, totalCount: 0 };
+    
+    const currentPageSize = listPageSize[cardId]?.[category as keyof typeof listPageSize[typeof cardId]] || defaultPageSize;
+    const visibleItems = items.slice(0, currentPageSize);
+    const hasMore = items.length > currentPageSize;
+    
+    return { visibleItems, hasMore, totalCount: items.length };
+  };
+  
+  // Helper: Load more items for a category
+  const loadMoreItems = (cardId: string, category: string, increment = 30) => {
+    setListPageSize(prev => ({
+      ...prev,
+      [cardId]: {
+        ...(prev[cardId] || {}),
+        [category]: (prev[cardId]?.[category as keyof typeof prev[typeof cardId]] || 50) + increment
+      }
+    }));
+  };
+
+  // Cleanup momentum animation on unmount
+  useEffect(() => {
+    return () => {
+      if (momentumAnimationRef.current) {
+        cancelAnimationFrame(momentumAnimationRef.current);
+      }
+    };
+  }, []);
+  const [zoomTimeout, setZoomTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [lastZoomVelocity, setLastZoomVelocity] = useState(0);
+  const lastZoomTimeRef = useRef(Date.now());
+  const lastZoomRef = useRef(INITIAL_VIEW_STATE.zoom);
+  const lastIntelligenceLayerRef = useRef<string | null>(null);
+  const [isInMagneticZone, setIsInMagneticZone] = useState(false);
+  const [targetSnapZoom, setTargetSnapZoom] = useState<number | null>(null);
+  const isSnappingRef = useRef(false);
+  const velocityHistoryRef = useRef<Array<{velocity: number, time: number}>>([]);
+  const isUserScrollingRef = useRef(false);
+  const scrollEndTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [lastClickTime, setLastClickTime] = useState(0);
+  const [lastClickCoords, setLastClickCoords] = useState<[number, number] | null>(null);
+  const [layersVisible, setLayersVisible] = useState({
+    poles: true,
+    transformers: true,
+    meters: true,
+    substations: true,
+    connections: true,
+    heatmap: false,
+    weather: false,
+    enable3D: true
+  });
+  const [layersPanelExpanded, setLayersPanelExpanded] = useState(true);
+
+  // Helper: Format time ago (depends on currentTime to trigger re-calculation)
+  const getTimeAgo = useCallback((date: Date) => {
+    const seconds = Math.floor((currentTime.getTime() - date.getTime()) / 1000);
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  }, [currentTime]);
+
+  // Auto-disable expensive heatmap when weather overlay is enabled (GPU optimization)
+  useEffect(() => {
+    if (layersVisible.weather && layersVisible.heatmap) {
+      setLayersVisible(prev => ({ ...prev, heatmap: false }));
+      // console.log('⚡ GPU Optimization: Disabled usage heatmap (conflicts with weather overlay)');
+    }
+  }, [layersVisible.weather, layersVisible.heatmap]);
+
+  // Weather timeline animation loop
+  useEffect(() => {
+    if (!isWeatherPlaying || weather.length === 0) return;
+
+    const interval = setInterval(() => {
+      setWeatherTimelineIndex(prev => {
+        // Loop back to start when reaching the end
+        if (prev >= weather.length - 1) return 0;
+        return prev + 1;
+      });
+    }, 1000 / weatherSpeed); // Speed controls how many hours per second
+
+    return () => clearInterval(interval);
+  }, [isWeatherPlaying, weather.length, weatherSpeed]);
+
+  // Extract currentZoom early for use in callbacks
+  const currentZoom = viewState.zoom;
+  const ZOOM_THRESHOLD = 11.5;
+  const useClusteredView = currentZoom < ZOOM_THRESHOLD;
+
+  // PRODUCTION LOD: Lazy load detailed assets based on zoom level
+  useEffect(() => {
+    const loadDetailedData = async () => {
+      const zoom = currentZoom;
+      
+      // Zoom 9+: Load metro + feeders (distribution network view) + substations
+      // Load once and keep for all higher zoom levels
+      if (zoom >= 9 && metroTopologyData.length === 0) {
+        console.log(`📊 Zoom ${zoom.toFixed(1)}: Loading metro topology + feeders + substations...`);
+        try {
+          const [metroData, feedersData] = await Promise.all([
+            fetch('/api/topology/metro').then(async r => {
+              if (!r.ok) throw new Error(`Metro HTTP ${r.status}: ${r.statusText}`);
+              return r.json();
+            }),
+            fetch('/api/topology/feeders').then(async r => {
+              if (!r.ok) throw new Error(`Feeders HTTP ${r.status}: ${r.statusText}`);
+              return r.json();
+            })
+          ]);
+          setMetroTopologyData(metroData);
+          setFeederTopologyData(feedersData);
+          console.log(`✅ Loaded ${metroData.length} metro substations, ${feedersData.length} feeders`);
+          
+          // Load substations immediately from metro data
+          if (!substationsLoadedRef.current && metroData.length > 0) {
+            substationsLoadedRef.current = true;
+            console.log(`   📍 Adding ${metroData.length} substations...`);
+            const substations: Asset[] = metroData.map((row: any) => {
+              const status = substationStatusMap.get(row.SUBSTATION_ID);
+              return {
+                id: row.SUBSTATION_ID,
+                name: row.SUBSTATION_NAME || row.SUBSTATION_ID,
+                type: 'substation',
+                latitude: row.LATITUDE,
+                longitude: row.LONGITUDE,
+                load_percent: status?.load_percent ?? null,
+                voltage: row.VOLTAGE_KV ? `${row.VOLTAGE_KV} kV` : null,
+                status: status?.status ?? null,
+                commissioned_date: null,
+                health_score: status?.health_score ?? null,
+                usage_kwh: null,
+                pole_height_ft: null,
+                circuit_id: null,
+                loadedAt: Date.now()
+              };
+            });
+            
+            setAssets(prev => [...prev, ...substations]);
+            console.log(`   ✅ Added ${substations.length} substations instantly`);
+          }
+        } catch (error) {
+          console.error('Failed to load metro/feeders:', error);
+        }
+      }
+      
+      // Zoom 10+: Load topology connections (one-time load with reasonable limit)
+      // Progressive asset loading happens separately in the next effect
+      if (zoom >= 10 && topology.length === 0 && serviceAreas.length > 0) {
+        console.log(`📊 Zoom ${zoom.toFixed(1)}: Loading topology connections (limited for performance)...`);
+        try {
+          // Load topology data with 200k limit for reasonable performance
+          // Full 1.26M connections would take minutes - 200k gives better coverage
+          const topologyData = await fetch('/api/topology?limit=200000').then(async r => {
+            if (!r.ok) throw new Error(`Topology HTTP ${r.status}: ${r.statusText}`);
+            return r.json();
+          });
+          
+          const mappedTopology = topologyData.map((row: any) => ({
+            from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
+            connection_type: 'Distribution',
+            from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
+            to_latitude: row.TO_LAT, to_longitude: row.TO_LON
+          }));
+          
+          setTopology(mappedTopology);
+          console.log(`   ✅ Loaded ${mappedTopology.length.toLocaleString()} topology connections`);
+          
+          // Immediately check how many are in viewport for debugging
+          const degPerPixel = 360 / (256 * Math.pow(2, zoom));
+          const viewWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) * degPerPixel;
+          const viewHeight = (typeof window !== 'undefined' ? window.innerHeight : 1080) * degPerPixel;
+          const buffer = 1.2;
+          const minLng = viewState.longitude - (viewWidth / 2) * buffer;
+          const maxLng = viewState.longitude + (viewWidth / 2) * buffer;
+          const minLat = viewState.latitude - (viewHeight / 2) * buffer;
+          const maxLat = viewState.latitude + (viewHeight / 2) * buffer;
+          
+          const inViewport = mappedTopology.filter((link: any) =>
+            (link.from_longitude >= minLng && link.from_longitude <= maxLng &&
+             link.from_latitude >= minLat && link.from_latitude <= maxLat) ||
+            (link.to_longitude >= minLng && link.to_longitude <= maxLng &&
+             link.to_latitude >= minLat && link.to_latitude <= maxLat)
+          );
+          
+          console.log(`   🎯 ${inViewport.length.toLocaleString()} connections in current viewport`);
+        } catch (error) {
+          console.error('Failed to load topology:', error);
+        }
+      }
+      
+      // Substations are now loaded immediately at zoom 9 (above) alongside metro/feeders
+      
+      // OLD FALLBACK: DISABLED - Progressive loading (separate effect) handles all viewport-based loading now
+      // This fallback could cause mass loading of assets if triggered
+      // Keeping code for reference but never executing
+      if (false && zoom >= 10 && assets.length === 0 && serviceAreas.length === 0) {
+        console.log(`📊 Zoom ${zoom.toFixed(1)}: Loading viewport-filtered assets (circuit-based)...`);
+        try {
+          // Get visible circuits from service areas (already loaded)
+          // Sort by distance from viewport center for predictable loading
+          const visibleCircuits = serviceAreas
+            .filter(sa => {
+              const lat = sa.CENTROID_LAT;
+              const lon = sa.CENTROID_LON;
+              if (!lat || !lon) return false;
+              
+              // Calculate viewport bounds with 100% buffer (2x viewport) for smoother loading
+              const degPerPixel = 360 / (256 * Math.pow(2, zoom));
+              const viewWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) * degPerPixel;
+              const viewHeight = (typeof window !== 'undefined' ? window.innerHeight : 1080) * degPerPixel;
+              const buffer = 2.0;
+              
+              const minLng = viewState.longitude - (viewWidth / 2) * buffer;
+              const maxLng = viewState.longitude + (viewWidth / 2) * buffer;
+              const minLat = viewState.latitude - (viewHeight / 2) * buffer;
+              const maxLat = viewState.latitude + (viewHeight / 2) * buffer;
+              
+              return lon >= minLng && lon <= maxLng && lat >= minLat && lat <= maxLat;
+            })
+            .map(sa => ({
+              circuit_id: sa.CIRCUIT_ID,
+              distance: Math.sqrt(
+                Math.pow(sa.CENTROID_LAT - viewState.latitude, 2) +
+                Math.pow(sa.CENTROID_LON - viewState.longitude, 2)
+              )
+            }))
+            .sort((a, b) => a.distance - b.distance) // Closest first
+            .map(item => item.circuit_id);
+          
+          // Load up to 25 circuits for initial load (reduces pop-in)
+          const circuitsToLoad = visibleCircuits.slice(0, 25);
+          
+          console.log(`   📍 Visible circuits: ${visibleCircuits.length}, Loading first ${circuitsToLoad.length} circuits`);
+          
+          if (circuitsToLoad.length === 0) {
+            console.log(`   ⚠️ No circuits in viewport, loading sample data (limit 50K)`);
+            // Fallback: load limited assets if no circuits in viewport
+            const assetsData = await fetch('/api/assets?limit=50000').then(async r => {
+              if (!r.ok) throw new Error(`Assets HTTP ${r.status}: ${r.statusText}`);
+              return r.json();
+            });
+            
+            const mappedAssets: Asset[] = assetsData.map((row: any) => ({
+              id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
+              latitude: row.LATITUDE, longitude: row.LONGITUDE,
+              load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
+              commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
+              usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
+              circuit_id: row.CIRCUIT_ID
+            }));
+            
+            // Substations are loaded separately in the dedicated block above (line 965)
+            // Don't add them here to prevent duplicates
+            setAssets(mappedAssets);
+            console.log(`   ✅ Sample assets loaded: ${mappedAssets.length.toLocaleString()} assets (substations loaded separately)`);
+            return;
+          }
+          
+          // Load assets for visible circuits only
+          const circuitParam = circuitsToLoad.join(',');
+          const [assetsData, topologyData] = await Promise.all([
+            fetch(`/api/assets?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
+              if (!r.ok) throw new Error(`Assets HTTP ${r.status}: ${r.statusText}`);
+              return r.json();
+            }),
+            fetch('/api/topology?limit=50000').then(async r => {
+              if (!r.ok) throw new Error(`Topology HTTP ${r.status}: ${r.statusText}`);
+              return r.json();
+            })
+          ]);
+          
+          const mappedAssets: Asset[] = assetsData.map((row: any) => ({
+            id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
+            latitude: row.LATITUDE, longitude: row.LONGITUDE,
+            load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
+            commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
+            usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
+            circuit_id: row.CIRCUIT_ID
+          }));
+          
+          // Substations are loaded separately in the dedicated block above (line 965)
+          // Don't add them here to prevent duplicates
+          
+          const mappedTopology = topologyData.map((row: any) => ({
+            from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
+            connection_type: 'Distribution',
+            from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
+            to_latitude: row.TO_LAT, to_longitude: row.TO_LON
+          }));
+          
+          // Deduplicate with existing assets before setting
+          setAssets(prev => {
+            const existingIds = new Set(prev.map(a => a.id));
+            const uniqueNew = mappedAssets.filter(a => !existingIds.has(a.id));
+            return [...prev, ...uniqueNew];
+          });
+          setTopology(mappedTopology);
+          console.log(`   ✅ Viewport assets loaded: ${mappedAssets.length.toLocaleString()} assets, ${mappedTopology.length.toLocaleString()} connections`);
+          console.log(`   🎯 Loaded ${circuitsToLoad.length} circuits: ${circuitsToLoad.slice(0, 3).join(', ')}${circuitsToLoad.length > 3 ? '...' : ''}`);
+        } catch (error) {
+          console.error('Failed to load assets/topology:', error);
+        }
+      }
+    };
+    
+    loadDetailedData();
+  }, [currentZoom, metroTopologyData.length, topology.length, serviceAreas.length]);
+
+  // PERFORMANCE: Throttle zoom for expensive calculations - only update on significant changes
+  // SMOOTHNESS: Use finer granularity (0.1 instead of 0.5) for smoother height transitions
+  const throttledZoom = useMemo(() => {
+    return Math.round(currentZoom * 10) / 10;
+  }, [currentZoom]);
+
+  // PERFORMANCE: Throttle viewport position to reduce filtering frequency during pan
+  const throttledViewport = useMemo(() => {
+    // Round to ~50m precision for very responsive loading (was 100m)
+    const precision = 0.0005;
+    return {
+      longitude: Math.round(viewState.longitude / precision) * precision,
+      latitude: Math.round(viewState.latitude / precision) * precision
+    };
+  }, [viewState.longitude, viewState.latitude]);
+
+  // PROGRESSIVE LOADING: Aggressive parallel loading with zero debounce
+  // CULLING: Remove assets far outside viewport to optimize memory
+  useEffect(() => {
+    if (currentZoom < 10) return;
+    
+    // ZERO DEBOUNCE - load immediately on viewport change
+    // No blocking guard - deduplication handled by loadingCircuitsRef
+    const loadAssets = async () => {
+      try {
+        // ACCURATE VIEWPORT: Use WebMercatorViewport for precise bounds calculation
+        const viewport = new WebMercatorViewport({
+          width: typeof window !== 'undefined' ? window.innerWidth : 1920,
+          height: typeof window !== 'undefined' ? window.innerHeight : 1080,
+          longitude: throttledViewport.longitude,
+          latitude: throttledViewport.latitude,
+          zoom: currentZoom,
+          pitch: viewState.pitch || 0,
+          bearing: viewState.bearing || 0
+        });
+        
+        // Get accurate bounds accounting for pitch/bearing/latitude distortion
+        // getBounds returns [minLng, minLat, maxLng, maxLat] as a flat array
+        const bounds = viewport.getBounds();
+        const west = bounds[0];
+        const south = bounds[1];
+        const east = bounds[2];
+        const north = bounds[3];
+        
+        // BUFFER STRATEGY (OPTIMIZED):
+        // - Load buffer: 1.2x (load just around viewport)
+        // - Cull buffer: 2.5x (cull sooner to prevent bloat)
+        // - This ensures: cull buffer > load buffer (no thrashing)
+        const loadBuffer = 1.2;
+        const cullBuffer = 2.5;
+        
+        // Calculate load bounds with buffer
+        const loadLngRange = (east - west) * (loadBuffer - 1) / 2;
+        const loadLatRange = (north - south) * (loadBuffer - 1) / 2;
+        const loadMinLng = west - loadLngRange;
+        const loadMaxLng = east + loadLngRange;
+        const loadMinLat = south - loadLatRange;
+        const loadMaxLat = north + loadLatRange;
+        
+        // Calculate cull bounds with larger buffer
+        const cullLngRange = (east - west) * (cullBuffer - 1) / 2;
+        const cullLatRange = (north - south) * (cullBuffer - 1) / 2;
+        const cullMinLng = west - cullLngRange;
+        const cullMaxLng = east + cullLngRange;
+        const cullMinLat = south - cullLatRange;
+        const cullMaxLat = north + cullLatRange;
+        
+        // Use throttledViewport for center calculations
+        const centerLng = throttledViewport.longitude;
+        const centerLat = throttledViewport.latitude;
+        
+        // Get visible circuits from current viewport
+        // Sort by distance from viewport center for predictable loading
+        const visibleCircuits = serviceAreas
+          .filter(sa => {
+            const lat = sa.CENTROID_LAT;
+            const lon = sa.CENTROID_LON;
+            if (!lat || !lon) return false;
+            
+            return lon >= loadMinLng && lon <= loadMaxLng && lat >= loadMinLat && lat <= loadMaxLat;
+          })
+          .map(sa => ({
+            circuit_id: sa.CIRCUIT_ID,
+            distance: Math.sqrt(
+              Math.pow(sa.CENTROID_LAT - centerLat, 2) +
+              Math.pow(sa.CENTROID_LON - centerLng, 2)
+            )
+          }))
+          .sort((a, b) => a.distance - b.distance) // Closest first
+          .map(item => item.circuit_id);
+        
+        // Find circuits not yet loaded AND not currently loading
+        // USE REF (not recalculating from assets) to prevent reload loop when assets are culled
+        const newCircuits = visibleCircuits.filter(cid => 
+          !loadedCircuitsRef.current.has(cid) && !loadingCircuitsRef.current.has(cid)
+        );
+        
+        console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${visibleCircuits.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
+        
+        // CULLING: Remove assets far outside viewport (AGGRESSIVE)
+        // IMPORTANT: Cull AFTER checking loaded circuits (don't affect load calculations)
+        // More aggressive culling to prevent memory bloat
+        if (assets.length > 500) { // Cull sooner (was 1000)
+          const assetsBeforeCull = assets.length;
+          const culledAssets = assets.filter(a => {
+            // Always keep substations (needed for service area visualization)
+            if (a.type === 'substation') return true;
+            // Keep assets within culling bounds (2.5x viewport)
+            return a.longitude >= cullMinLng && a.longitude <= cullMaxLng &&
+                   a.latitude >= cullMinLat && a.latitude <= cullMaxLat;
+          });
+          
+          if (culledAssets.length < assetsBeforeCull) {
+            const removed = assetsBeforeCull - culledAssets.length;
+            console.log(`   🗑️ Culled ${removed.toLocaleString()} assets outside ${cullBuffer}x viewport (${assetsBeforeCull.toLocaleString()} → ${culledAssets.length.toLocaleString()})`);
+            setAssets(culledAssets);
+            
+            // CRITICAL: Also cull topology connections for culled assets AND viewport
+            const remainingAssetIds = new Set(culledAssets.map(a => a.id));
+            const topologyBeforeCull = topology.length;
+            
+            setTopology(prev => {
+              const filtered = prev.filter(t => {
+                // Must have both endpoints still loaded
+                if (!remainingAssetIds.has(t.from_asset_id) || !remainingAssetIds.has(t.to_asset_id)) {
+                  return false;
+                }
+                // AND at least one endpoint must be in viewport cull bounds
+                const fromInBounds = t.from_longitude >= cullMinLng && t.from_longitude <= cullMaxLng &&
+                                   t.from_latitude >= cullMinLat && t.from_latitude <= cullMaxLat;
+                const toInBounds = t.to_longitude >= cullMinLng && t.to_longitude <= cullMaxLng &&
+                                 t.to_latitude >= cullMinLat && t.to_latitude <= cullMaxLat;
+                return fromInBounds || toInBounds;
+              });
+              
+              if (filtered.length < topologyBeforeCull) {
+                console.log(`   🗑️ Culled ${(topologyBeforeCull - filtered.length).toLocaleString()} topology connections (${topologyBeforeCull.toLocaleString()} → ${filtered.length.toLocaleString()})`);
+              }
+              
+              return filtered;
+            });
+          }
+        }
+        
+        // PERIODIC TOPOLOGY CLEANUP: Aggressively remove topology outside viewport
+        // This ensures topology doesn't accumulate even when assets are not selected
+        if (topology.length > 1000) {
+          const topologyBeforeCleanup = topology.length;
+          
+          setTopology(prev => {
+            const cleaned = prev.filter(t => {
+              // Keep if either endpoint is in viewport cull bounds (accurate calculation)
+              const fromInBounds = t.from_longitude >= cullMinLng && t.from_longitude <= cullMaxLng &&
+                                 t.from_latitude >= cullMinLat && t.from_latitude <= cullMaxLat;
+              const toInBounds = t.to_longitude >= cullMinLng && t.to_longitude <= cullMaxLng &&
+                               t.to_latitude >= cullMinLat && t.to_latitude <= cullMaxLat;
+              return fromInBounds || toInBounds;
+            });
+            
+            if (cleaned.length < topologyBeforeCleanup) {
+              console.log(`   🧹 Periodic topology cleanup: ${(topologyBeforeCleanup - cleaned.length).toLocaleString()} removed (${topologyBeforeCleanup.toLocaleString()} → ${cleaned.length.toLocaleString()})`);
+            }
+            
+            return cleaned;
+          });
+        }
+        
+        if (newCircuits.length > 0) {
+          // AGGRESSIVE LIMITS: Prevent loading too many assets
+          // Safety checks BEFORE loading
+          const totalAssets = assets.length;
+          const maxAssetsAllowed = throttledZoom < 11 ? 30000 : throttledZoom < 12 ? 60000 : 120000;
+          const maxCircuitsAllowed = throttledZoom < 11 ? 50 : throttledZoom < 12 ? 100 : 200;
+          
+          if (totalAssets > maxAssetsAllowed) {
+            console.log(`   ⚠️ Asset limit reached: ${totalAssets.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} assets loaded. Skipping load.`);
+            return;
+          }
+          
+          if (loadedCircuitsRef.current.size >= maxCircuitsAllowed) {
+            console.log(`   ⚠️ Circuit limit reached: ${loadedCircuitsRef.current.size}/${maxCircuitsAllowed} circuits loaded. Skipping load.`);
+            return;
+          }
+          
+          // Conservative loading: Max 20 circuits per viewport update (was 60)
+          const circuitsToLoad = newCircuits.slice(0, 20);
+          
+          console.log(`   🔄 Loading ${circuitsToLoad.length}/${newCircuits.length} circuits (${loadedCircuitsRef.current.size} already loaded)...`);
+          
+          // Mark circuits as loading
+          circuitsToLoad.forEach(cid => loadingCircuitsRef.current.add(cid));
+          
+          // PARALLEL LOADING: Split into 10-circuit batches for finer control
+          const batchSize = 10; // Smaller batches = more control over limits
+          const batches: string[][] = [];
+          for (let i = 0; i < circuitsToLoad.length; i += batchSize) {
+            batches.push(circuitsToLoad.slice(i, i + batchSize));
+          }
+          
+          // Fire all batch requests in parallel - load BOTH assets AND topology for each batch
+          const batchPromises = batches.map(async (batch, idx) => {
+            const circuitParam = batch.join(',');
+            
+            // Load assets and topology in parallel for this circuit batch
+            const [assetsData, topologyData] = await Promise.all([
+              fetch(`/api/assets?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
+                if (!r.ok) throw new Error(`Assets HTTP ${r.status}: ${r.statusText}`);
+                return r.json();
+              }),
+              fetch(`/api/topology?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
+                if (!r.ok) throw new Error(`Topology HTTP ${r.status}: ${r.statusText}`);
+                return r.json();
+              })
+            ]);
+            
+            const newAssets: Asset[] = assetsData.map((row: any) => ({
+              id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
+              latitude: row.LATITUDE, longitude: row.LONGITUDE,
+              load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
+              commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
+              usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
+              circuit_id: row.CIRCUIT_ID,
+              loadedAt: Date.now()  // Timestamp for fade-in animation
+            }));
+            
+            const newTopology: TopologyLink[] = topologyData.map((row: any) => ({
+              from_asset_id: row.FROM_ASSET_ID,
+              to_asset_id: row.TO_ASSET_ID,
+              connection_type: 'Distribution',
+              from_latitude: row.FROM_LAT,
+              from_longitude: row.FROM_LON,
+              to_latitude: row.TO_LAT,
+              to_longitude: row.TO_LON
+            }));
+            
+            return { batchIdx: idx, batch, assets: newAssets, topology: newTopology };
+          });
+          
+          // Process batches as they complete (don't wait for all)
+          batchPromises.forEach(promise => {
+            promise.then(({ batchIdx, batch, assets: newAssets, topology: newTopology }) => {
+              // Remove circuits from loading set AND mark as loaded (PERSISTENT)
+              batch.forEach(cid => {
+                loadingCircuitsRef.current.delete(cid);
+                loadedCircuitsRef.current.add(cid); // Mark circuit as successfully loaded
+              });
+              
+              // Append assets immediately as each batch completes (WITH HARD CAP)
+              setAssets(prev => {
+                const existingIds = new Set(prev.map(a => a.id));
+                const uniqueNew = newAssets.filter(a => !existingIds.has(a.id));
+                
+                // HARD CAP: Enforce max assets allowed (prevents overshoot from parallel loading)
+                const currentZoom = throttledZoom;
+                const maxAssetsAllowed = currentZoom < 11 ? 30000 : currentZoom < 12 ? 60000 : 120000;
+                const spaceAvailable = Math.max(0, maxAssetsAllowed - prev.length);
+                
+                if (spaceAvailable === 0) {
+                  console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} REJECTED: Asset cap reached (${prev.length.toLocaleString()}/${maxAssetsAllowed.toLocaleString()})`);
+                  return prev;
+                }
+                
+                const assetsToAdd = uniqueNew.slice(0, spaceAvailable);
+                
+                if (assetsToAdd.length > 0) {
+                  console.log(`   ✅ Batch ${batchIdx + 1}/${batches.length} added ${assetsToAdd.length.toLocaleString()}/${uniqueNew.length.toLocaleString()} assets + ${newTopology.length.toLocaleString()} connections`);
+                }
+                
+                return [...prev, ...assetsToAdd];
+              });
+              
+              // Append topology connections immediately (WITH HARD CAP + RACE CONDITION PROTECTION)
+              setTopology(prev => {
+                const existingIds = new Set(prev.map(t => `${t.from_asset_id}-${t.to_asset_id}`));
+                const uniqueNew = newTopology.filter(t => !existingIds.has(`${t.from_asset_id}-${t.to_asset_id}`));
+                
+                // HARD CAP: Max 50K topology connections (prevents memory bloat)
+                // RACE CONDITION FIX: Account for pending additions from parallel batches
+                const maxTopologyAllowed = 50000;
+                const spaceAvailable = Math.max(0, maxTopologyAllowed - prev.length - pendingTopologyCountRef.current);
+                
+                if (spaceAvailable === 0) {
+                  console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} topology REJECTED: Cap reached (${(prev.length + pendingTopologyCountRef.current).toLocaleString()}/${maxTopologyAllowed.toLocaleString()})`);
+                  return prev;
+                }
+                
+                const topologyToAdd = uniqueNew.slice(0, spaceAvailable);
+                
+                // Update pending counter (will be decremented when state update completes)
+                pendingTopologyCountRef.current += topologyToAdd.length;
+                
+                return [...prev, ...topologyToAdd];
+              });
+            }).catch(err => {
+              console.error(`Batch ${batchIdx + 1} failed:`, err);
+              // Remove circuits from loading set on error
+              batches[batchIdx]?.forEach(cid => loadingCircuitsRef.current.delete(cid));
+            });
+          });
+          
+          // Reset pending topology counter after all batches settle (prevents drift)
+          Promise.allSettled(batchPromises).then(() => {
+            pendingTopologyCountRef.current = 0;
+          });
+        }
+      } catch (error) {
+        console.error('Progressive loading failed:', error);
+      }
+    };
+    
+    loadAssets();
+  }, [throttledViewport.longitude, throttledViewport.latitude, currentZoom, serviceAreas.length]);
+
+  // CONNECTED ASSETS: Compute all assets directly connected to selected assets
+  const connectedAssets = useMemo(() => {
+    if (selectedAssets.size === 0) return new Set<string>();
+    
+    const connected = new Set<string>(selectedAssets);
+    
+    // Add all directly connected assets (1-hop neighbors)
+    topology.forEach(link => {
+      if (selectedAssets.has(link.from_asset_id)) {
+        connected.add(link.to_asset_id);
+      }
+      if (selectedAssets.has(link.to_asset_id)) {
+        connected.add(link.from_asset_id);
+      }
+    });
+    
+    return connected;
+  }, [topology, selectedAssets]);
+
+  // VIEWPORT-FILTERED TOPOLOGY: Smoothly tracks visible connections with fade transitions
+  // Uses throttledZoom and throttledViewport to prevent recalculation on every tiny change
+  const visibleTopology = useMemo(() => {
+    if (throttledZoom < 10 || topology.length === 0) return [];
+    
+    // ACCURATE VIEWPORT: Use WebMercatorViewport for precise bounds
+    const viewport = new WebMercatorViewport({
+      width: typeof window !== 'undefined' ? window.innerWidth : 1920,
+      height: typeof window !== 'undefined' ? window.innerHeight : 1080,
+      longitude: throttledViewport.longitude,
+      latitude: throttledViewport.latitude,
+      zoom: throttledZoom,
+      pitch: viewState.pitch || 0,
+      bearing: viewState.bearing || 0
+    });
+    
+    // Get accurate bounds with 1.2x buffer for visible topology
+    // getBounds returns [minLng, minLat, maxLng, maxLat] as a flat array
+    const bounds = viewport.getBounds();
+    const west = bounds[0];
+    const south = bounds[1];
+    const east = bounds[2];
+    const north = bounds[3];
+    const bufferMultiplier = 1.2;
+    const lngRange = (east - west) * (bufferMultiplier - 1) / 2;
+    const latRange = (north - south) * (bufferMultiplier - 1) / 2;
+    
+    const minLng = west - lngRange;
+    const maxLng = east + lngRange;
+    const minLat = south - latRange;
+    const maxLat = north + latRange;
+    
+    const viewportFiltered = topology.filter(link => 
+      (link.from_longitude >= minLng && link.from_longitude <= maxLng &&
+       link.from_latitude >= minLat && link.from_latitude <= maxLat) ||
+      (link.to_longitude >= minLng && link.to_longitude <= maxLng &&
+       link.to_latitude >= minLat && link.to_latitude <= maxLat)
+    );
+    
+    console.log(`   🔗 Visible topology: ${viewportFiltered.length.toLocaleString()}/${topology.length.toLocaleString()} connections in viewport`);
+    
+    if (selectedAssets.size > 0) {
+      const selectedConnections = topology.filter(link =>
+        selectedAssets.has(link.from_asset_id) || selectedAssets.has(link.to_asset_id)
+      );
+      
+      const viewportIds = new Set(viewportFiltered.map(l => `${l.from_asset_id}-${l.to_asset_id}`));
+      const uniqueSelected = selectedConnections.filter(l => 
+        !viewportIds.has(`${l.from_asset_id}-${l.to_asset_id}`)
+      );
+      
+      return [...viewportFiltered, ...uniqueSelected].slice(0, 8000);
+    }
+    
+    return viewportFiltered.slice(0, 8000);
+  }, [throttledViewport.longitude, throttledViewport.latitude, throttledZoom, topology, selectedAssets]);
+
+  // CONNECTED ASSET COUNTS: Compute meter/pole counts for transformers and substations
+  // Used for count badges displayed above assets
+  // OPTIMIZED: O(n) instead of O(n²) by using Map lookup
+  const assetConnectionCounts = useMemo(() => {
+    // INIT OPTIMIZATION: Only compute when topology is visible (zoom >= 10)
+    // Connection counts are only used for visual sizing of topology arcs
+    // Saves 50-80ms on asset load
+    if (throttledZoom < 10 || topology.length === 0) {
+      return new Map<string, { meters: number; poles: number; transformers: number; total: number }>();
+    }
+    
+    const counts = new Map<string, { meters: number; poles: number; transformers: number; total: number }>();
+    
+    // Create fast lookup map: O(n)
+    const assetMap = new Map<string, Asset>();
+    assets.forEach(a => assetMap.set(a.id, a));
+    
+    // Count connections: O(topology.length)
+    topology.forEach(link => {
+      const fromAsset = assetMap.get(link.from_asset_id);
+      const toAsset = assetMap.get(link.to_asset_id);
+      
+      if (!fromAsset || !toAsset) return;
+      
+      // Initialize counts if not exists
+      if (!counts.has(link.from_asset_id)) {
+        counts.set(link.from_asset_id, { meters: 0, poles: 0, transformers: 0, total: 0 });
+      }
+      if (!counts.has(link.to_asset_id)) {
+        counts.set(link.to_asset_id, { meters: 0, poles: 0, transformers: 0, total: 0 });
+      }
+      
+      // Count by type
+      const fromCount = counts.get(link.from_asset_id)!;
+      const toCount = counts.get(link.to_asset_id)!;
+      
+      const toType = toAsset.type?.toLowerCase();
+      const fromType = fromAsset.type?.toLowerCase();
+      
+      if (toType === 'meter') {
+        fromCount.meters++;
+        fromCount.total++;
+      } else if (toType === 'pole') {
+        fromCount.poles++;
+        fromCount.total++;
+      } else if (toType === 'transformer') {
+        fromCount.transformers++;
+        fromCount.total++;
+      }
+      
+      if (fromType === 'meter') {
+        toCount.meters++;
+        toCount.total++;
+      } else if (fromType === 'pole') {
+        toCount.poles++;
+        toCount.total++;
+      } else if (fromType === 'transformer') {
+        toCount.transformers++;
+        toCount.total++;
+      }
+    });
+    
+    return counts;
+  }, [topology, assets, throttledZoom]);
+
+  // Fly to asset location with buttery smooth animation
+  const flyToAsset = (longitude: number, latitude: number, zoom?: number) => {
+    isProgrammaticTransition.current = true;
+    setViewState({
+      longitude,
+      latitude,
+      zoom: zoom || 13.5,
+      pitch: viewState.pitch,
+      bearing: viewState.bearing,
+      transitionDuration: 2000, // Smooth, cinematic duration
+      transitionInterpolator: new FlyToInterpolator({ speed: 1.2 }) // Optimized speed for smoothness
+    });
+    // Reset flag after transition completes
+    setTimeout(() => {
+      isProgrammaticTransition.current = false;
+    }, 2100);
+  };
+
+  // Smooth zoom on double-click
+  const handleDoubleClick = (info: any) => {
+    // Determine zoom direction based on modifier keys
+    // Shift + double-click = zoom out, otherwise zoom in
+    const zoomOut = info.srcEvent?.shiftKey;
+    const zoomDelta = zoomOut ? -1.5 : 1.5;
+    const newZoom = Math.max(5, Math.min(15, currentZoom + zoomDelta));
+    
+    isProgrammaticTransition.current = true;
+    setViewState({
+      ...viewState,
+      zoom: newZoom,
+      longitude: info.coordinate ? info.coordinate[0] : viewState.longitude,
+      latitude: info.coordinate ? info.coordinate[1] : viewState.latitude,
+      transitionDuration: 1000, // Smooth zoom duration
+      transitionInterpolator: new FlyToInterpolator({ speed: 1.5 })
+    });
+    // Reset flag after transition completes
+    setTimeout(() => {
+      isProgrammaticTransition.current = false;
+    }, 1100);
+  };
+
+  // ENGINEERING ENHANCEMENT: Priority-based glow system
+  // Communicates operational urgency through color, intensity, pulse speed
+  const getGlowProperties = useCallback((asset: any) => {
+    const health = asset.health_score ?? asset.AVG_HEALTH_SCORE ?? asset.WORST_CIRCUIT_HEALTH ?? 75;
+    
+    // CRITICAL FIX: Use worst-case load from Postgres (shows RED if ANY circuit critical)
+    // This fixes SUB-HOU-062 showing GREEN at 45.8% avg when one circuit is at 221%
+    const load = asset.WORST_CIRCUIT_LOAD ?? asset.load_percent ?? asset.AVG_LOAD_PERCENT ?? 50;
+    
+    // Intelligence layer zoom adaptation
+    const glowScale = currentZoom < 10.8 ? 1.5 :  // Executive view - large regional glow
+                      currentZoom < 12.2 ? 1.2 :  // Incident view - medium glow
+                      currentZoom < 13.5 ? 1.0 :  // Inspection view - normal glow
+                      0.8;                         // Engineering view - tight glow
+    
+    // CRITICAL: Red glow - poor health or overloaded
+    if (health < 50 || load > 85) {
+      return {
+        baseColor: [239, 68, 68],     // Red
+        pulseSpeed: 0.15,              // Fast pulse (urgent)
+        pulseAmplitude: 1.2,           // Stronger pulse
+        glowScale: glowScale,
+        label: 'CRITICAL',
+        strokeIntensity: 1.0
+      };
+    }
+    // WARNING: Amber glow - fair health or high load
+    else if (health < 70 || load > 70) {
+      return {
+        baseColor: [251, 191, 36],    // Amber
+        pulseSpeed: 0.11,              // Medium pulse
+        pulseAmplitude: 1.0,
+        glowScale: glowScale,
+        label: 'WARNING',
+        strokeIntensity: 0.8
+      };
+    }
+    // HEALTHY: Green glow - good status
+    else {
+      return {
+        baseColor: [34, 197, 94],     // Green - matches grid cell colors
+        pulseSpeed: 0.08,              // Slow pulse (calm)
+        pulseAmplitude: 0.8,
+        glowScale: glowScale,
+        label: 'HEALTHY',
+        strokeIntensity: 0.6
+      };
+    }
+  }, [currentZoom]);
+
+  // REAL-TIME STREAMING: WebSocket with intelligent fallback to polling
+  useEffect(() => {
+    if (dataFetchedRef.current) return;
+    dataFetchedRef.current = true;
+    
+    const processData = (data: any) => {
+      // LOD OPTIMIZATION: Assets may not be loaded initially (lazy loaded by zoom)
+      if (data.assets) {
+        const mappedAssets: Asset[] = data.assets.map((row: any) => ({
+          id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
+          latitude: row.LATITUDE, longitude: row.LONGITUDE,
+          load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
+          commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
+          usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
+          circuit_id: row.CIRCUIT_ID
+        }));
+        
+        // Add substations from metro topology data if available (deduplicate)
+        // Enrich with real-time status data
+        const substations: Asset[] = data.metro ? data.metro
+          .map((row: any) => {
+            const status = substationStatusMap.get(row.SUBSTATION_ID);
+            return {
+              id: row.SUBSTATION_ID,
+              name: row.SUBSTATION_NAME || row.SUBSTATION_ID,
+              type: 'substation',
+              latitude: row.LATITUDE,
+              longitude: row.LONGITUDE,
+              load_percent: status?.load_percent ?? null,
+              voltage: row.VOLTAGE_KV ? `${row.VOLTAGE_KV} kV` : null,
+              status: status?.status ?? null,
+              commissioned_date: null,
+              health_score: status?.health_score ?? null,
+              usage_kwh: null,
+              pole_height_ft: null,
+              circuit_id: null
+            };
+          }) : [];
+        
+        // Deduplicate all assets by ID
+        const allAssets = [...mappedAssets, ...substations];
+        const deduped = Array.from(new Map(allAssets.map(a => [a.id, a])).values());
+        setAssets(deduped);
+      }
+      
+      if (data.weather) setWeather(data.weather);
+      if (data.metro) setMetroTopologyData(data.metro);
+      if (data.feeders) setFeederTopologyData(data.feeders);
+      if (data.serviceAreas) setServiceAreas(data.serviceAreas);
+      if (data.topology) {
+        setTopology(data.topology.map((row: any) => ({
+          from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
+          connection_type: 'Distribution',
+          from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
+          to_latitude: row.TO_LAT, to_longitude: row.TO_LON
+        })));
+      }
+    };
+    
+    const loadInitial = async () => {
+      setIsLoadingData(true);
+      try {
+        console.log('🔄 Loading initial data...');
+        // PRODUCTION LOD: Load only critical data for initial view (zoom 9.5)
+        // Service areas show all 251 substations as towers with real-time Postgres status
+        // Assets/topology lazy-load based on zoom level for <2s initial load
+        const [serviceAreas, weather] = await Promise.all([
+          fetch('/api/service-areas').then(async r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+            return r.json();
+          }),
+          fetch('/api/weather').then(async r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+            return r.json();
+          })
+        ]);
+        console.log(`✅ Initial load: ${serviceAreas.length} service areas (circuit-level substations)`);
+        // Set only the data we fetched, leave metro/feeders/assets/topology for lazy loading
+        setServiceAreas(serviceAreas);
+        setWeather(weather);
+        setIsLoadingData(false);
+        setLastUpdateTime(new Date());
+        
+        // Start lightweight service area polling (5 min refresh for aggregate stats)
+        startServiceAreaPolling();
+      } catch (error) {
+        console.error('❌ Initial load failed:', error);
+        setIsLoadingData(false);
+      }
+    };
+    
+    // OPTIMIZED: Lightweight polling for service areas only (9k circuits vs 500k assets)
+    // Postgres handles real-time status updates every 10s (in fetchSubstationStatus)
+    const startServiceAreaPolling = () => {
+      if (pollingIntervalRef.current) return;
+      
+      pollingIntervalRef.current = setInterval(async () => {
+        try {
+          // Only refresh service areas - 9k circuits (NOT 500k assets)
+          const serviceAreas = await fetch('/api/service-areas').then(async r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+            return r.json();
+          });
+          setServiceAreas(serviceAreas);
+          setLastUpdateTime(new Date());
+        } catch (error) {
+          console.error('❌ Service area poll failed:', error);
+        }
+      }, 300000); // 5 minutes (Postgres handles real-time every 10s)
+    };
+    
+    loadInitial();
+    
+    return () => {
+      if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+    };
+  }, []);
+
+  // INFORMATION LAYER ARCHITECTURE - Premium snap-to-intelligence
+  // Each layer reveals distinct operational intelligence, not arbitrary zoom levels
+  const INTELLIGENCE_LAYERS = {
+    EXECUTIVE_DASHBOARD: { 
+      zoom: 9.5, 
+      name: "Executive Dashboard",
+      description: "Regional health & aggregate KPIs"
+    },
+    CRITICAL_INCIDENT_MAP: { 
+      zoom: 10.8, 
+      name: "Critical Incident Map",
+      description: "Priority assets requiring attention"
+    },
+    ASSET_INSPECTION: { 
+      zoom: 12.2, 
+      name: "Asset Inspection View",
+      description: "Individual asset details"
+    },
+    ENGINEERING_DETAIL: { 
+      zoom: 13.5, 
+      name: "Engineering Detail",
+      description: "Full topology & connections"
+    }
+  };
+  
+  // Apple trackpad velocity tracking with momentum detection
+  useEffect(() => {
+    const now = Date.now();
+    const timeDelta = now - lastZoomTimeRef.current;
+    const zoomDelta = currentZoom - lastZoomRef.current;
+    
+    if (timeDelta > 0 && timeDelta < 100) {
+      const velocity = Math.abs(zoomDelta) / timeDelta * 1000;
+      setLastZoomVelocity(velocity);
+      
+      // Track velocity history for momentum detection (trackpad gestures)
+      velocityHistoryRef.current.push({ velocity, time: now });
+      
+      // Keep only last 150ms of history
+      velocityHistoryRef.current = velocityHistoryRef.current.filter(
+        v => now - v.time < 150
+      );
+      
+      // Detect active scrolling (trackpad gesture in progress)
+      if (velocity > 0.5) {
+        isUserScrollingRef.current = true;
+        
+        // Clear existing scroll end timeout
+        if (scrollEndTimeoutRef.current) {
+          clearTimeout(scrollEndTimeoutRef.current);
+        }
+        
+        // Wait for scrolling to fully stop (trackpad momentum complete)
+        scrollEndTimeoutRef.current = setTimeout(() => {
+          isUserScrollingRef.current = false;
+        }, 80); // Short window for trackpad momentum
+      }
+    }
+    
+    lastZoomTimeRef.current = now;
+    lastZoomRef.current = currentZoom;
+  }, [currentZoom]);
+  
+  // Animation loop for selection glow effect
+  // Reset expanded asset categories when selection changes
+  const prevSelectedAssetId = useRef<string | null>(null);
+  useEffect(() => {
+    const currentId = selectedAsset?.id || null;
+    if (currentId !== prevSelectedAssetId.current) {
+      prevSelectedAssetId.current = currentId;
+      setExpandedAssetCategories({
+        substations: false,
+        transformers: false,
+        poles: false
+      });
+    }
+  }, [selectedAsset]);
+  
+  // PRODUCTION: Intelligence layer transition detection with loading animation
+  // Triggers spinner when crossing between operational views (grid cells -> substations -> transformers -> topology)
+  useEffect(() => {
+    const LAYER_THRESHOLDS = {
+      GRID_CELLS: 9.5,        // Executive Dashboard - Regional clusters
+      SUBSTATIONS: 10.8,      // Critical Incident Map - Substation-level
+      TRANSFORMERS: 12.2,     // Asset Inspection - Individual assets
+      TOPOLOGY: 13.5          // Engineering Detail - Full network connections
+    };
+    
+    // Determine current intelligence layer
+    let currentLayer = 'GRID_CELLS';
+    if (currentZoom >= LAYER_THRESHOLDS.TOPOLOGY) {
+      currentLayer = 'TOPOLOGY';
+    } else if (currentZoom >= LAYER_THRESHOLDS.TRANSFORMERS) {
+      currentLayer = 'TRANSFORMERS';
+    } else if (currentZoom >= LAYER_THRESHOLDS.SUBSTATIONS) {
+      currentLayer = 'SUBSTATIONS';
+    }
+    
+    // Trigger loading animation on layer transition
+    if (lastIntelligenceLayerRef.current !== null && 
+        lastIntelligenceLayerRef.current !== currentLayer) {
+      // console.log(`🔄 Intelligence layer transition: ${lastIntelligenceLayerRef.current} → ${currentLayer}`);
+      setIsLoadingData(true);
+      setTimeout(() => {
+        setIsLoadingData(false);
+        setLastUpdateTime(new Date());
+      }, 2900);
+    }
+    
+    lastIntelligenceLayerRef.current = currentLayer;
+  }, [currentZoom]);
+  
+  // Apple trackpad-optimized magnetic snap system - DISABLED
+  useEffect(() => {
+    // DISABLED: Snap system was fighting user zoom input
+    // Clear any existing timeouts to prevent fighting
+    if (zoomTimeout) clearTimeout(zoomTimeout);
+    return () => {
+      if (zoomTimeout) clearTimeout(zoomTimeout);
+    };
+  }, []);
+  
+  // Tower scale animation: grows progressively from 0 to 1 as you zoom out past threshold
+  // Creates smooth emergence effect when switching from individual to aggregate view
+  // PERFORMANCE: Use throttledZoom to prevent recalculation on every pixel
+  const towerScaleAnimation = useMemo(() => {
+    if (throttledZoom >= ZOOM_THRESHOLD) return 0;
+    
+    const transitionRange = 1.5;
+    const zoomDelta = ZOOM_THRESHOLD - throttledZoom;
+    
+    const linearScale = Math.min(1, zoomDelta / transitionRange);
+    return linearScale * linearScale * (3 - 2 * linearScale);
+  }, [throttledZoom]);
+
+  // Individual asset scale animation: inverse of tower scale
+  // Grows from 0 to 1 as you zoom in past threshold
+  // PERFORMANCE: Use throttledZoom to prevent recalculation on every pixel
+  const assetScaleAnimation = useMemo(() => {
+    if (throttledZoom <= ZOOM_THRESHOLD - 1.5) return 0;
+    
+    const transitionRange = 3.5;
+    const zoomDelta = throttledZoom - (ZOOM_THRESHOLD - 1.5);
+    
+    const linearScale = Math.min(1, zoomDelta / transitionRange);
+    return linearScale * linearScale * (3 - 2 * linearScale);
+  }, [throttledZoom]);
+
+  // OPERATIONAL TRIAGE PATTERN: Priority-based emergence for operational intelligence
+  // Critical assets appear first (0-30%), warnings next (30-70%), healthy last (70-100%)
+  // This guides #attention to problems, not just pretty animation
+  // Simplified stagger calculation - removed expensive trig ops for performance
+  const getStaggerDelay = useCallback((
+    longitude: number, 
+    latitude: number, 
+    baseAnimation: number,
+    healthScore?: number,
+    loadPercent?: number,
+    assetType?: string
+  ) => {
+    // PERFORMANCE: Return base animation directly - stagger disabled for smooth 60 FPS
+    // Previously: 80k assets × complex hash calculations × 60 FPS = stuttering
+    return baseAnimation;
+    
+    /* ARCHIVED STAGGER ANIMATION CODE - Reintroduce after other performance bottlenecks resolved
+    // VISUAL ENHANCEMENT: Priority-based staggered emergence with position-based variance
+    // Creates wave effect where critical assets appear first, then warnings, then healthy
+    if (baseAnimation === 0) return 0;
+    if (baseAnimation === 1) return 1;
+    
+    // TYPE-SPECIFIC SLOWDOWN: Dramatic emergence for key infrastructure
+    // Substations, transformers, poles emerge close together (core infrastructure)
+    let typeSlowdown = 1.0;
+    let animationOffset = 0.0; // Head start for certain asset types
+    
+    if (assetType === 'substation') typeSlowdown = 0.5; // 2x slower
+    if (assetType === 'transformer') typeSlowdown = 0.6; // 1.67x slower
+    if (assetType === 'pole') {
+      typeSlowdown = 0.80; // Balanced slowdown
+      animationOffset = 0.20; // Moderate head start
+    }
+    
+    // Apply offset and type slowdown to base animation
+    const adjustedBaseAnimation = Math.min(1, (baseAnimation + animationOffset) * typeSlowdown);
+    
+    // Determine priority tier based on health and load
+    // EXCEPTION: Poles always appear shortly after subs/xfmrs (tier 2)
+    let priorityTier = 3; // Default: healthy (70-100% of animation)
+    
+    if (assetType === 'pole') {
+      priorityTier = 2; // Poles always appear in 30-70% window (after tier 1 subs/xfmrs)
+    } else if (healthScore !== undefined && loadPercent !== undefined) {
+      if (healthScore < 50 || loadPercent > 85) priorityTier = 1; // Critical: 0-30%
+      else if (healthScore < 70 || loadPercent > 70) priorityTier = 2; // Warning: 30-70%
+    } else if (healthScore !== undefined) {
+      if (healthScore < 50) priorityTier = 1;
+      else if (healthScore < 70) priorityTier = 2;
+    }
+    
+    // Define tier time windows
+    const tierStart = priorityTier === 1 ? 0.0 : priorityTier === 2 ? 0.3 : 0.7;
+    const tierEnd = priorityTier === 1 ? 0.3 : priorityTier === 2 ? 0.7 : 1.0;
+    
+    // Simplified positional hash (no sin/cos for performance)
+    const hash = ((longitude * 73856093) ^ (latitude * 19349663)) & 0xFFFF;
+    const normalized = (hash / 0xFFFF);
+    const tierDuration = tierEnd - tierStart;
+    const variance = (normalized - 0.5) * 0.1 * tierDuration;
+    
+    // Map adjusted animation to this tier's window
+    if (adjustedBaseAnimation < tierStart) return 0;
+    if (adjustedBaseAnimation > tierEnd) return 1;
+    
+    const tierProgress = (adjustedBaseAnimation - tierStart) / tierDuration;
+    const adjustedProgress = Math.max(0, Math.min(1, tierProgress + variance));
+    
+    // Smoothstep easing
+    return adjustedProgress * adjustedProgress * (3 - 2 * adjustedProgress);
+    END ARCHIVED CODE */
+  }, []); // No dependencies - pure function based on args
+  
+  // Dynamic height scaling: taller at low zoom (zoomed out), shorter at high zoom (zoomed in)
+  // Use linear scaling to avoid drastic jumps
+  // REDUCED: 0.2 → 0.05 to scale down max column heights (user request: Dec 30, 2025)
+  // PERFORMANCE: Use throttledZoom to prevent recalculation on every pixel
+  const heightScale = 1 + Math.max(0, (12 - throttledZoom)) * 0.05;
+
+  const { substationAssets, transformerAssets, poleAssets, meterAssets } = useMemo(() => {
+    // OPTIMIZATION: Single-pass filter instead of 4 separate passes (10-15ms improvement)
+    const filtered = {
+      substationAssets: [] as Asset[],
+      transformerAssets: [] as Asset[],
+      poleAssets: [] as Asset[],
+      meterAssets: [] as Asset[]
+    };
+    
+    // Early bailout
+    if (assets.length === 0) return filtered;
+    
+    // Single pass with type normalization
+    assets.forEach(a => {
+      const type = a.type?.toLowerCase();
+      switch (type) {
+        case 'substation':
+          filtered.substationAssets.push(a);
+          break;
+        case 'transformer':
+          filtered.transformerAssets.push(a);
+          break;
+        case 'pole':
+          filtered.poleAssets.push(a);
+          break;
+        case 'meter':
+          filtered.meterAssets.push(a);
+          break;
+      }
+    });
+    
+    return filtered;
+  }, [assets]);
+
+  // PERFORMANCE OPTIMIZATION: Viewport culling for individual assets
+  // ACCURATE VIEWPORT BOUNDS: Use deck.gl's WebMercatorViewport for precise bounds
+  // This accounts for pitch, bearing, and latitude distortion in Web Mercator projection
+  const viewportBounds = useMemo(() => {
+    // Create accurate viewport using deck.gl's native WebMercatorViewport
+    const viewport = new WebMercatorViewport({
+      width: typeof window !== 'undefined' ? window.innerWidth : 1920,
+      height: typeof window !== 'undefined' ? window.innerHeight : 1080,
+      longitude: throttledViewport.longitude,
+      latitude: throttledViewport.latitude,
+      zoom: throttledZoom,
+      pitch: viewState.pitch || 0,
+      bearing: viewState.bearing || 0
+    });
+    
+    // Get accurate bounds from viewport's getBounds() method
+    // Returns [minLng, minLat, maxLng, maxLat] as a flat array
+    const bounds = viewport.getBounds();
+    const west = bounds[0];
+    const south = bounds[1];
+    const east = bounds[2];
+    const north = bounds[3];
+    
+    // Apply buffer to bounds (2.0x for viewport filtering)
+    const bufferMultiplier = 2.0;
+    const lngRange = (east - west) * (bufferMultiplier - 1) / 2;
+    const latRange = (north - south) * (bufferMultiplier - 1) / 2;
+    
+    const minLng = west - lngRange;
+    const maxLng = east + lngRange;
+    const minLat = south - latRange;
+    const maxLat = north + latRange;
+    
+    return {
+      minLng,
+      maxLng,
+      minLat,
+      maxLat
+    };
+  }, [throttledViewport.longitude, throttledViewport.latitude, throttledZoom]);
+
+  // GPU filter range for DataFilterExtension (avoids CPU filtering)
+  const gpuFilterRange = useMemo(() => [
+    [viewportBounds.minLng, viewportBounds.maxLng],
+    [viewportBounds.minLat, viewportBounds.maxLat]
+  ], [viewportBounds]);
+
+  // Viewport-filtered assets - PERFORMANCE OPTIMIZED with AGGRESSIVE LIMITS
+  // Apply viewport culling + smart limits to prevent GPU overload
+  const viewportFilteredAssets = useMemo(() => {
+    const { minLng, maxLng, minLat, maxLat } = viewportBounds;
+    
+    // Filter to viewport with buffer (GPU will do final culling)
+    const viewportSubstations = substationAssets.filter(a => 
+      a.longitude >= minLng && a.longitude <= maxLng &&
+      a.latitude >= minLat && a.latitude <= maxLat
+    );
+    
+    // AGGRESSIVE limits based on zoom to prevent GPU overload
+    let maxTransformers = 5000;   // Was 50000 - way too high!
+    let maxPoles = 10000;          // Was 100000
+    let maxMeters = 15000;         // Was 150000
+    
+    if (throttledZoom < 11) {
+      maxTransformers = 2000;
+      maxPoles = 4000;
+      maxMeters = 6000;
+    } else if (throttledZoom < 12) {
+      maxTransformers = 3000;
+      maxPoles = 6000;
+      maxMeters = 10000;
+    } else if (throttledZoom < 13) {
+      maxTransformers = 5000;
+      maxPoles = 10000;
+      maxMeters = 15000;
+    } else {
+      // Zoom 13+: Allow more detail
+      maxTransformers = 10000;
+      maxPoles = 20000;
+      maxMeters = 30000;
+    }
+    
+    const viewportTransformers = transformerAssets
+      .filter(a => 
+        a.longitude >= minLng && a.longitude <= maxLng &&
+        a.latitude >= minLat && a.latitude <= maxLat
+      )
+      .slice(0, maxTransformers);
+    
+    const viewportPoles = poleAssets
+      .filter(a => 
+        a.longitude >= minLng && a.longitude <= maxLng &&
+        a.latitude >= minLat && a.latitude <= maxLat
+      )
+      .slice(0, maxPoles);
+    
+    const viewportMeters = meterAssets
+      .filter(a => 
+        a.longitude >= minLng && a.longitude <= maxLng &&
+        a.latitude >= minLat && a.latitude <= maxLat
+      )
+      .slice(0, maxMeters);
+    
+    const totalAssets = viewportSubstations.length + viewportTransformers.length + 
+                       viewportPoles.length + viewportMeters.length;
+    
+    if (totalAssets > 50000) {
+      console.log(`⚠️ Viewport assets capped: ${totalAssets.toLocaleString()} (S:${viewportSubstations.length} T:${viewportTransformers.length} P:${viewportPoles.length} M:${viewportMeters.length})`);
+    }
+    
+    return { 
+      substationAssets: viewportSubstations, 
+      transformerAssets: viewportTransformers, 
+      poleAssets: viewportPoles, 
+      meterAssets: viewportMeters 
+    };
+  }, [substationAssets, transformerAssets, poleAssets, meterAssets, viewportBounds, throttledZoom]);
+
+  // CRITICAL PERFORMANCE: Memoized viewport-filtered feeders with aggressive LOD
+  const viewportFilteredFeeders = useMemo(() => {
+    // INIT OPTIMIZATION: Only compute when feeders are actually visible (zoom 9-11.5)
+    // Saves 30-50ms on initialization (zoom 9.5 doesn't need this)
+    if (throttledZoom < 9 || throttledZoom >= 11.5 || topology.length === 0) {
+      return [];
+    }
+    
+    const { minLng, maxLng, minLat, maxLat } = viewportBounds;
+    
+    // Zoom-based LOD: dramatically reduce connections at lower zoom
+    let maxConnections: number;
+    let minLoad: number;
+    let maxDistanceKm: number;
+    
+    if (throttledZoom < 8) {
+      maxConnections = 100;
+      minLoad = 85;
+      maxDistanceKm = 15;
+    } else if (throttledZoom < 10) {
+      maxConnections = 300;
+      minLoad = 75;
+      maxDistanceKm = 25;
+    } else if (throttledZoom < 12) {
+      maxConnections = 600;
+      minLoad = 65;
+      maxDistanceKm = 35;
+    } else {
+      maxConnections = 1000;
+      minLoad = 50;
+      maxDistanceKm = 50;
+    }
+    
+    const filtered = feederTopologyData.filter((d: any) => {
+      const load = d.LOAD_UTILIZATION_PCT || 0;
+      const distance = d.DISTANCE_KM || 0;
+      const voltage = d.VOLTAGE_LEVEL || '';
+      
+      // Viewport check with both endpoints
+      const inViewport = (
+        (d.FROM_LON >= minLng && d.FROM_LON <= maxLng &&
+         d.FROM_LAT >= minLat && d.FROM_LAT <= maxLat) ||
+        (d.TO_LON >= minLng && d.TO_LON <= maxLng &&
+         d.TO_LAT >= minLat && d.TO_LAT <= maxLat)
+      );
+      
+      // Filter out transmission lines (>69kV) and very long connections
+      // Distribution feeders are typically 12-34kV and < 50km
+      const isDistribution = !voltage.includes('138') && !voltage.includes('230') && !voltage.includes('345');
+      const isReasonableDistance = distance <= maxDistanceKm;
+      
+      // Progressive LOD: only high-priority feeders within reasonable distance
+      return inViewport && isDistribution && isReasonableDistance && load >= minLoad;
+    });
+    
+    // Geographic diversity: sample from grid regions instead of pure priority sort
+    const regionBuckets = new Map<string, any[]>();
+    filtered.forEach(d => {
+      const regionKey = `${Math.floor(d.FROM_LON * 20)}_${Math.floor(d.FROM_LAT * 20)}`;
+      if (!regionBuckets.has(regionKey)) regionBuckets.set(regionKey, []);
+      regionBuckets.get(regionKey)!.push(d);
+    });
+    
+    // Sample proportionally from each region
+    const result: any[] = [];
+    const regionsArray = Array.from(regionBuckets.values());
+    const perRegionLimit = Math.ceil(maxConnections / Math.max(1, regionsArray.length));
+    
+    regionsArray.forEach(regionData => {
+      // Sort by load within region
+      const sorted = regionData.sort((a, b) => 
+        (b.LOAD_UTILIZATION_PCT || 0) - (a.LOAD_UTILIZATION_PCT || 0)
+      );
+      result.push(...sorted.slice(0, perRegionLimit));
+    });
+    
+    return result.slice(0, maxConnections);
+  }, [feederTopologyData, viewportBounds, throttledZoom]);
+
+  const unifiedClusters = useMemo(() => {
+    // INIT OPTIMIZATION: Skip clustering if NO DATA loaded yet
+    // Service areas are sufficient to create towers (assets load later at zoom 10+)
+    if (serviceAreas.length === 0) {
+      return [];
+    }
+    
+    console.time('⚡ unifiedClusters calculation');
+    // CIRCUIT-BASED SERVICE AREAS (Utility-Grade Clustering)
+    // Uses pre-computed FLUX_OPS_CENTER_SERVICE_AREAS_CIRCUIT_BASED table
+    // Benefits:
+    // - Eliminates 1-2s client-side clustering overhead (no distance calculations)
+    // - Uses real circuit topology (CIRCUIT_ID) from utility operations
+    // - Each circuit originates from ONE substation (97% data integrity after Jan 1, 2026 fix)
+    // - O(1) lookup using CIRCUIT_ID instead of O(N²) distance calculations
+    // - Cached circuit map for near-instant reassignment on asset updates
+    
+    if (serviceAreas.length === 0) {
+      // Fallback to client-side clustering if service areas not loaded
+      const substationHash = substationAssets
+        .map(s => `${s.id}:${s.latitude.toFixed(4)}:${s.longitude.toFixed(4)}`)
+        .sort()
+        .join('|');
+      
+      if (cachedSubstationHashRef.current === substationHash && 
+          clusterCacheRef.current.length > 0 &&
+          assetToClusterMapRef.current.size > 0) {
+        const updatedClusters: AssetCluster[] = clusterCacheRef.current.map(cluster => ({
+          ...cluster,
+          assets: [],
+          transformers: [],
+          poles: [],
+          meters: []
+        }));
+        
+        transformerAssets.forEach(asset => {
+          const clusterIdx = assetToClusterMapRef.current.get(asset.id);
+          if (clusterIdx !== undefined && clusterIdx < updatedClusters.length) {
+            updatedClusters[clusterIdx].transformers.push(asset);
+            updatedClusters[clusterIdx].assets.push(asset);
+          }
+        });
+        
+        poleAssets.forEach(asset => {
+          const clusterIdx = assetToClusterMapRef.current.get(asset.id);
+          if (clusterIdx !== undefined && clusterIdx < updatedClusters.length) {
+            updatedClusters[clusterIdx].poles.push(asset);
+            updatedClusters[clusterIdx].assets.push(asset);
+          }
+        });
+        
+        meterAssets.forEach(asset => {
+          const clusterIdx = assetToClusterMapRef.current.get(asset.id);
+          if (clusterIdx !== undefined && clusterIdx < updatedClusters.length) {
+            updatedClusters[clusterIdx].meters.push(asset);
+            updatedClusters[clusterIdx].assets.push(asset);
+          }
+        });
+        
+        updatedClusters.forEach(cluster => {
+          cluster.substations.forEach(s => {
+            cluster.assets.push(s);
+          });
+        });
+        
+        return updatedClusters;
+      }
+      
+      const result = substationBasedClustering(substationAssets, transformerAssets, poleAssets, meterAssets);
+      
+      assetToClusterMapRef.current.clear();
+      result.forEach((cluster, clusterIdx) => {
+        cluster.assets.forEach(asset => {
+          assetToClusterMapRef.current.set(asset.id, clusterIdx);
+        });
+      });
+      
+      cachedSubstationHashRef.current = substationHash;
+      clusterCacheRef.current = result;
+      
+      return result;
+    }
+    
+    // CIRCUIT-BASED CLUSTERING WITH CACHING
+    // Cache the circuit map and cluster structure - only rebuild when serviceAreas changes
+    
+    // Create hash of service areas to detect changes
+    const serviceAreasHash = serviceAreas
+      .map(sa => `${sa.CIRCUIT_ID}:${sa.SUBSTATION_ID}`)
+      .sort()
+      .join('|');
+    
+    // Check if service areas structure changed
+    const serviceAreasChanged = cachedServiceAreasHashRef.current !== serviceAreasHash;
+    
+    if (serviceAreasChanged || clusterCacheRef.current.length === 0 || circuitMapRef.current.size === 0) {
+      // Service areas changed - rebuild cluster structure and circuit map
+      console.log('🔄 Rebuilding circuit-based cluster structure');
+      
+      const clusters: AssetCluster[] = serviceAreas.map(area => {
+        // Find real substation asset from loaded metro topology
+        let substation = substationAssets.find(s => s.id === area.SUBSTATION_ID);
+        
+        // If substation not loaded yet (low zoom), create synthetic from service area
+        if (!substation && area.SUBSTATION_ID) {
+          substation = {
+            id: area.SUBSTATION_ID,
+            name: area.SUBSTATION_NAME || area.SUBSTATION_ID,
+            type: 'substation',
+            latitude: area.CENTROID_LAT,
+            longitude: area.CENTROID_LON,
+            voltage: null,
+            status: null,
+            load_percent: null,
+            health_score: null,
+            commissioned_date: null,
+            usage_kwh: null,
+            pole_height_ft: null,
+            circuit_id: null
+          };
+        }
+        
+        const centroid: [number, number] = [
+          area.CENTROID_LON || (substation?.longitude ?? 0),
+          area.CENTROID_LAT || (substation?.latitude ?? 0)
+        ];
+        
+        const districtId = area.CIRCUIT_ID || `CIRCUIT-${area.SUBSTATION_ID}`;
+        
+        return {
+          centroid,
+          districtId,
+          assets: substation ? [substation] : [],
+          substations: substation ? [substation] : [],
+          transformers: [],
+          poles: [],
+          meters: [],
+          avgHealth: area.AVG_HEALTH_SCORE,
+          avgLoad: area.AVG_LOAD_PERCENT
+        };
+      });
+      
+      // Build O(1) lookup map: CIRCUIT_ID → cluster index
+      circuitMapRef.current.clear();
+      serviceAreas.forEach((area, idx) => {
+        if (area.CIRCUIT_ID) {
+          circuitMapRef.current.set(area.CIRCUIT_ID, idx);
+        }
+      });
+      
+      // Cache cluster structure
+      clusterCacheRef.current = clusters;
+      cachedServiceAreasHashRef.current = serviceAreasHash;
+      
+      // Assign assets using cached circuit map
+      const assignAsset = (asset: Asset, targetArray: 'transformers' | 'poles' | 'meters') => {
+        if (!asset.circuit_id) return;
+        
+        const clusterIdx = circuitMapRef.current.get(asset.circuit_id);
+        if (clusterIdx !== undefined && clusterIdx < clusters.length) {
+          clusters[clusterIdx][targetArray].push(asset);
+          clusters[clusterIdx].assets.push(asset);
+        }
+      };
+      
+      transformerAssets.forEach(a => assignAsset(a, 'transformers'));
+      poleAssets.forEach(a => assignAsset(a, 'poles'));
+      meterAssets.forEach(a => assignAsset(a, 'meters'));
+      
+      console.log(`✅ Circuit-based clustering: ${clusters.length} circuits, ${clusters.reduce((sum, c) => sum + c.assets.length, 0)} assets assigned`);
+      
+      return clusters;
+    }
+    
+    // FAST PATH: Service areas unchanged - reuse cached structure and circuit map
+    // This makes asset updates nearly instant (just O(N) reassignment with cached lookups)
+    console.log('⚡ Fast path: Reusing cached circuit map');
+    
+    const updatedClusters: AssetCluster[] = clusterCacheRef.current.map(cluster => ({
+      ...cluster,
+      assets: [...cluster.substations],  // Keep substations
+      transformers: [],
+      poles: [],
+      meters: []
+    }));
+    
+    // O(N) reassignment using cached circuit map
+    const assignAsset = (asset: Asset, targetArray: 'transformers' | 'poles' | 'meters') => {
+      if (!asset.circuit_id) return;
+      
+      const clusterIdx = circuitMapRef.current.get(asset.circuit_id);
+      if (clusterIdx !== undefined && clusterIdx < updatedClusters.length) {
+        updatedClusters[clusterIdx][targetArray].push(asset);
+        updatedClusters[clusterIdx].assets.push(asset);
+      }
+    };
+    
+    transformerAssets.forEach(a => assignAsset(a, 'transformers'));
+    poleAssets.forEach(a => assignAsset(a, 'poles'));
+    meterAssets.forEach(a => assignAsset(a, 'meters'));
+    
+    return updatedClusters;
+  }, [serviceAreas, substationAssets, transformerAssets, poleAssets, meterAssets]);
+
+  const flattenedClusterData = useMemo(() => {
+    console.time('🔍 flattenedClusterData calculation');
+    const aggregateTowers: any[] = [];
+    
+    // ALWAYS aggregate circuits by substation - circuits are for O(1) assignment, not visual display
+    // Each tower represents ONE substation with all its circuits aggregated
+    console.log(`🔍 Creating towers: ${unifiedClusters.length} circuits → aggregating by substation`);
+    
+    if (serviceAreas.length > 0) {
+      // Aggregate circuits by substation
+      const substationAggregates = new Map<string, any>();
+      
+      unifiedClusters.forEach(cell => {
+        // Get substation ID from circuit's district ID or first substation
+        const substationId = cell.substations[0]?.id;
+        if (!substationId) return; // Skip circuits without substation mapping
+        
+        if (!substationAggregates.has(substationId)) {
+          substationAggregates.set(substationId, {
+            substation: cell.substations[0],
+            circuits: [],
+            allAssets: [],
+            transformers: [],
+            poles: [],
+            meters: []
+          });
+        }
+        
+        const aggregate = substationAggregates.get(substationId)!;
+        aggregate.circuits.push(cell);
+        aggregate.allAssets.push(...cell.assets);
+        aggregate.transformers.push(...cell.transformers);
+        aggregate.poles.push(...cell.poles);
+        aggregate.meters.push(...cell.meters);
+      });
+      
+      // Create towers from substation aggregates
+      console.log(`✅ AGGREGATING ${substationAggregates.size} substations from ${unifiedClusters.length} circuits`);
+      substationAggregates.forEach((aggregate, substationId) => {
+        const sub = aggregate.substation;
+        const totalAssets = aggregate.allAssets.length;
+        const substationCount = 1;
+        const transformerCount = aggregate.transformers.length;
+        const poleCount = aggregate.poles.length;
+        const meterCount = aggregate.meters.length;
+        
+        // Get worst-case values from Postgres (fixes averaging problem that masked critical circuits)
+        const substationStatus = substationStatusMap.get(substationId);
+        const avgHealth = substationStatus?.avg_health ?? null;
+        const avgLoad = substationStatus?.avg_load ?? 0;
+        const worstLoad = substationStatus?.worst_circuit_load ?? avgLoad;
+        const worstHealth = substationStatus?.worst_circuit_health ?? avgHealth;
+        
+        // Debug SUB-HOU-062 specifically
+        if (substationId === 'SUB-HOU-062') {
+          console.log(`🔍 SUB-HOU-062 DEBUG:`, {
+            avgLoad,
+            worstLoad,
+            pgStatus: substationStatus?.status,
+            hasPostgresData: !!substationStatus
+          });
+        }
+        
+        let worstStatus: 'critical' | 'warning' | 'good' = 'good';
+        let statusColor = [34, 197, 94, 200];
+        
+        // Calculate health status counts across all aggregated assets
+        let criticalCount = 0;
+        let warningCount = 0;
+        let healthyCount = 0;
+        
+        const healthByType = {
+          substations: { critical: 0, warning: 0, healthy: 0 },
+          transformers: { critical: 0, warning: 0, healthy: 0 },
+          poles: { critical: 0, warning: 0, healthy: 0 },
+          meters: { critical: 0, warning: 0, healthy: 0 }
+        };
+        
+        const assetsByHealth = {
+          critical: [] as Asset[],
+          warning: [] as Asset[],
+          healthy: [] as Asset[]
+        };
+        
+        // Aggregate health status from all assets
+        aggregate.allAssets.forEach((asset: Asset) => {
+          // Only evaluate assets that have actual health/load data
+          const health = asset.health_score;
+          const load = asset.load_percent;
+          
+          let status: 'critical' | 'warning' | 'healthy' = 'healthy';
+          if ((health != null && health < 50) || (load != null && load > 85)) {
+            status = 'critical';
+            criticalCount++;
+          } else if ((health != null && health < 70) || (load != null && load > 70)) {
+            status = 'warning';
+            warningCount++;
+          } else {
+            healthyCount++;
+          }
+          
+          assetsByHealth[status].push(asset);
+          
+          const assetType = asset.type === 'substation' ? 'substations' : 
+                           asset.type === 'transformer' ? 'transformers' :
+                           asset.type === 'pole' ? 'poles' : 'meters';
+          healthByType[assetType][status]++;
+        });
+        
+        // Use worst-case logic from Postgres (shows critical if ANY circuit is critical)
+        if (substationStatus) {
+          if (substationStatus.status === 'critical') {
+            worstStatus = 'critical';
+            statusColor = [239, 68, 68, 200];
+          } else if (substationStatus.status === 'warning') {
+            worstStatus = 'warning';
+            statusColor = [251, 191, 36, 200];
+          }
+          // else remains 'good' with green color
+        } else {
+          // Fallback to worst-case logic if Postgres data not available
+          if (worstLoad > 85 || (worstHealth !== null && worstHealth < 50)) {
+            worstStatus = 'critical';
+            statusColor = [239, 68, 68, 200];
+          } else if (worstLoad > 70 || (worstHealth !== null && worstHealth < 70)) {
+            worstStatus = 'warning';
+            statusColor = [251, 191, 36, 200];
+          }
+        }
+        
+        // Debug: log first 3 substations to see what's happening
+        if (substationAggregates.size <= 3) {
+          console.log(`📊 Substation ${substationId}: avgLoad=${avgLoad}, avgHealth=${avgHealth}, critical=${criticalCount}, warning=${warningCount}, healthy=${healthyCount}, status=${worstStatus}`);
+        }
+        
+        // Calculate radius based on circuit count and asset density
+        const towerRadius = Math.max(200, Math.min(1000, 300 + (aggregate.circuits.length * 20)));
+        const towerHeight = 1200 + (totalAssets * 0.5);
+        const impactScore = (transformerCount * 2) + (poleCount * 1) + (meterCount * 0.5);
+        
+        aggregateTowers.push({
+          position: [sub.longitude, sub.latitude],
+          elevation: towerHeight,
+          baseZ: 0,
+          color: statusColor,
+          radius: towerRadius,
+          asset: {
+            id: substationId,
+            name: `Grid Cell: ${totalAssets} assets`,
+            type: 'aggregate',
+            totalAssets,
+            substationCount: 1,
+            transformerCount,
+            poleCount,
+            meterCount,
+            avgHealth: avgHealth !== null ? Math.round(avgHealth) : null,
+            avgLoad: Math.round(avgLoad),
+            worstStatus,
+            impactScore,
+            latitude: sub.latitude,
+            longitude: sub.longitude,
+            criticalCount,
+            warningCount,
+            healthyCount,
+            healthByType,
+            assetsByHealth,
+            substations: [aggregate.substation],
+            transformers: aggregate.transformers,
+            poles: aggregate.poles,
+            meters: aggregate.meters,
+            circuitCount: aggregate.circuits.length,
+            substationName: sub.name
+          }
+        });
+      });
+      
+      console.log(`📊 Towers created: ${aggregateTowers.length} substations (from ${unifiedClusters.length} circuits)`);
+      console.timeEnd('🔍 flattenedClusterData calculation');
+    }
+
+    return { aggregateTowers };
+  }, [unifiedClusters, serviceAreas.length, substationStatusMap]);
+
+  // ENGINEERING METRICS: Calculate real-time operational intelligence from grid state
+  // Palantir Grid 360 shows LAGGING indicators (outages after they happen)
+  // Snowflake Grid Command shows LEADING indicators (stress BEFORE failure)
+  const kpis = useMemo(() => {
+    // Calculate from actual grid cell aggregates
+    const totalCells = flattenedClusterData.aggregateTowers.length;
+    
+    if (totalCells === 0) {
+      // Fallback to placeholder values during initial load
+      return {
+        saidi: 152.3,
+        saifi: 1.42,
+        activeOutages: 8,
+        totalLoad: 2847,
+        crewsActive: 12,
+        assetHealth: 87.3,
+        networkReliability: 99.7,
+        operationalMargin: 0,
+        stressAwareReliability: 0
+      };
+    }
+
+    // Count cells by operational status
+    const criticalCells = flattenedClusterData.aggregateTowers.filter((c: any) => c.asset.worstStatus === 'critical').length;
+    const warningCells = flattenedClusterData.aggregateTowers.filter((c: any) => c.asset.worstStatus === 'warning').length;
+    const healthyCells = totalCells - criticalCells - warningCells;
+
+    // #METRIC 1: Operational Margin - % of grid NOT under stress
+    // This answers: "What percentage of my infrastructure has HEALTHY operating margin?"
+    const operationalMargin = ((healthyCells / totalCells) * 100);
+
+    // Calculate system-wide averages from grid cells
+    const avgHealth = flattenedClusterData.aggregateTowers.reduce((sum: number, c: any) => sum + c.asset.avgHealth, 0) / totalCells;
+    const avgLoad = flattenedClusterData.aggregateTowers.reduce((sum: number, c: any) => sum + c.asset.avgLoad, 0) / totalCells;
+    const avgLoadHeadroom = 100 - avgLoad;
+
+    // #METRIC 2: Stress-Aware Reliability - Weighted combination acknowledging degradation
+    // Traditional reliability only measures binary outages (up/down)
+    // This measures: Health (60% weight) + Available Capacity (40% weight)
+    const stressAwareReliability = (avgHealth * 0.6) + (avgLoadHeadroom * 0.4);
+
+    // Traditional utility metrics (for comparison with legacy systems)
+    const binaryReliability = ((healthyCells + warningCells) / totalCells) * 100; // Only counts complete failures
+
+    return {
+      // Traditional Metrics (what Palantir shows)
+      saidi: 152.3,  // System Average Interruption Duration Index
+      saifi: 1.42,   // System Average Interruption Frequency Index
+      activeOutages: criticalCells,  // Count of cells in critical state
+      totalLoad: 2847,
+      crewsActive: 12,
+      assetHealth: avgHealth,  // Now REAL average from grid cells
+      networkReliability: binaryReliability,  // Traditional binary reliability
+      
+      // ENGINEERING METRICS (competitive advantage)
+      operationalMargin: operationalMargin,  // NEW: Leading indicator
+      stressAwareReliability: stressAwareReliability  // NEW: Degradation-aware reliability
+    };
+  }, [flattenedClusterData]);
+
+  // Memoize heatmap data for performance
+  const heatmapData = useMemo(() => 
+    meterAssets
+      .filter(a => a.usage_kwh && a.usage_kwh > 0)
+      .map(a => ({
+        position: [a.longitude, a.latitude],
+        weight: Math.log((a.usage_kwh || 1) + 1) / 4
+      })),
+    [meterAssets]
+  );
+
+  // Helper: Calculate fade-in animation progress (0 to 1)
+  const getAssetFadeProgress = useCallback((asset: Asset): number => {
+    if (!asset.loadedAt) return 1.0; // Old assets or substations - fully visible
+    const elapsed = Date.now() - asset.loadedAt;
+    const fadeDuration = 400; // 400ms fade-in
+    return Math.min(1.0, elapsed / fadeDuration);
+  }, []);
+
+  const layers = useMemo(() => [
+    // FLUX WEATHER INTELLIGENCE - Broadcast-quality weather visualization
+    // Server-rendered smooth gradient image displayed as single texture (GPU-optimized)
+    ...(layersVisible.weather && weather.length > 0 ? (() => {
+      const currentTemp = weather[weatherTimelineIndex]?.TEMP_F || 75;
+      
+      // Houston metro bounds for image overlay
+      const bounds: [[number, number], [number, number]] = [
+        [-96.1, 29.4],  // Southwest corner [lon, lat]
+        [-94.9, 30.2]   // Northeast corner [lon, lat]
+      ];
+      
+      // Generate weather image URL with correct aspect ratio for Houston bounds
+      // Bounds span 1.2° lon × 0.8° lat = 1.5:1 ratio → use 1536×1024 pixels
+      const imageUrl = `/api/weather/image?temp_f=${currentTemp}&width=1536&height=1024&t=${weatherTimelineIndex}`;
+
+      return [
+        new BitmapLayer({
+          id: 'weather-gradient',
+          bounds: bounds,
+          image: imageUrl,
+          opacity: 0.7,
+          pickable: false,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          updateTriggers: {
+            image: weatherTimelineIndex  // Regenerate image when timeline changes
+          }
+        })
+      ];
+    })() : []),
+
+    // Heatmap layer for meter usage density (GPU-optimized)
+    ...(layersVisible.heatmap ? [new HeatmapLayer({
+      id: 'usage-heatmap',
+      data: heatmapData,
+      getPosition: (d: any) => d.position,
+      getWeight: (d: any) => d.weight,
+      radiusPixels: 25,
+      intensity: 1.5,
+      threshold: 0.02,
+      aggregation: 'SUM',
+      colorRange: [
+        [255, 255, 178, 25],
+        [254, 204, 92, 85],
+        [253, 141, 60, 170],
+        [240, 59, 32, 255],
+        [189, 0, 38, 255]
+      ]
+    })] : []),
+
+    // ZOOM-ADAPTIVE NETWORK TOPOLOGY: Three-tier hierarchical visualization
+    // Metro view (<9): Service area polygons | Neighborhood (9-11.5): Distribution feeders | Street (>11.5): Full network
+    ...(layersVisible.connections ? (() => {
+      const layers: any[] = [];
+      
+      // METRO VIEW (Zoom < 9): Grid cell hexagonal tiles matching tower operational status
+      if (throttledZoom < 9) {
+        // Create hexagon tiles directly under each grid cell tower
+        const hexagonTileData = flattenedClusterData.aggregateTowers.map((tower: any) => ({
+          position: tower.position,
+          operationalStatus: tower.asset.worstStatus,
+          avgLoad: tower.asset.avgLoad,
+          avgHealth: tower.asset.avgHealth,
+          cellId: tower.asset.id
+        }));
+        
+        layers.push(new PolygonLayer({
+          id: 'grid-cell-hexagon-tiles',
+          data: hexagonTileData,
+          pickable: true,
+          extruded: false,
+          filled: true,
+          wireframe: false,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          getPolygon: (d: any) => {
+            const metersToDegreesLon = 1 / 111320 / Math.cos(29.7604 * Math.PI / 180);
+            const metersToDegreesLat = 1 / 110540;
+            const radiusMeters = 750; // 750m service radius - reduced by 50%
+            const radiusLon = radiusMeters * metersToDegreesLon;
+            const radiusLat = radiusMeters * metersToDegreesLat;
+            
+            const vertices: number[][] = [];
+            for (let i = 0; i < 6; i++) {
+              const angle = (Math.PI / 3) * i;
+              vertices.push([
+                d.position[0] + radiusLon * Math.cos(angle),
+                d.position[1] + radiusLat * Math.sin(angle)
+              ]);
+            }
+            vertices.push(vertices[0]);
+            return vertices;
+          },
+          getFillColor: (d: any) => {
+            // Match grid cell operational color logic
+            if (d.operationalStatus === 'critical') return [239, 68, 68, 120];   // Red
+            if (d.operationalStatus === 'warning') return [251, 191, 36, 120];   // Yellow
+            return [34, 197, 94, 120];                                           // Green
+          },
+          getLineColor: (d: any) => {
+            // Darker outline for clarity
+            if (d.operationalStatus === 'critical') return [185, 28, 28, 200];
+            if (d.operationalStatus === 'warning') return [217, 119, 6, 200];
+            return [21, 128, 61, 200];
+          },
+          getLineWidth: 2,
+          lineWidthUnits: 'pixels',
+          opacity: 0.7,
+          updateTriggers: {
+            getPolygon: flattenedClusterData,
+            getFillColor: flattenedClusterData,
+            getLineColor: flattenedClusterData
+          },
+          onClick: (info: any) => {
+            // if (info.object) {
+            //   console.log('Grid cell operational status:', {
+            //     cellId: info.object.cellId,
+            //     status: info.object.operationalStatus,
+            //     avgLoad: info.object.avgLoad?.toFixed(1),
+            //     avgHealth: info.object.avgHealth?.toFixed(1)
+            //   });
+            // }
+          }
+        }));
+      }
+      
+      // NEIGHBORHOOD VIEW (Zoom 9-11.5): Distribution feeders with aggressive performance filtering
+      if (throttledZoom >= 9 && throttledZoom < 11.5) {
+        layers.push(new ArcLayer({
+          id: 'distribution-feeders',
+          data: viewportFilteredFeeders,
+          pickable: true,
+          widthUnits: 'pixels',
+          widthMinPixels: 1,
+          widthMaxPixels: 5,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          getSourcePosition: (d: any) => [d.FROM_LON, d.FROM_LAT],
+          getTargetPosition: (d: any) => [d.TO_LON, d.TO_LAT],
+          getSourceColor: (d: any) => {
+            const load = d.LOAD_UTILIZATION_PCT || 0;
+            if (load > 90) return [255, 50, 50, 240];
+            if (load > 80) return [255, 100, 0, 220];
+            if (load > 70) return [255, 165, 0, 200];
+            if (load > 60) return [255, 215, 0, 180];
+            return [0, 255, 150, 160];
+          },
+          getTargetColor: (d: any) => {
+            const load = d.LOAD_UTILIZATION_PCT || 0;
+            const alpha = 0.5;
+            if (load > 90) return [255, 50, 50, 240 * alpha];
+            if (load > 80) return [255, 100, 0, 220 * alpha];
+            if (load > 70) return [255, 165, 0, 200 * alpha];
+            if (load > 60) return [255, 215, 0, 180 * alpha];
+            return [0, 255, 150, 160 * alpha];
+          },
+          getWidth: (d: any) => {
+            const load = d.LOAD_UTILIZATION_PCT || 0;
+            const kva = d.RATED_KVA || 0;
+            if (load > 90 || kva > 750) return 4;
+            if (load > 80 || kva > 500) return 3;
+            if (load > 70 || kva > 350) return 2.5;
+            return 2;
+          },
+          getHeight: (d: any) => {
+            const dx = d.TO_LON - d.FROM_LON;
+            const dy = d.TO_LAT - d.FROM_LAT;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const load = d.LOAD_UTILIZATION_PCT || 0;
+            const priorityMultiplier = load > 80 ? 0.35 : load > 70 ? 0.3 : 0.25;
+            return distance * priorityMultiplier;
+          },
+          getTilt: 0,
+          opacity: 0.9,
+          updateTriggers: {
+            getSourceColor: [throttledZoom],
+            getTargetColor: [throttledZoom],
+            getWidth: [throttledZoom],
+            getHeight: [throttledZoom]
+          },
+          onClick: (info: any) => {
+            if (info.object) {
+              // console.log('Distribution feeder:', info.object);
+            }
+          }
+        }));
+      }
+      
+      // STREET VIEW (Zoom >= 10): Full service hierarchy with smooth reveal animation
+      // PERFORMANCE OPTIMIZED: Simplified color calculations, removed per-frame distance fading
+      if (throttledZoom >= 10 && visibleTopology.length > 0) {
+        layers.push(new ArcLayer({
+            id: 'service-connections',
+            data: visibleTopology,
+            pickable: false,
+            getSourcePosition: (d: TopologyLink) => [d.from_longitude, d.from_latitude],
+            getTargetPosition: (d: TopologyLink) => [d.to_longitude, d.to_latitude],
+            getSourceColor: (d: TopologyLink) => {
+              const isSelected = connectedAssets.has(d.from_asset_id) || connectedAssets.has(d.to_asset_id);
+              
+              if (isSelected) {
+                // Simplified pulsing for selected connections
+                const pulse = (Math.sin(animationTimeRef.current * 1.5) + 1) * 0.5;
+                const alpha = 150 + Math.round(pulse * 100);
+                return [0, 255, 200, alpha];
+              }
+              
+              // Status-based colors (no expensive viewport distance calculations)
+              const status = (d.connection_type || '').toUpperCase();
+              
+              if (status.includes('FAULT') || status.includes('OUTAGE') || status.includes('CRITICAL') || status.includes('OFFLINE')) {
+                return [255, 60, 60, 110];
+              }
+              if (status.includes('WARNING') || status.includes('OVERLOAD') || status.includes('HIGH_LOAD') || status.includes('DEGRADED')) {
+                return [255, 220, 60, 100];
+              }
+              return [50, 255, 100, 90];
+            },
+            getTargetColor: (d: TopologyLink) => {
+              const isSelected = connectedAssets.has(d.from_asset_id) || connectedAssets.has(d.to_asset_id);
+              
+              if (isSelected) {
+                const pulse = (Math.sin(animationTimeRef.current * 1.5) + 1) * 0.5;
+                const alpha = 120 + Math.round(pulse * 80);
+                return [0, 220, 180, alpha];
+              }
+              
+              // Status-based colors (simplified)
+              const status = (d.connection_type || '').toUpperCase();
+              
+              if (status.includes('FAULT') || status.includes('OUTAGE') || status.includes('CRITICAL') || status.includes('OFFLINE')) {
+                return [220, 40, 40, 70];
+              }
+              if (status.includes('WARNING') || status.includes('OVERLOAD') || status.includes('HIGH_LOAD') || status.includes('DEGRADED')) {
+                return [230, 190, 40, 65];
+              }
+              return [40, 220, 80, 60];
+            },
+            getHeight: 0.05,  // Fixed height for performance (was dynamic calculation)
+            getTilt: 0,
+            getWidth: (d: TopologyLink) => {
+              const isSelected = connectedAssets.has(d.from_asset_id) || connectedAssets.has(d.to_asset_id);
+              return isSelected ? 2.0 : 1.0;
+            },
+            widthUnits: 'pixels',
+            widthMinPixels: 0.8,
+            widthMaxPixels: 2.5,
+            opacity: 0.7,
+            updateTriggers: {
+              getSourceColor: [connectedAssets.size, animationTimeRef.current],
+              getTargetColor: [connectedAssets.size, animationTimeRef.current],
+              getWidth: [connectedAssets.size]
+            }
+          }));
+      }
+      
+    return layers;
+  })() : []),
+
+    // AGGREGATE INFRASTRUCTURE TOWERS - Single unified hexagonal tower per grid cell (LOW ZOOM ONLY)
+    // Shows engineering-relevant metrics: height = health status priority, color = worst status, width = density
+    ...((layersVisible.substations || layersVisible.transformers || layersVisible.poles) ?  // Always render, fade with zoom
+      [new PolygonLayer({
+        id: 'aggregate-towers',
+        data: flattenedClusterData.aggregateTowers,
+        pickable: true,
+        extruded: true,
+        wireframe: true,
+        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+        getPolygon: (d: any) => getHexagonPolygon(d.position[0], d.position[1], d.radius),
+        getElevation: (d: any) => {
+          const staggeredScale = getStaggerDelay(
+            d.position[0], 
+            d.position[1], 
+            towerScaleAnimation,
+            d.asset.avgHealth,
+            d.asset.avgLoad
+          );
+          // Smooth fade-out starting early and extending over wider zoom range
+          const zoomFade = throttledZoom >= 10.0
+            ? Math.max(0, 1 - ((throttledZoom - 10.0) / 2.5))
+            : 1;
+          return d.elevation * heightScale * staggeredScale * zoomFade;
+        },
+        getFillColor: (d: any) => {
+          const staggeredScale = getStaggerDelay(
+            d.position[0], 
+            d.position[1], 
+            towerScaleAnimation,
+            d.asset.avgHealth,
+            d.asset.avgLoad
+          );
+          // Smooth fade-out starting early and extending over wider zoom range
+          const zoomFade = throttledZoom >= 10.0
+            ? Math.max(0, 1 - ((throttledZoom - 10.0) / 2.5))
+            : 1;
+          return [...d.color.slice(0, 3), d.color[3] * staggeredScale * zoomFade];
+        },
+        getLineColor: (d: any) => {
+          const staggeredScale = getStaggerDelay(
+            d.position[0], 
+            d.position[1], 
+            towerScaleAnimation,
+            d.asset.avgHealth,
+            d.asset.avgLoad
+          );
+          // Smooth fade-out starting early and extending over wider zoom range
+          const zoomFade = throttledZoom >= 10.0
+            ? Math.max(0, 1 - ((throttledZoom - 10.0) / 2.5))
+            : 1;
+          return [255, 255, 255, 120 * staggeredScale * zoomFade];
+        },
+        elevationScale: 1,
+        lineWidthMinPixels: 2,
+        transitions: {
+          getElevation: {
+            duration: 800,
+            easing: t => t * (2 - t)
+          },
+          getFillColor: {
+            duration: 600,
+            easing: t => t * (2 - t)
+          }
+        },
+        updateTriggers: {
+          getPolygon: flattenedClusterData.aggregateTowers,
+          getFillColor: [flattenedClusterData.aggregateTowers, towerScaleAnimation, throttledZoom],
+          getElevation: [flattenedClusterData.aggregateTowers, towerScaleAnimation, throttledZoom, heightScale],
+          getLineColor: [towerScaleAnimation, throttledZoom]
+        },
+        onClick: (info: any) => {
+          if (info.object?.asset) {
+            setSelectedAsset(info.object.asset);
+            setSelectedAssetPosition(null); // Clear stored position for new selection
+            setClickPosition({ x: info.x, y: info.y });
+            setHoveredAsset(null); // Clear hover when asset is selected
+            setHoverPosition(null);
+          }
+        }
+      })] : []
+    ),
+
+    // INDIVIDUAL ASSETS - Full detail view (HIGH ZOOM ONLY)
+    ...(layersVisible.substations && currentZoom >= ZOOM_THRESHOLD - 1.5 ?
+      [new PolygonLayer({
+        id: 'substations-individual',
+        data: viewportFilteredAssets.substationAssets,
+        pickable: true,
+        extruded: true,
+        wireframe: true,
+        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+        getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 428.4),
+        getElevation: (d: Asset) => {
+          const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score);
+          return 102 * heightScale * staggeredScale;
+        },
+        getFillColor: (d: Asset) => {
+          const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score);
+          return [0, 200, 255, 200 * staggeredScale];
+        },
+        getLineColor: (d: Asset) => {
+          const staggeredScale = getStaggerDelay(
+            d.longitude, 
+            d.latitude, 
+            assetScaleAnimation,
+            d.health_score,
+            undefined,
+            'substation'
+          );
+          return [255, 255, 255, 80 * staggeredScale];
+        },
+        elevationScale: 1,
+        lineWidthMinPixels: 1,
+        transitions: {
+          getElevation: {
+            duration: 800,
+            easing: t => t * (2 - t)
+          },
+          getFillColor: {
+            duration: 600,
+            easing: t => t * (2 - t)
+          }
+        },
+        updateTriggers: {
+          getElevation: [assetScaleAnimation, heightScale],
+          getFillColor: assetScaleAnimation,
+          getLineColor: assetScaleAnimation
+        },
+        onClick: (info: any) => {
+          if (info.object) {
+            if (info.srcEvent?.shiftKey) {
+              setSelectedAssets(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(info.object.id)) {
+                  newSet.delete(info.object.id);
+                } else {
+                  newSet.add(info.object.id);
+                }
+                return newSet;
+              });
+            } else {
+              setSelectedAsset(info.object);
+              setSelectedAssets(new Set([info.object.id]));
+              setSelectedAssetPosition(null);
+              setHoveredAsset(null); // Clear hover when asset is selected
+              setHoverPosition(null);
+              setClickPosition({ x: info.x, y: info.y });
+            }
+          }
+        },
+        onHover: (info: any) => {
+          if (info.object && info.object.id !== selectedAsset?.id) {
+            setHoveredAsset(info.object);
+            setHoverPosition({ x: info.x, y: info.y });
+          } else {
+            setHoveredAsset(null);
+            setHoverPosition(null);
+          }
+        }
+      })] : []
+    ),
+
+    // Substation connection count badges - IconLayer with custom SVG badges
+    ...(layersVisible.substations && currentZoom >= ZOOM_THRESHOLD - 1.5 && assetConnectionCounts.size > 0 ? [
+      new IconLayer({
+        id: 'substation-badge',
+        data: viewportFilteredAssets.substationAssets.filter(s => {
+          const counts = assetConnectionCounts.get(s.id);
+          return counts && counts.transformers > 0;
+        }),
+        pickable: false,
+        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+        getPosition: (d: Asset) => [
+          d.longitude,
+          d.latitude,
+          120 * heightScale
+        ],
+        getIcon: (d: Asset) => {
+          const counts = assetConnectionCounts.get(d.id);
+          const count = counts?.transformers || 0;
+          const displayCount = count >= 1000 ? `${Math.floor(count / 1000)}k` : count;
+          // Material UI Power icon SVG path
+          const powerIconPath = 'M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z';
+          
+          const svg = `<svg width="32" height="40" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="28" height="36" rx="4" fill="rgb(236, 72, 153)" stroke="white" stroke-width="2"/>
+            <g transform="translate(8, 6)">
+              <path d="${powerIconPath}" fill="white"/>
+            </g>
+            <text x="16" y="34" font-family="Arial, sans-serif" font-size="10" font-weight="700" fill="white" text-anchor="middle">${displayCount}</text>
+          </svg>`;
+          
+          return {
+            url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+            width: 32,
+            height: 40
+          };
+        },
+        getSize: 32,
+        sizeUnits: 'pixels',
+        billboard: true,
+        updateTriggers: {
+          getPosition: [heightScale],
+          getIcon: [assetConnectionCounts]
+        }
+      })
+    ] : []),
+
+    ...(layersVisible.transformers && currentZoom >= ZOOM_THRESHOLD - 1.5 ?
+      [
+        // Transformers - OPTIMIZED: Switched from PolygonLayer to ColumnLayer for 10k+ objects
+        // ColumnLayer is simpler geometry (cylinder vs rectangular prism) = better GPU performance
+        new ColumnLayer({
+          id: 'transformers-individual',
+          data: viewportFilteredAssets.transformerAssets,
+          pickable: true,
+          extruded: true,
+          diskResolution: 4,  // Low-poly square shape (4-sided) for rectangular appearance
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          getPosition: (d: Asset) => [d.longitude, d.latitude, 0],
+          getElevation: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(
+              d.longitude, 
+              d.latitude, 
+              assetScaleAnimation,
+              d.health_score,
+              d.load_percent,
+              'transformer'
+            );
+            const fadeProgress = getAssetFadeProgress(d);
+            return 37.5 * heightScale * staggeredScale * fadeProgress;  // Rise animation
+          },
+          getFillColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(
+              d.longitude, 
+              d.latitude, 
+              assetScaleAnimation,
+              d.health_score,
+              d.load_percent,
+              'transformer'
+            );
+            const fadeProgress = getAssetFadeProgress(d);
+            return [236, 72, 153, 200 * staggeredScale * fadeProgress];  // Fade-in
+          },
+          getLineColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(
+              d.longitude, 
+              d.latitude, 
+              assetScaleAnimation,
+              d.health_score,
+              d.load_percent,
+              'transformer'
+            );
+            const fadeProgress = getAssetFadeProgress(d);
+            return [255, 100, 180, 100 * staggeredScale * fadeProgress];  // Fade-in
+          },
+          radius: 30,  // 25% size reduction (was 40m equivalent for 120×80 rect)
+          elevationScale: 1,
+          lineWidthMinPixels: 2,
+          transitions: {
+            getElevation: {
+              duration: 400,
+              easing: t => t * t * (3 - 2 * t)  // Smooth ease-in-out
+            },
+            getFillColor: {
+              duration: 400,
+              easing: t => t * t * (3 - 2 * t)
+            }
+          },
+          updateTriggers: {
+            getElevation: [assetScaleAnimation, heightScale, animationFrame],
+            getFillColor: [assetScaleAnimation, animationFrame],
+            getLineColor: [assetScaleAnimation, animationFrame]
+          },
+          onClick: (info: any) => {
+            if (info.object) {
+              if (info.srcEvent?.shiftKey) {
+                setSelectedAssets(prev => {
+                  const newSet = new Set(prev);
+                  if (newSet.has(info.object.id)) {
+                    newSet.delete(info.object.id);
+                  } else {
+                    newSet.add(info.object.id);
+                  }
+                  return newSet;
+                });
+              } else {
+                setSelectedAsset(info.object);
+                setSelectedAssets(new Set([info.object.id]));
+                setSelectedAssetPosition(null);
+                setClickPosition({ x: info.x, y: info.y });
+              }
+            }
+          },
+          onHover: (info: any) => {
+            if (info.object && info.object.id !== selectedAsset?.id) {
+              setHoveredAsset(info.object);
+              setHoverPosition({ x: info.x, y: info.y });
+            } else {
+              setHoveredAsset(null);
+              setHoverPosition(null);
+            }
+          }
+        }),
+        // Health status cap - OPTIMIZED: Using ColumnLayer instead of PolygonLayer
+        new ColumnLayer({
+          id: 'transformers-cap',
+          data: viewportFilteredAssets.transformerAssets,
+          extruded: true,
+          pickable: false,
+          diskResolution: 4,  // Match base shape (square-like)
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          getPosition: (d: Asset) => [
+            d.longitude,
+            d.latitude,
+            37.5 * heightScale  // Start cap at top of base (37.5m base height)
+          ],
+          getElevation: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(
+              d.longitude, 
+              d.latitude, 
+              assetScaleAnimation,
+              d.health_score,
+              d.load_percent,
+              'transformer'
+            );
+            return 9.375 * heightScale * staggeredScale;  // 25% of base height (37.5 * 0.25)
+          },
+          getFillColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(
+              d.longitude, 
+              d.latitude, 
+              assetScaleAnimation,
+              d.health_score,
+              d.load_percent,
+              'transformer'
+            );
+            
+            const health = d.health_score != null ? d.health_score : 100;
+            const load = d.load_percent != null ? d.load_percent : 0;
+            
+            if (load > 85 || health < 50) return [239, 68, 68, 220 * staggeredScale]; // Red
+            if (load > 70 || health < 70) return [251, 191, 36, 220 * staggeredScale]; // Yellow
+            return [34, 197, 94, 220 * staggeredScale]; // Green
+          },
+          getLineColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(
+              d.longitude, 
+              d.latitude, 
+              assetScaleAnimation,
+              d.health_score,
+              d.load_percent,
+              'transformer'
+            );
+            const health = d.health_score != null ? d.health_score : 100;
+            const load = d.load_percent != null ? d.load_percent : 0;
+            
+            if (load > 85 || health < 50) return [185, 28, 28, 180 * staggeredScale];
+            if (load > 70 || health < 70) return [217, 119, 6, 180 * staggeredScale];
+            return [21, 128, 61, 180 * staggeredScale];
+          },
+          radius: 22.5,  // 75% of base radius (30m)
+          elevationScale: 1,
+          lineWidthMinPixels: 2,
+          transitions: {
+            getElevation: {
+              duration: 800,
+              easing: t => t * (2 - t)
+            },
+            getFillColor: {
+              duration: 600,
+              easing: t => t * (2 - t)
+            }
+          },
+          updateTriggers: {
+            getPosition: [heightScale],
+            getElevation: [assetScaleAnimation, heightScale],
+            getFillColor: assetScaleAnimation,
+            getLineColor: assetScaleAnimation
+          }
+        })
+      ] : []
+    ),
+
+    // Transformer meter count indicator - IconLayer with custom SVG badges
+    ...(layersVisible.transformers && currentZoom >= ZOOM_THRESHOLD && assetConnectionCounts.size > 0 ? [
+      new IconLayer({
+        id: 'transformer-badge',
+        data: viewportFilteredAssets.transformerAssets.filter(t => {
+          const counts = assetConnectionCounts.get(t.id);
+          return counts && counts.meters > 0;
+        }),
+        pickable: false,
+        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+        getPosition: (d: Asset) => [
+          d.longitude,
+          d.latitude,
+          45 * heightScale
+        ],
+        getIcon: (d: Asset) => {
+          const counts = assetConnectionCounts.get(d.id);
+          const count = counts?.meters || 0;
+          const displayCount = count >= 1000 ? `${Math.floor(count / 1000)}k` : count;
+          // Material UI Power icon SVG path
+          const powerIconPath = 'M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z';
+          
+          const svg = `<svg width="28" height="36" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="24" height="32" rx="3" fill="rgb(147, 51, 234)" stroke="white" stroke-width="2"/>
+            <g transform="translate(6, 5) scale(0.67)">
+              <path d="${powerIconPath}" fill="white"/>
+            </g>
+            <text x="14" y="29" font-family="Arial, sans-serif" font-size="9" font-weight="700" fill="white" text-anchor="middle">${displayCount}</text>
+          </svg>`;
+          
+          return {
+            url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`,
+            width: 28,
+            height: 36
+          };
+        },
+        getSize: 28,
+        sizeUnits: 'pixels',
+        billboard: true,
+        updateTriggers: {
+          getPosition: [heightScale],
+          getIcon: [assetConnectionCounts]
+        }
+      })
+    ] : []),
+
+    ...(layersVisible.poles && currentZoom >= ZOOM_THRESHOLD - 2.0 ?
+      [
+        // Poles base layer - Primary color (full height)
+        new ColumnLayer({
+          id: 'poles-individual-base',
+          data: viewportFilteredAssets.poleAssets,
+          pickable: true,
+          extruded: true,
+          diskResolution: 6,  // Reduced from 8 for GPU performance (30k poles)
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          getPosition: (d: Asset) => [d.longitude, d.latitude, 0],
+          getElevation: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
+            const fadeProgress = getAssetFadeProgress(d);
+            return 40 * heightScale * staggeredScale * fadeProgress;  // Rise animation
+          },
+          getFillColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
+            const fadeProgress = getAssetFadeProgress(d);
+            return [136, 128, 255, 200 * staggeredScale * fadeProgress];  // Fade-in
+          },
+          getLineColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
+            const fadeProgress = getAssetFadeProgress(d);
+            return [255, 140, 60, 100 * staggeredScale * fadeProgress];  // Fade-in
+          },
+          radius: 12.5,  // 75% total reduction
+          transitions: {
+            getElevation: {
+              duration: 400,
+              easing: t => t * t * (3 - 2 * t)  // Smooth ease-in-out
+            },
+            getFillColor: {
+              duration: 400,
+              easing: t => t * t * (3 - 2 * t)
+            }
+          },
+          updateTriggers: {
+            getElevation: [assetScaleAnimation, heightScale, animationFrame],
+            getFillColor: [assetScaleAnimation, animationFrame],
+            getLineColor: [assetScaleAnimation, animationFrame]
+          },
+          onClick: (info: any) => {
+          if (info.object) {
+            if (info.srcEvent?.shiftKey) {
+              setSelectedAssets(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(info.object.id)) {
+                  newSet.delete(info.object.id);
+                } else {
+                  newSet.add(info.object.id);
+                }
+                return newSet;
+              });
+            } else {
+              setSelectedAsset(info.object);
+              setSelectedAssets(new Set([info.object.id]));
+              setSelectedAssetPosition(null);
+              setHoveredAsset(null); // Clear hover when asset is selected
+              setHoverPosition(null);
+              setClickPosition({ x: info.x, y: info.y });
+            }
+          }
+        },
+        onHover: (info: any) => {
+          if (info.object && info.object.id !== selectedAsset?.id) {
+            setHoveredAsset(info.object);
+            setHoverPosition({ x: info.x, y: info.y });
+          } else {
+            setHoveredAsset(null);
+            setHoverPosition(null);
+          }
+        }
+        }),
+        // Poles health cap - OPTIMIZED: Cap on top for health indication
+        new ColumnLayer({
+          id: 'poles-individual-cap',
+          data: viewportFilteredAssets.poleAssets,
+          pickable: false,
+          extruded: true,
+          diskResolution: 6,  // Match base shape
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          getPosition: (d: Asset) => [
+            d.longitude,
+            d.latitude,
+            40 * heightScale  // Start cap at top of base (40m base height)
+          ],
+          getElevation: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
+            const fadeProgress = getAssetFadeProgress(d);
+            return 10 * heightScale * staggeredScale * fadeProgress;  // Rise animation
+          },
+          getFillColor: (d: Asset) => {
+            const health = d.health_score !== undefined ? d.health_score : 75;
+            const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
+            const fadeProgress = getAssetFadeProgress(d);
+            const alpha = 220 * staggeredScale * fadeProgress;
+            // Health-based status colors
+            if (d.status && (d.status.includes('Poor') || d.status.includes('Critical'))) {
+              return [239, 68, 68, alpha]; // Red for Poor/Critical
+            }
+            if (d.status && d.status.includes('Fair')) {
+              return [251, 191, 36, alpha]; // Yellow/Orange for Fair
+            }
+            // Fallback to health score
+            if (health < 60) return [239, 68, 68, alpha];  // Red
+            if (health < 80) return [251, 191, 36, alpha];  // Yellow
+            return [34, 197, 94, alpha];  // Green
+          },
+          getLineColor: (d: Asset) => {
+            const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
+            const fadeProgress = getAssetFadeProgress(d);
+            const health = d.health_score !== undefined ? d.health_score : 75;
+            
+            if (d.status && (d.status.includes('Poor') || d.status.includes('Critical'))) {
+              return [185, 28, 28, 180 * staggeredScale * fadeProgress];
+            }
+            if (d.status && d.status.includes('Fair')) {
+              return [217, 119, 6, 180 * staggeredScale * fadeProgress];
+            }
+            if (health < 60) return [185, 28, 28, 180 * staggeredScale * fadeProgress];
+            if (health < 80) return [217, 119, 6, 180 * staggeredScale * fadeProgress];
+            return [21, 128, 61, 180 * staggeredScale * fadeProgress];
+          },
+          radius: 9.375,  // 75% of base radius (12.5 * 0.75)
+          elevationScale: 1,
+          lineWidthMinPixels: 2,
+          transitions: {
+            getElevation: {
+              duration: 400,
+              easing: t => t * t * (3 - 2 * t)
+            },
+            getFillColor: {
+              duration: 400,
+              easing: t => t * t * (3 - 2 * t)
+            }
+          },
+          updateTriggers: {
+            getPosition: [assetScaleAnimation, heightScale, animationFrame],
+            getElevation: [assetScaleAnimation, heightScale, animationFrame],
+            getFillColor: [assetScaleAnimation, animationFrame],
+            getLineColor: [assetScaleAnimation, animationFrame]
+          }
+        })
+      ] : []
+    ),
+
+
+
+    // Meters (rectangular columns - emerge LAST at highest zoom)
+    // ZOOM-BASED VISIBILITY: Show individual meters only at maximum zoom (field inspection level)
+    // SHAPE: OPTIMIZED ColumnLayer with diskResolution=4 for square/rectangular meter housing
+    // PERFORMANCE: 3-5x faster than PolygonLayer - GPU-optimized geometry
+    // EMERGENCE: Meters appear LAST - delayed start + slowest emergence
+    ...(layersVisible.meters && viewState.zoom > 13.5 ? [
+      new ColumnLayer({
+        id: 'meters',
+        data: viewportFilteredAssets.meterAssets,
+        pickable: true,
+        extruded: true,
+        diskResolution: 4,  // Square base for rectangular meter housing
+        flatShading: true,   // Blocky appearance for meter boxes
+        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+        getPosition: (d: Asset) => [d.longitude, d.latitude, 0],
+        getElevation: (d: Asset) => {
+          const baseHeight = 6; // Operational visibility height (6m)
+          const fadeProgress = getAssetFadeProgress(d);
+          return baseHeight * heightScale * assetScaleAnimation * fadeProgress;  // Rise animation
+        },
+        getFillColor: (d: Asset) => {
+          const fadeProgress = getAssetFadeProgress(d);
+          const baseAlpha = 220 * assetScaleAnimation * fadeProgress;
+          return [147, 51, 234, baseAlpha]; // Purple with fade-in
+        },
+        getLineColor: (d: Asset) => {
+          const fadeProgress = getAssetFadeProgress(d);
+          const lineAlpha = 180 * assetScaleAnimation * fadeProgress;
+          return [107, 33, 168, lineAlpha];  // Purple outline with fade-in
+        },
+        radius: 5.0,  // 10m diameter for ops center visibility
+        angle: 45,    // Rotate 45° for diamond orientation
+        elevationScale: 1,
+        lineWidthMinPixels: 2,
+        material: {
+          ambient: 0.4,
+          diffuse: 0.6,
+          shininess: 32,
+          specularColor: [90, 30, 140]
+        },
+        transitions: {
+          getElevation: {
+            duration: 400,
+            easing: t => t * t * (3 - 2 * t)  // Smooth ease-in-out
+          },
+          getFillColor: {
+            duration: 400,
+            easing: t => t * t * (3 - 2 * t)
+          }
+        },
+        updateTriggers: {
+          getElevation: [assetScaleAnimation, heightScale, animationFrame],
+          getFillColor: [assetScaleAnimation, animationFrame],
+          getLineColor: [assetScaleAnimation, animationFrame]
+        },
+        onClick: (info: any) => {
+          if (info.object) {
+            if (info.srcEvent?.shiftKey) {
+              setSelectedAssets(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(info.object.id)) {
+                  newSet.delete(info.object.id);
+                } else {
+                  newSet.add(info.object.id);
+                }
+                return newSet;
+              });
+            } else {
+              setSelectedAsset(info.object);
+              setSelectedAssets(new Set([info.object.id]));
+              setSelectedAssetPosition(null);
+              setHoveredAsset(null); // Clear hover when asset is selected
+              setHoverPosition(null);
+              setClickPosition({ x: info.x, y: info.y });
+            }
+          }
+        },
+        onHover: (info: any) => {
+          if (info.object && info.object.id !== selectedAsset?.id) {
+            setHoveredAsset(info.object);
+            setHoverPosition({ x: info.x, y: info.y });
+          } else {
+            setHoveredAsset(null);
+            setHoverPosition(null);
+          }
+        }
+      })
+    ] : []),
+
+    // ENGINEERING SELECTION - Impact-aware, category-specific bloom for aggregate towers
+    ...(selectedAsset && selectedAsset.type === 'aggregate' ? (() => {
+      const glow = getGlowProperties(selectedAsset);
+      
+      // Calculate impact-based scale multiplier (1.0 to 2.0)
+      const maxImpact = 30; // Max expected impact score
+      const impactScale = 1.0 + (Math.min(selectedAsset.impactScore || 0, maxImpact) / maxImpact);
+      
+      // Calculate category-specific health colors
+      const getHealthColor = (assets: any[], type: string) => {
+        if (!assets || assets.length === 0) return [100, 100, 100]; // Gray for missing
+        
+        // Filter for valid health scores only
+        const withHealth = assets.filter(a => a.health_score != null && a.health_score !== undefined);
+        const avgHealth = withHealth.length > 0
+          ? withHealth.reduce((sum, a) => sum + a.health_score, 0) / withHealth.length
+          : 75; // Default if no health data
+        
+        const avgLoad = type === 'transformer' 
+          ? assets.reduce((sum, a) => sum + (a.load_percent || 50), 0) / assets.length 
+          : 0;
+        
+        // Priority: Load issues > Health issues
+        if (type === 'transformer' && avgLoad > 85) return [239, 68, 68]; // Red - overload
+        if (avgHealth < 50 || avgLoad > 85) return [239, 68, 68]; // Red - critical
+        if (avgHealth < 70 || avgLoad > 70) return [251, 191, 36]; // Amber - warning
+        return [34, 197, 94]; // Green - healthy
+      };
+      
+      const substationColor = getHealthColor(selectedAsset.substations, 'substation');
+      const transformerColor = getHealthColor(selectedAsset.transformers, 'transformer');
+      const poleColor = getHealthColor(selectedAsset.poles, 'pole');
+      
+      return [
+        // Outer ring: Substations (cyan base, health-colored)
+        new ScatterplotLayer({
+          id: 'aggregate-glow-substations',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 10] }],
+          pickable: false,
+          stroked: false,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (100 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 18 * glow.pulseAmplitude) * glow.glowScale * impactScale * (selectedAsset.substationCount > 0 ? 1.0 : 0.5),
+          radiusMaxPixels: 250,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...substationColor, 30 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 12 * glow.pulseAmplitude],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationTimeRef.current
+          }
+        }),
+        // Middle ring: Transformers (magenta base, health+load colored)
+        new ScatterplotLayer({
+          id: 'aggregate-glow-transformers',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 15] }],
+          pickable: false,
+          stroked: false,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (65 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 12 * glow.pulseAmplitude) * glow.glowScale * impactScale * (selectedAsset.transformerCount > 0 ? 1.0 : 0.5),
+          radiusMaxPixels: 150,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...transformerColor, 60 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 25 * glow.pulseAmplitude],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationTimeRef.current
+          }
+        }),
+        // Inner ring: Poles (purple base, health colored)
+        new ScatterplotLayer({
+          id: 'aggregate-glow-poles',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 20] }],
+          pickable: false,
+          stroked: true,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (35 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.04)) * 8 * glow.pulseAmplitude) * glow.glowScale * impactScale * (selectedAsset.poleCount > 0 ? 1.0 : 0.5),
+          radiusMaxPixels: 90,
+          lineWidthMinPixels: 2 * glow.strokeIntensity,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...poleColor, 80 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.04)) * 30 * glow.pulseAmplitude],
+          getLineColor: [...poleColor.map(c => Math.min(255, c + 50)), 180 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.04)) * 75 * glow.strokeIntensity],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationFrame,
+            getLineColor: animationTimeRef.current
+          }
+        })
+      ];
+    })() : []),
+
+    // ENGINEERING SELECTION - Priority-based bloom for substations
+    ...(selectedAsset && selectedAsset.type === 'substation' ? (() => {
+      const glow = getGlowProperties(selectedAsset);
+      return [
+        // Outer glow
+        new ScatterplotLayer({
+          id: 'substation-glow-outer',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 10] }],
+          pickable: false,
+          stroked: false,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (35 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 8 * glow.pulseAmplitude) * glow.glowScale,
+          radiusMaxPixels: 90,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...glow.baseColor, 30 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 12 * glow.pulseAmplitude],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationTimeRef.current
+          }
+        }),
+        // Inner glow
+        new ScatterplotLayer({
+          id: 'substation-glow-inner',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 15] }],
+          pickable: false,
+          stroked: true,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (18 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 5 * glow.pulseAmplitude) * glow.glowScale,
+          radiusMaxPixels: 50,
+          lineWidthMinPixels: 2 * glow.strokeIntensity,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 80 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 25 * glow.pulseAmplitude],
+          getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 160 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 60 * glow.strokeIntensity],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationFrame,
+            getLineColor: animationTimeRef.current
+          }
+        })
+      ];
+    })() : []),
+
+    // ENGINEERING SELECTION - Priority-based bloom for transformers
+    ...(selectedAsset && selectedAsset.type === 'transformer' ? (() => {
+      const glow = getGlowProperties(selectedAsset);
+      return [
+        // Outer glow
+        new ScatterplotLayer({
+          id: 'transformer-glow-outer',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 10] }],
+          pickable: false,
+          stroked: false,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (28 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 6 * glow.pulseAmplitude) * glow.glowScale,
+          radiusMaxPixels: 70,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...glow.baseColor, 35 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 15 * glow.pulseAmplitude],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationTimeRef.current
+          }
+        }),
+        // Inner glow
+        new ScatterplotLayer({
+          id: 'transformer-glow-inner',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 15] }],
+          pickable: false,
+          stroked: true,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (14 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 4 * glow.pulseAmplitude) * glow.glowScale,
+          radiusMaxPixels: 40,
+          lineWidthMinPixels: 2 * glow.strokeIntensity,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 90 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 30 * glow.pulseAmplitude],
+          getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 170 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 65 * glow.strokeIntensity],
+        updateTriggers: {
+          radiusMinPixels: animationTimeRef.current,
+          getFillColor: animationFrame,
+          getLineColor: animationTimeRef.current
+        }
+      })
+      ];
+    })() : []),
+
+    // ENGINEERING SELECTION - Priority-based bloom for poles
+    ...(selectedAsset && selectedAsset.type === 'pole' ? (() => {
+      const glow = getGlowProperties(selectedAsset);
+      return [
+        // Outer glow
+        new ScatterplotLayer({
+          id: 'pole-glow-outer',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 10] }],
+          pickable: false,
+          stroked: false,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (22 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 5 * glow.pulseAmplitude) * glow.glowScale,
+          radiusMaxPixels: 55,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...glow.baseColor, 40 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 18 * glow.pulseAmplitude],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationTimeRef.current
+          }
+        }),
+        // Inner glow
+        new ScatterplotLayer({
+          id: 'pole-glow-inner',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 15] }],
+          pickable: false,
+          stroked: true,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (10 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 3 * glow.pulseAmplitude) * glow.glowScale,
+          radiusMaxPixels: 30,
+          lineWidthMinPixels: 2 * glow.strokeIntensity,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 100 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 35 * glow.pulseAmplitude],
+          getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 180 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 70 * glow.strokeIntensity],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationFrame,
+            getLineColor: animationTimeRef.current
+          }
+        })
+      ];
+    })() : []),
+
+    // ENGINEERING SELECTION - Priority-based bloom for meters
+    ...(selectedAsset && selectedAsset.type === 'meter' ? (() => {
+      const glow = getGlowProperties(selectedAsset);
+      return [
+        // Outer glow
+        new ScatterplotLayer({
+          id: 'meter-glow-outer',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 10] }],
+          pickable: false,
+          stroked: false,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (18 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 4 * glow.pulseAmplitude) * glow.glowScale,
+          radiusMaxPixels: 45,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...glow.baseColor, 45 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 20 * glow.pulseAmplitude],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationTimeRef.current
+          }
+        }),
+        // Inner glow
+        new ScatterplotLayer({
+          id: 'meter-glow-inner',
+          data: [{ position: [selectedAsset.longitude, selectedAsset.latitude, 15] }],
+          pickable: false,
+          stroked: true,
+          filled: true,
+          radiusScale: 1,
+          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+          radiusMinPixels: (8 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 2 * glow.pulseAmplitude) * glow.glowScale,
+          radiusMaxPixels: 25,
+          lineWidthMinPixels: 2 * glow.strokeIntensity,
+          getPosition: (d: any) => d.position,
+          getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 110 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 40 * glow.pulseAmplitude],
+          getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 190 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 65 * glow.strokeIntensity],
+          updateTriggers: {
+            radiusMinPixels: animationTimeRef.current,
+            getFillColor: animationFrame,
+            getLineColor: animationTimeRef.current
+          }
+        })
+      ];
+    })() : [])
+  ].filter(Boolean), [
+    layersVisible,
+    useClusteredView,
+    weather,
+    weatherTimelineIndex,
+    meterAssets,
+    visibleTopology,
+    flattenedClusterData,
+    viewportFilteredAssets,
+    viewportFilteredFeeders,
+    selectedAsset,
+    selectedAssets,
+    animationFrame,  // Triggers re-render when animation updates (incremented in useEffect)
+    throttledZoom,
+    assetScaleAnimation,
+    towerScaleAnimation,
+    currentZoom,
+    heightScale,
+    heatmapData,
+    connectedAssets,
+    assetConnectionCounts
+  ]);
+
+  // Removed expensive console.log for performance
+
+  const assetCounts = useMemo(() => ({
+    total: assets.length,
+    substations: substationAssets.length,
+    transformers: transformerAssets.length,
+    poles: poleAssets.length,
+    meters: meterAssets.length
+  }), [assets.length, substationAssets.length, transformerAssets.length, poleAssets.length, meterAssets.length]);
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+        {/* Header */}
+        <AppBar position="static" sx={{ bgcolor: '#000000', borderBottom: 'none' }}>
+          <Toolbar sx={{ justifyContent: 'space-between' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <img 
+                src="/flux-logo.png" 
+                alt="Flux" 
+                className={`flux-logo ${isSlowingDown ? 'slowing-down' : isSpinning ? 'loading' : ''}`}
+              />
+              <Box>
+                <Typography 
+                  variant="h5" 
+                  className="flux-gradient-text"
+                  sx={{ 
+                    fontWeight: 100, 
+                    fontFamily: '"Quantico", sans-serif',
+                    letterSpacing: '0.166em',
+                    fontSize: '32px'
+                  }}
+                >
+                  FLUX OPERATIONS CENTER
+                </Typography>
+                <Typography 
+                  variant="caption" 
+                  sx={{ 
+                    fontFamily: '"Space Mono", monospace',
+                    fontWeight: 400,
+                    letterSpacing: '0.1em',
+                    textTransform: 'uppercase',
+                    display: 'block',
+                    mt: -1
+                  }}
+                >
+                  <Box component="span" sx={{ color: '#0098D6' }}>Grid Operations</Box>
+                  <Box component="span" sx={{ color: '#6b7280', mx: 1 }}>•</Box>
+                  <Box component="span" sx={{ color: '#74522F' }}>Houston TX</Box>
+                  <Box component="span" sx={{ color: '#6b7280', mx: 1 }}>•</Box>
+                  <Box component="span" sx={{ color: '#ffffff' }}>Grid Intelligence</Box>
+                </Typography>
+              </Box>
+            </Box>
+            <Stack direction="row" spacing={1.5} alignItems="center">
+              {/* Asset Count */}
+              <Chip 
+                icon={<Speed sx={{ fontSize: 16 }} />} 
+                label={`Showing ${assetCounts.total.toLocaleString()} Assets`} 
+                size="small" 
+                sx={{ 
+                  fontWeight: 600,
+                  bgcolor: 'rgba(41, 181, 232, 0.08)',
+                  color: '#29B5E8',
+                  border: '1px solid rgba(41, 181, 232, 0.3)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+                  backdropFilter: 'blur(8px)',
+                  transition: 'all 0.2s ease',
+                  '&:hover': { 
+                    transform: 'translateY(-2px)', 
+                    boxShadow: '0 6px 16px rgba(41, 181, 232, 0.3), 0 2px 4px rgba(41, 181, 232, 0.2)',
+                    borderColor: '#29B5E8',
+                    bgcolor: 'rgba(41, 181, 232, 0.12)'
+                  }
+                }}
+              />
+              
+              {/* Service Territory */}
+              <Chip 
+                label="12,847 sq mi"
+                size="small" 
+                sx={{ 
+                  fontWeight: 600,
+                  bgcolor: 'rgba(6, 182, 212, 0.08)',
+                  color: '#06B6D4',
+                  border: '1px solid rgba(6, 182, 212, 0.3)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+                  backdropFilter: 'blur(8px)',
+                  transition: 'all 0.2s ease',
+                  '&:hover': { 
+                    transform: 'translateY(-2px)', 
+                    boxShadow: '0 6px 16px rgba(6, 182, 212, 0.3), 0 2px 4px rgba(6, 182, 212, 0.2)',
+                    borderColor: '#06B6D4',
+                    bgcolor: 'rgba(6, 182, 212, 0.12)'
+                  }
+                }}
+              />
+              
+              {/* Last Update - Dynamic */}
+              <Chip 
+                label={isLoadingData ? 'Fetching Data' : `Refreshed ${getTimeAgo(lastUpdateTime)}`}
+                size="small" 
+                sx={{ 
+                  fontWeight: 600,
+                  bgcolor: isLoadingData 
+                    ? 'rgba(251, 191, 36, 0.12)' 
+                    : 'rgba(34, 197, 94, 0.08)',
+                  color: isLoadingData 
+                    ? '#FBBF24' 
+                    : '#22C55E',
+                  border: isLoadingData 
+                    ? '1px solid rgba(251, 191, 36, 0.4)' 
+                    : '1px solid rgba(34, 197, 94, 0.3)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+                  backdropFilter: 'blur(8px)',
+                  animation: isLoadingData ? 'orangeGlow 1.5s ease-in-out infinite' : 'none',
+                  willChange: isLoadingData ? 'filter' : 'auto',
+                  transition: 'all 0.2s ease',
+                  '&:hover': { 
+                    transform: 'translateY(-2px)', 
+                    boxShadow: isLoadingData 
+                      ? '0 0 20px rgba(251, 191, 36, 0.6), 0 4px 16px rgba(251, 191, 36, 0.3)'
+                      : '0 6px 16px rgba(34, 197, 94, 0.3), 0 2px 4px rgba(34, 197, 94, 0.2)',
+                    borderColor: isLoadingData ? '#FBBF24' : '#22C55E',
+                    bgcolor: isLoadingData 
+                      ? 'rgba(251, 191, 36, 0.18)' 
+                      : 'rgba(34, 197, 94, 0.12)'
+                  },
+                  '& .MuiChip-label': {
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    '&::before': {
+                      content: isLoadingData 
+                        ? '"\u21BB"' 
+                        : '"\u25CF"',
+                      fontSize: '10px',
+                      animation: isLoadingData 
+                        ? 'fluxSpin 1s linear infinite' 
+                        : 'pulse 2s ease-in-out infinite'
+                    }
+                  }
+                }}
+              />
+              
+              <Box sx={{ width: 1, height: 24, bgcolor: 'rgba(107, 114, 128, 0.3)', mx: 0.5 }} />
+              
+              {/* Snowflake Badge */}
+              <Chip 
+                label="Powered by Snowflake Cortex"
+                size="small" 
+                sx={{ 
+                  fontWeight: 600,
+                  bgcolor: 'rgba(41, 181, 232, 0.12)',
+                  color: '#29B5E8',
+                  border: '2px solid rgba(41, 181, 232, 0.4)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(41, 181, 232, 0.2)',
+                  backdropFilter: 'blur(8px)',
+                  transition: 'all 0.2s ease',
+                  '&:hover': { 
+                    transform: 'translateY(-2px)', 
+                    boxShadow: '0 8px 20px rgba(41, 181, 232, 0.4), 0 2px 4px rgba(41, 181, 232, 0.3)',
+                    bgcolor: 'rgba(41, 181, 232, 0.18)',
+                    borderColor: '#29B5E8'
+                  }
+                }}
+              />
+            </Stack>
+          </Toolbar>
+          <Tabs 
+            value={currentTab} 
+            onChange={(_, v) => setCurrentTab(v)} 
+            sx={{ 
+              bgcolor: '#1a1f2e',
+              borderTop: '1px solid rgba(59, 130, 246, 0.2)',
+              boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.02)',
+              '& .MuiTab-root': {
+                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                position: 'relative',
+                '&::before': {
+                  content: '""',
+                  position: 'absolute',
+                  bottom: 0,
+                  left: '50%',
+                  transform: 'translateX(-50%) scaleX(0)',
+                  width: '80%',
+                  height: '2px',
+                  background: 'linear-gradient(90deg, #FBBF24 0%, #F59E0B 100%)',
+                  boxShadow: '0 0 8px rgba(251, 191, 36, 0.6)',
+                  transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                  borderRadius: '2px 2px 0 0'
+                },
+                '&:hover': {
+                  transform: 'translateY(-2px)',
+                  bgcolor: 'rgba(251, 191, 36, 0.05)',
+                  '&::before': {
+                    transform: 'translateX(-50%) scaleX(0.5)'
+                  }
+                },
+                '&.Mui-selected': {
+                  color: '#FBBF24',
+                  bgcolor: 'rgba(251, 191, 36, 0.08)',
+                  '&::before': {
+                    transform: 'translateX(-50%) scaleX(1)'
+                  }
+                }
+              },
+              '& .MuiTabs-indicator': {
+                display: 'none'
+              }
+            }}
+          >
+            <Tab label="Operations Dashboard" />
+            <Tab label="Network Topology" />
+            <Tab label="Asset Health" />
+            <Tab label="AMI Analytics" />
+            <Tab label="Outage Management" />
+          </Tabs>
+        </AppBar>
+
+        {/* Main Content */}
+        <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Tab 0: Operations Dashboard - Always mounted, hidden when not active */}
+          <Box sx={{ display: currentTab === 0 ? 'flex' : 'none', flexDirection: 'column', flexGrow: 1, overflow: 'hidden' }}>
+            <>
+              {/* Map with Floating KPI Overlays */}
+              <Box 
+                sx={{ flexGrow: 1, position: 'relative', bgcolor: 'background.paper', overflow: 'hidden' }}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                {/* Floating KPI Cards - Translucent Overlay */}
+                <Box sx={{ 
+                  position: 'absolute', 
+                  top: 12, 
+                  left: 12, 
+                  right: 12, 
+                  zIndex: 10,
+                  display: 'flex',
+                  gap: 1,
+                  flexWrap: 'wrap',
+                  pointerEvents: 'none'
+                }}>
+                  <Box sx={{ flex: '1 1 auto', minWidth: 120, maxWidth: 160, pointerEvents: 'auto' }}>
+                    <KPICard 
+                      title="SAIDI" 
+                      value={kpis.saidi.toFixed(1)} 
+                      subtitle="Minutes" 
+                      icon={<Assessment />} 
+                      color="#0EA5E9" 
+                      trend={-5.2}
+                      sx={{ bgcolor: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.08)' }}
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 auto', minWidth: 120, maxWidth: 160, pointerEvents: 'auto' }}>
+                    <KPICard 
+                      title="SAIFI" 
+                      value={kpis.saifi.toFixed(2)} 
+                      subtitle="Interruptions" 
+                      icon={<TrendingUp />} 
+                      color="#FBBF24" 
+                      trend={-2.1}
+                      sx={{ bgcolor: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.08)' }}
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 auto', minWidth: 120, maxWidth: 160, pointerEvents: 'auto' }}>
+                    <KPICard 
+                      title="Active Outages" 
+                      value={kpis.activeOutages} 
+                      subtitle="Critical Cells" 
+                      icon={<Warning />} 
+                      color="#EF4444"
+                      sx={{ bgcolor: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.08)' }}
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 auto', minWidth: 120, maxWidth: 160, pointerEvents: 'auto' }}>
+                    <KPICard 
+                      title="Asset Health" 
+                      value={`${kpis.assetHealth.toFixed(1)}%`} 
+                      subtitle="Avg Score" 
+                      icon={<Memory />} 
+                      color="#10B981"
+                      sx={{ bgcolor: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.08)' }}
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 auto', minWidth: 140, maxWidth: 180, pointerEvents: 'auto' }}>
+                    <KPICard 
+                      title="Operational Margin" 
+                      value={`${kpis.operationalMargin.toFixed(1)}%`} 
+                      subtitle="Healthy Capacity" 
+                      icon={<NetworkCheck />} 
+                      color={kpis.operationalMargin > 70 ? '#22C55E' : kpis.operationalMargin > 50 ? '#FBBF24' : '#EF4444'}
+                      sx={{ bgcolor: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.08)' }}
+                    />
+                  </Box>
+                  <Box sx={{ flex: '1 1 auto', minWidth: 140, maxWidth: 180, pointerEvents: 'auto' }}>
+                    <KPICard 
+                      title="Stress-Aware Reliability" 
+                      value={`${kpis.stressAwareReliability.toFixed(1)}%`} 
+                      subtitle="Health + Headroom" 
+                      icon={<Assessment />} 
+                      color={kpis.stressAwareReliability > 75 ? '#06B6D4' : kpis.stressAwareReliability > 60 ? '#FBBF24' : '#EF4444'}
+                      sx={{ bgcolor: 'rgba(15, 23, 42, 0.65)', backdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.08)' }}
+                    />
+                  </Box>
+                </Box>
+
+                {/* Layer Toggle Buttons - Top Right */}
+                <Box sx={{ 
+                  position: 'absolute', 
+                  top: 12, 
+                  right: 12, 
+                  zIndex: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 0.5,
+                  pointerEvents: 'auto'
+                }}>
+                  <Paper sx={{ 
+                    bgcolor: 'rgba(15, 23, 42, 0.35)', 
+                    backdropFilter: 'blur(16px)', 
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    p: 1.5,
+                    minWidth: 160,
+                    maxHeight: '80vh',
+                    overflowY: 'auto'
+                  }}>
+                    <Stack spacing={0.5}>
+                      {/* Expandable Header */}
+                      <Box 
+                        sx={{ 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          justifyContent: 'space-between',
+                          cursor: 'pointer',
+                          px: 0.5,
+                          py: 0.25,
+                          borderRadius: 1,
+                          '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' }
+                        }}
+                        onClick={() => setLayersPanelExpanded(!layersPanelExpanded)}
+                      >
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <Layers sx={{ fontSize: 18, color: 'text.secondary' }} />
+                          <Typography variant="caption" sx={{ color: 'text.secondary', fontWeight: 600 }}>
+                            LAYERS
+                          </Typography>
+                        </Box>
+                        <IconButton size="small" sx={{ p: 0 }}>
+                          {layersPanelExpanded ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+                        </IconButton>
+                      </Box>
+                      
+                      <Collapse in={layersPanelExpanded}>
+                        <Stack spacing={0.5}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                        <IconButton 
+                          size="small"
+                          onClick={() => setLayersVisible({...layersVisible, substations: !layersVisible.substations})}
+                          sx={{ 
+                            color: layersVisible.substations ? '#00C8FF' : 'rgba(255,255,255,0.3)',
+                            '&:hover': { bgcolor: 'rgba(0, 200, 255, 0.1)' }
+                          }}
+                        >
+                          <ElectricBolt sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="caption" sx={{ color: layersVisible.substations ? '#00C8FF' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                            Substations
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                            {assetCounts.substations.toLocaleString()} assets
+                          </Typography>
+                        </Box>
+                      </Box>
+
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                        <IconButton 
+                          size="small"
+                          onClick={() => setLayersVisible({...layersVisible, transformers: !layersVisible.transformers})}
+                          sx={{ 
+                            color: layersVisible.transformers ? '#EC4899' : 'rgba(255,255,255,0.3)',
+                            '&:hover': { bgcolor: 'rgba(236, 72, 153, 0.1)' }
+                          }}
+                        >
+                          <Power sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="caption" sx={{ color: layersVisible.transformers ? '#EC4899' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                            Transformers
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                            {assetCounts.transformers.toLocaleString()} assets
+                          </Typography>
+                        </Box>
+                      </Box>
+
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                        <IconButton 
+                          size="small"
+                          onClick={() => setLayersVisible({...layersVisible, poles: !layersVisible.poles})}
+                          sx={{ 
+                            color: layersVisible.poles ? '#8880ff' : 'rgba(255,255,255,0.3)',
+                            '&:hover': { bgcolor: 'rgba(136, 128, 255, 0.1)' }
+                          }}
+                        >
+                          <Engineering sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="caption" sx={{ color: layersVisible.poles ? '#8880ff' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                            Poles
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                            {assetCounts.poles.toLocaleString()} assets
+                          </Typography>
+                        </Box>
+                      </Box>
+
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                        <IconButton 
+                          size="small"
+                          onClick={() => setLayersVisible({...layersVisible, meters: !layersVisible.meters})}
+                          sx={{ 
+                            color: layersVisible.meters ? '#9333EA' : 'rgba(255,255,255,0.3)',
+                            '&:hover': { bgcolor: 'rgba(147, 51, 234, 0.1)' }
+                          }}
+                        >
+                          <Speed sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="caption" sx={{ color: layersVisible.meters ? '#9333EA' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                            Meters
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                            {assetCounts.meters.toLocaleString()} assets
+                          </Typography>
+                        </Box>
+                      </Box>
+
+                      <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.08)' }} />
+
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <IconButton 
+                          size="small"
+                          onClick={() => setLayersVisible({...layersVisible, connections: !layersVisible.connections})}
+                          sx={{ 
+                            color: layersVisible.connections ? '#10B981' : 'rgba(255,255,255,0.3)',
+                            '&:hover': { bgcolor: 'rgba(16, 185, 129, 0.1)' }
+                          }}
+                        >
+                          <NetworkCheck sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Typography variant="caption" sx={{ color: layersVisible.connections ? '#10B981' : 'rgba(255,255,255,0.5)', minWidth: 80 }}>
+                          Connections
+                        </Typography>
+                      </Box>
+
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <IconButton 
+                          size="small"
+                          onClick={() => setLayersVisible({...layersVisible, heatmap: !layersVisible.heatmap})}
+                          sx={{ 
+                            color: layersVisible.heatmap ? '#F59E0B' : 'rgba(255,255,255,0.3)',
+                            '&:hover': { bgcolor: 'rgba(245, 158, 11, 0.1)' }
+                          }}
+                        >
+                          <Whatshot sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Typography variant="caption" sx={{ color: layersVisible.heatmap ? '#F59E0B' : 'rgba(255,255,255,0.5)', minWidth: 80 }}>
+                          Heatmap
+                        </Typography>
+                      </Box>
+
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <IconButton 
+                          size="small"
+                          onClick={() => setLayersVisible({...layersVisible, weather: !layersVisible.weather})}
+                          sx={{ 
+                            color: layersVisible.weather ? '#10B981' : 'rgba(255,255,255,0.3)',
+                            '&:hover': { bgcolor: 'rgba(16, 185, 129, 0.1)' }
+                          }}
+                        >
+                          <WbSunny sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Typography variant="caption" sx={{ color: layersVisible.weather ? '#10B981' : 'rgba(255,255,255,0.5)', minWidth: 80 }}>
+                          Weather
+                        </Typography>
+                      </Box>
+                      
+                      {/* Weather Timeline Controls */}
+                      {layersVisible.weather && weather.length > 0 && (
+                        <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                          <Stack spacing={1}>
+                            {/* Current Date/Time Display */}
+                            <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', fontSize: 9 }}>
+                              {weather[weatherTimelineIndex]?.TIMESTAMP || 'Loading...'}
+                            </Typography>
+                            
+                            {/* Temperature & Humidity Display */}
+                            <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                <Thermostat sx={{ fontSize: 14, color: '#FBBF24' }} />
+                                <Typography variant="caption" sx={{ color: '#FBBF24', fontSize: 10 }}>
+                                  {weather[weatherTimelineIndex]?.TEMP_F?.toFixed(1) || '--'}°F
+                                </Typography>
+                              </Box>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                <Opacity sx={{ fontSize: 14, color: '#3B82F6' }} />
+                                <Typography variant="caption" sx={{ color: '#3B82F6', fontSize: 10 }}>
+                                  {weather[weatherTimelineIndex]?.HUMIDITY_PCT?.toFixed(0) || '--'}%
+                                </Typography>
+                              </Box>
+                            </Box>
+
+                            {/* Timeline Scrubber */}
+                            <Box>
+                              <input
+                                type="range"
+                                min="0"
+                                max={weather.length - 1}
+                                value={weatherTimelineIndex}
+                                onChange={(e) => {
+                                  setWeatherTimelineIndex(parseInt(e.target.value));
+                                  setIsWeatherPlaying(false);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  height: '4px',
+                                  accentColor: '#10B981',
+                                  cursor: 'pointer'
+                                }}
+                              />
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 0.25 }}>
+                                <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 8 }}>
+                                  Jul 1
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 8 }}>
+                                  {weatherTimelineIndex + 1}/{weather.length}
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 8 }}>
+                                  Aug 31
+                                </Typography>
+                              </Box>
+                            </Box>
+
+                            {/* Playback Controls */}
+                            <Box sx={{ display: 'flex', gap: 0.25, justifyContent: 'center', alignItems: 'center' }}>
+                              <IconButton 
+                                size="small" 
+                                onClick={() => setWeatherTimelineIndex(Math.max(0, weatherTimelineIndex - 24))}
+                                sx={{ color: '#10B981', p: 0.5 }}
+                              >
+                                <SkipPrevious sx={{ fontSize: 16 }} />
+                              </IconButton>
+                              
+                              <IconButton 
+                                size="small" 
+                                onClick={() => setWeatherTimelineIndex(Math.max(0, weatherTimelineIndex - 1))}
+                                sx={{ color: '#10B981', p: 0.5 }}
+                              >
+                                <FastRewind sx={{ fontSize: 16 }} />
+                              </IconButton>
+                              
+                              <IconButton 
+                                size="small"
+                                onClick={() => setIsWeatherPlaying(!isWeatherPlaying)}
+                                sx={{ color: '#10B981', bgcolor: 'rgba(16, 185, 129, 0.1)', p: 0.5 }}
+                              >
+                                {isWeatherPlaying ? <Pause sx={{ fontSize: 16 }} /> : <PlayArrow sx={{ fontSize: 16 }} />}
+                              </IconButton>
+                              
+                              <IconButton 
+                                size="small" 
+                                onClick={() => setWeatherTimelineIndex(Math.min(weather.length - 1, weatherTimelineIndex + 1))}
+                                sx={{ color: '#10B981', p: 0.5 }}
+                              >
+                                <FastForward sx={{ fontSize: 16 }} />
+                              </IconButton>
+                              
+                              <IconButton 
+                                size="small" 
+                                onClick={() => setWeatherTimelineIndex(Math.min(weather.length - 1, weatherTimelineIndex + 24))}
+                                sx={{ color: '#10B981', p: 0.5 }}
+                              >
+                                <SkipNext sx={{ fontSize: 16 }} />
+                              </IconButton>
+                            </Box>
+
+                            {/* Speed Control */}
+                            <Box>
+                              <Typography variant="caption" sx={{ display: 'block', mb: 0.25, color: 'text.secondary', fontSize: 9 }}>
+                                Speed: {weatherSpeed}x hr/sec
+                              </Typography>
+                              <input
+                                type="range"
+                                min="1"
+                                max="24"
+                                value={weatherSpeed}
+                                onChange={(e) => setWeatherSpeed(parseInt(e.target.value))}
+                                style={{
+                                  width: '100%',
+                                  height: '4px',
+                                  accentColor: '#10B981',
+                                  cursor: 'pointer'
+                                }}
+                              />
+                            </Box>
+                          </Stack>
+                        </Box>
+                      )}
+                        </Stack>
+                      </Collapse>
+                    </Stack>
+                  </Paper>
+                </Box>
+                <DeckGL
+                  initialViewState={viewState}
+                  controller={{
+                    dragPan: true,
+                    dragRotate: true,
+                    scrollZoom: true,
+                    touchZoom: true,
+                    touchRotate: true,
+                    keyboard: true,
+                    doubleClickZoom: false,
+                    inertia: 1200,
+                    dragPanSpeed: 0.8,
+                    scrollZoomSpeed: 0.01,
+                    touchZoomSpeed: 0.01
+                  }}
+                  onViewStateChange={({viewState}: {viewState: any}) => {
+                    // Normalize longitude to prevent wrapping issues
+                    let normalizedLongitude = viewState.longitude;
+                    if (normalizedLongitude !== undefined) {
+                      while (normalizedLongitude > 180) normalizedLongitude -= 360;
+                      while (normalizedLongitude < -180) normalizedLongitude += 360;
+                    }
+                    
+                    const normalizedViewState = {
+                      ...viewState,
+                      longitude: normalizedLongitude
+                    };
+                    
+                    // Throttle viewport updates to avoid performance violations
+                    // Update immediately for responsive feel, but throttle heavy operations
+                    pendingViewState.current = normalizedViewState;
+                    
+                    if (!viewportUpdateTimer.current) {
+                      // Update immediately on first change
+                      setViewState(normalizedViewState);
+                      
+                      // Throttle subsequent updates during continuous interaction
+                      viewportUpdateTimer.current = setTimeout(() => {
+                        if (pendingViewState.current) {
+                          setViewState(pendingViewState.current);
+                        }
+                        viewportUpdateTimer.current = null;
+                      }, 16); // ~60fps throttle
+                    }
+                  }}
+                  onClick={(info) => {
+                    const now = Date.now();
+                    const timeSinceLastClick = now - lastClickTime;
+                    const clickCoords: [number, number] = info.coordinate ? [info.coordinate[0], info.coordinate[1]] : [0, 0];
+                    
+                    // Check if this is a double-click (within 300ms and close proximity)
+                    const isDoubleClick = timeSinceLastClick < 300 && 
+                      lastClickCoords && 
+                      Math.abs(lastClickCoords[0] - clickCoords[0]) < 0.01 &&
+                      Math.abs(lastClickCoords[1] - clickCoords[1]) < 0.01;
+                    
+                    if (isDoubleClick) {
+                      // Handle double-click zoom
+                      handleDoubleClick(info);
+                      // Reset click tracking
+                      setLastClickTime(0);
+                      setLastClickCoords(null);
+                    } else {
+                      // Single click - handle selection
+                      if (!info.object) {
+                        // Click on empty space (no asset clicked) clears selection
+                        setSelectedAsset(null);
+                        setSelectedAssetPosition(null);
+                      }
+                      // Update click tracking
+                      setLastClickTime(now);
+                      setLastClickCoords(clickCoords);
+                    }
+                  }}
+                  onHover={(info) => {
+                    // Optional: Could add hover effects here
+                  }}
+                  layers={layers}
+                  glOptions={{
+                    preserveDrawingBuffer: false,
+                    antialias: true,
+                    depth: true
+                  }}
+                  useDevicePixels={typeof window !== 'undefined' && window.devicePixelRatio > 1 ? 2 : 1}
+                  getTooltip={() => null}
+                >
+                  <MapGL
+                    {...viewState}
+                    mapLib={maplibregl}
+                    mapStyle={BASEMAP_URL}
+                    reuseMaps
+                    renderWorldCopies={false}
+                    attributionControl={false}
+                    interactive={false}
+                  />
+                </DeckGL>
+
+                {/* Pinned Asset Cards - OPTIMIZED: translate3d GPU acceleration, pointer-events optimization */}
+                {pinnedAssets.map((pinned) => {
+                  const handleMouseDown = (e: React.MouseEvent) => {
+                    if ((e.target as HTMLElement).closest('.drag-handle')) {
+                      e.preventDefault();
+                      setDraggedCardId(pinned.id);
+                      setDragOffset({
+                        x: e.clientX - pinned.position.x,
+                        y: e.clientY - pinned.position.y
+                      });
+                    }
+                  };
+
+                  const isDragging = draggedCardId === pinned.id;
+                  
+                  // Pre-compute values to avoid inline calculations (performance optimization)
+                  const borderColor = pinned.asset.type === 'aggregate' ? (
+                    pinned.asset.worstStatus === 'critical' ? '#EF4444' :
+                    pinned.asset.worstStatus === 'warning' ? '#FBBF24' :
+                    '#22C55E'
+                  ) :
+                  pinned.asset.type === 'substation' ? '#00C8FF' :
+                  pinned.asset.type === 'transformer' ? '#A855F7' :
+                  pinned.asset.type === 'pole' ? '#8880ff' : '#9333EA';
+                  
+                  const transformX = Math.min(pinned.position.x, window.innerWidth - 420);
+                  const zIndex = isDragging ? 1002 : 1001;
+
+                  return (
+                    <Fade key={pinned.id} in={true}>
+                      <Paper 
+                        onMouseDown={handleMouseDown}
+                        sx={{ 
+                          position: 'absolute', 
+                          left: 0,
+                          top: 0,
+                          transform: `translate3d(${transformX}px, ${pinned.position.y}px, 0)`,
+                          willChange: isDragging ? 'transform' : undefined,
+                          pointerEvents: isDragging ? 'auto' : 'auto',
+                          p: 3, 
+                          width: 360,
+                          maxHeight: 'calc(100vh - 40px)',
+                          overflowY: 'auto',
+                          overflowX: 'hidden',
+                          bgcolor: alpha('#1E293B', 0.80),
+                          backdropFilter: 'blur(12px)',
+                          zIndex,
+                          borderLeft: `4px solid ${borderColor}`,
+                          boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+                          cursor: isDragging ? 'grabbing' : 'default',
+                          userSelect: 'text',
+                          wordWrap: 'break-word',
+                          // CRITICAL OPTIMIZATIONS for drag performance
+                          contain: 'layout style paint',  // CSS containment - isolates rendering
+                          '&::-webkit-scrollbar': {
+                            width: '8px',
+                          },
+                          '&::-webkit-scrollbar-track': {
+                            bgcolor: alpha('#000', 0.2),
+                          },
+                          '&::-webkit-scrollbar-thumb': {
+                            bgcolor: alpha('#fff', 0.3),
+                            borderRadius: '4px',
+                            '&:hover': {
+                              bgcolor: alpha('#fff', 0.4),
+                            },
+                          },
+                        }}
+                      >
+                        <Box className="drag-handle" sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2, cursor: 'grab', '&:active': { cursor: 'grabbing' } }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                            {pinned.asset.type === 'aggregate' && <Assessment sx={{ 
+                              color: pinned.asset.worstStatus === 'critical' ? '#EF4444' :
+                                     pinned.asset.worstStatus === 'warning' ? '#FBBF24' : '#22C55E',
+                              fontSize: 28 
+                            }} />}
+                            {pinned.asset.type === 'substation' && <ElectricBolt sx={{ color: '#00C8FF', fontSize: 28 }} />}
+                            {pinned.asset.type === 'transformer' && <Assessment sx={{ color: '#EC4899', fontSize: 28 }} />}
+                            {pinned.asset.type === 'pole' && <Engineering sx={{ color: '#8880ff', fontSize: 28 }} />}
+                            {pinned.asset.type === 'meter' && <Speed sx={{ color: '#9333EA', fontSize: 28 }} />}
+                            <Box>
+                              <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>{pinned.asset.name}</Typography>
+                              <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', letterSpacing: 0.5 }}>
+                                {pinned.asset.id}
+                              </Typography>
+                            </Box>
+                          </Box>
+                          <Box sx={{ display: 'flex', gap: 0.5 }}>
+                            <Tooltip title={pinned.collapsed ? "Expand card" : "Collapse card"}>
+                              <IconButton 
+                                size="small" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPinnedAssets(prev => prev.map(p => 
+                                    p.id === pinned.id ? { ...p, collapsed: !p.collapsed } : p
+                                  ));
+                                }}
+                              >
+                                {pinned.collapsed ? <ExpandMore sx={{ fontSize: 18 }} /> : <ExpandLess sx={{ fontSize: 18 }} />}
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Pinned - Click to unpin">
+                              <IconButton 
+                                size="small" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPinnedAssets(prev => prev.filter(p => p.id !== pinned.id));
+                                }}
+                                sx={{ color: '#FBBF24' }}
+                              >
+                                <PushPin sx={{ fontSize: 18 }} />
+                              </IconButton>
+                            </Tooltip>
+                            <IconButton 
+                              size="small" 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPinnedAssets(prev => prev.filter(p => p.id !== pinned.id));
+                              }}
+                            >
+                              <Close sx={{ fontSize: 18 }} />
+                            </IconButton>
+                          </Box>
+                        </Box>
+
+                        <Chip 
+                          label={pinned.asset.type.toUpperCase()} 
+                          size="small" 
+                          sx={{ mb: 2, fontWeight: 700, letterSpacing: 0.5 }} 
+                        />
+
+                        <Collapse in={!pinned.collapsed}>
+                        <Stack spacing={2} divider={<Divider />}>
+                          {pinned.asset.type === 'aggregate' && (
+                            <>
+                              <Stack direction="row" spacing={1}>
+                                <Tooltip title="Center map on this cell">
+                                  <Button 
+                                    size="small" 
+                                    variant="outlined" 
+                                    startIcon={<MyLocation />}
+                                    onClick={() => flyToAsset(pinned.asset.longitude, pinned.asset.latitude, 12)}
+                                    sx={{ flex: 1, fontSize: 11 }}
+                                  >
+                                    Center
+                                  </Button>
+                                </Tooltip>
+                                <Tooltip title="Zoom to see individual assets">
+                                  <Button 
+                                    size="small" 
+                                    variant="outlined" 
+                                    startIcon={<ZoomIn />}
+                                    onClick={() => flyToAsset(pinned.asset.longitude, pinned.asset.latitude, 13)}
+                                    sx={{ flex: 1, fontSize: 11 }}
+                                  >
+                                    Zoom In
+                                  </Button>
+                                </Tooltip>
+                              </Stack>
+
+                              {pinned.asset.worstStatus === 'critical' && (
+                                <Paper sx={{ 
+                                  p: 1.5, 
+                                  bgcolor: alpha('#EF4444', 0.1), 
+                                  border: '1px solid',
+                                  borderColor: alpha('#EF4444', 0.3)
+                                }}>
+                                  <Stack direction="row" spacing={1} alignItems="center">
+                                    <Warning sx={{ color: '#EF4444', fontSize: 20 }} />
+                                    <Box>
+                                      <Typography variant="caption" fontWeight={700} color="#EF4444">
+                                        CRITICAL AREA
+                                      </Typography>
+                                      <Typography variant="caption" display="block" color="text.secondary">
+                                        Requires immediate attention
+                                      </Typography>
+                                    </Box>
+                                  </Stack>
+                                </Paper>
+                              )}
+
+                              <Box>
+                                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                                  <GridOn sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                    INFRASTRUCTURE SUMMARY
+                                  </Typography>
+                                </Stack>
+                                <Stack spacing={1}>
+                                  {/* Substations - Expandable */}
+                                  <Box>
+                                    <Box 
+                                      sx={{ 
+                                        display: 'flex', 
+                                        justifyContent: 'space-between', 
+                                        alignItems: 'center',
+                                        cursor: pinned.asset.substations?.length > 0 ? 'pointer' : 'default',
+                                        '&:hover': pinned.asset.substations?.length > 0 ? { bgcolor: alpha('#fff', 0.03) } : {},
+                                        p: 0.5,
+                                        borderRadius: 1,
+                                        transition: 'background-color 0.2s'
+                                      }}
+                                      onClick={() => {
+                                        if (pinned.asset.substations?.length > 0) {
+                                          setExpandedAssetCategories(prev => ({
+                                            ...prev,
+                                            [pinned.id]: {
+                                              ...(prev[pinned.id] || {}),
+                                              substations: !prev[pinned.id]?.substations,
+                                              transformers: prev[pinned.id]?.transformers || false,
+                                              poles: prev[pinned.id]?.poles || false,
+                                              meters: prev[pinned.id]?.meters || false
+                                            }
+                                          }));
+                                        }
+                                      }}
+                                    >
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        <Typography variant="body2" color="text.secondary">Substations</Typography>
+                                        {pinned.asset.substations?.length > 0 && (
+                                          <IconButton size="small" sx={{ p: 0 }}>
+                                            {expandedAssetCategories[pinned.id]?.substations ? 
+                                              <ExpandLess sx={{ fontSize: 16 }} /> : 
+                                              <ExpandMore sx={{ fontSize: 16 }} />
+                                            }
+                                          </IconButton>
+                                        )}
+                                      </Box>
+                                      <Chip label={pinned.asset.substationCount || 0} size="small" sx={{ bgcolor: COLORS.substation.chip, color: '#00C8FF' }} />
+                                    </Box>
+                                    
+                                    <Collapse in={expandedAssetCategories[pinned.id]?.substations}>
+                                      {expandedAssetCategories[pinned.id]?.substations && (
+                                        <Stack spacing={0.5} sx={{ pl: 2, mt: 0.5, maxHeight: 200, overflowY: 'auto' }}>
+                                          {(() => {
+                                            const { visibleItems, hasMore, totalCount } = getPaginatedItems(
+                                              pinned.asset.substations, 
+                                              pinned.id, 
+                                              'substations'
+                                            );
+                                            return (
+                                              <>
+                                                {visibleItems.map((substation: Asset) => (
+                                                  <Box 
+                                                  key={substation.id} 
+                                                  onClick={() => {
+                                                    setSelectedAsset({
+                                                      ...substation,
+                                                      type: 'substation',
+                                                      name: substation.name || substation.id,
+                                                      latitude: substation.latitude || substation.coords?.[1],
+                                                      longitude: substation.longitude || substation.coords?.[0]
+                                                    });
+                                                    flyToAsset(
+                                                      substation.longitude || substation.coords?.[0],
+                                                      substation.latitude || substation.coords?.[1],
+                                                      15
+                                                    );
+                                                  }}
+                                                  sx={{ 
+                                                    p: 1, 
+                                                    bgcolor: alpha('#00C8FF', 0.05), 
+                                                    borderLeft: `2px solid ${alpha('#00C8FF', 0.3)}`,
+                                                    borderRadius: 1,
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s',
+                                                    contentVisibility: 'auto',
+                                                    containIntrinsicSize: 'auto 60px',
+                                                    '&:hover': {
+                                                      bgcolor: COLORS.substation.chip,
+                                                      transform: 'translateX(4px)'
+                                                    }
+                                                  }}
+                                                >
+                                                  <Typography variant="caption" fontWeight={600} color="#00C8FF" display="block">
+                                                    {substation.name || substation.id}
+                                                  </Typography>
+                                                  <Typography variant="caption" display="block" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'text.secondary' }}>
+                                                    ID: {substation.id}
+                                                  </Typography>
+                                                  {substation.health_score !== undefined && (
+                                                    <Typography variant="caption" display="block" sx={{ fontSize: 9 }}>
+                                                      Health: {substation.health_score}%
+                                                    </Typography>
+                                                  )}
+                                                </Box>
+                                              ))}
+                                              {hasMore && (
+                                                <Button 
+                                                  size="small" 
+                                                  onClick={() => loadMoreItems(pinned.id, 'substations')}
+                                                  sx={{ 
+                                                    mt: 0.5, 
+                                                    fontSize: 10,
+                                                    bgcolor: alpha('#00C8FF', 0.1),
+                                                    '&:hover': { bgcolor: alpha('#00C8FF', 0.2) }
+                                                  }}
+                                                >
+                                                  Load More ({visibleItems.length} of {totalCount})
+                                                </Button>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
+                                      </Stack>
+                                      )}
+                                    </Collapse>
+                                  </Box>
+
+                                  {/* Transformers - Expandable */}
+                                  <Box>
+                                    <Box 
+                                      sx={{ 
+                                        display: 'flex', 
+                                        justifyContent: 'space-between', 
+                                        alignItems: 'center',
+                                        cursor: pinned.asset.transformers?.length > 0 ? 'pointer' : 'default',
+                                        '&:hover': pinned.asset.transformers?.length > 0 ? { bgcolor: alpha('#fff', 0.03) } : {},
+                                        p: 0.5,
+                                        borderRadius: 1,
+                                        transition: 'background-color 0.2s'
+                                      }}
+                                      onClick={() => {
+                                        if (pinned.asset.transformers?.length > 0) {
+                                          setExpandedAssetCategories(prev => ({
+                                            ...prev,
+                                            [pinned.id]: {
+                                              ...(prev[pinned.id] || {}),
+                                              substations: prev[pinned.id]?.substations || false,
+                                              transformers: !prev[pinned.id]?.transformers,
+                                              poles: prev[pinned.id]?.poles || false,
+                                              meters: prev[pinned.id]?.meters || false
+                                            }
+                                          }));
+                                        }
+                                      }}
+                                    >
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        <Typography variant="body2" color="text.secondary">Transformers</Typography>
+                                        {pinned.asset.transformers?.length > 0 && (
+                                          <IconButton size="small" sx={{ p: 0 }}>
+                                            {expandedAssetCategories[pinned.id]?.transformers ? 
+                                              <ExpandLess sx={{ fontSize: 16 }} /> : 
+                                              <ExpandMore sx={{ fontSize: 16 }} />
+                                            }
+                                          </IconButton>
+                                        )}
+                                      </Box>
+                                      <Chip label={pinned.asset.transformerCount || 0} size="small" sx={{ bgcolor: COLORS.transformer.chip, color: '#EC4899' }} />
+                                    </Box>
+                                    
+                                    <Collapse in={expandedAssetCategories[pinned.id]?.transformers}>
+                                      {expandedAssetCategories[pinned.id]?.transformers && (
+                                        <Stack spacing={0.5} sx={{ pl: 2, mt: 0.5, maxHeight: 200, overflowY: 'auto' }}>
+                                          {(() => {
+                                          const { visibleItems, hasMore, totalCount } = getPaginatedItems(
+                                            pinned.asset.transformers, 
+                                            pinned.id, 
+                                            'transformers'
+                                          );
+                                          return (
+                                            <>
+                                              {visibleItems.map((transformer: Asset) => (
+                                                <Box 
+                                                  key={transformer.id}
+                                                  onClick={() => {
+                                                    setSelectedAsset({
+                                                      ...transformer,
+                                                      type: 'transformer',
+                                                      name: transformer.name || transformer.id,
+                                                      latitude: transformer.latitude || transformer.coords?.[1],
+                                                      longitude: transformer.longitude || transformer.coords?.[0]
+                                                    });
+                                                    flyToAsset(
+                                                      transformer.longitude || transformer.coords?.[0],
+                                                      transformer.latitude || transformer.coords?.[1],
+                                                      15
+                                                    );
+                                                  }}
+                                                  sx={{ 
+                                                    p: 1, 
+                                                    bgcolor: alpha('#EC4899', 0.05), 
+                                                    borderLeft: `2px solid ${alpha('#EC4899', 0.3)}`,
+                                                    borderRadius: 1,
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s',
+                                                    contentVisibility: 'auto',
+                                                    containIntrinsicSize: 'auto 60px',
+                                                    '&:hover': {
+                                                      bgcolor: COLORS.transformer.chip,
+                                                      transform: 'translateX(4px)'
+                                                    }
+                                                  }}
+                                                >
+                                                  <Typography variant="caption" fontWeight={600} color="#EC4899" display="block">
+                                                    {transformer.name || transformer.id}
+                                                  </Typography>
+                                                  <Typography variant="caption" display="block" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'text.secondary' }}>
+                                                    ID: {transformer.id}
+                                                  </Typography>
+                                                  {transformer.health_score !== undefined && (
+                                                    <Typography variant="caption" display="block" sx={{ fontSize: 9 }}>
+                                                      Health: {transformer.health_score}%
+                                                    </Typography>
+                                                  )}
+                                                  {transformer.load_percent !== undefined && (
+                                                    <Typography variant="caption" display="block" sx={{ fontSize: 9 }}>
+                                                      Load: {transformer.load_percent}%
+                                                    </Typography>
+                                                  )}
+                                                </Box>
+                                              ))}
+                                              {hasMore && (
+                                                <Button 
+                                                  size="small" 
+                                                  onClick={() => loadMoreItems(pinned.id, 'transformers')}
+                                                  sx={{ 
+                                                    mt: 0.5, 
+                                                    fontSize: 10,
+                                                    bgcolor: alpha('#EC4899', 0.1),
+                                                    '&:hover': { bgcolor: alpha('#EC4899', 0.2) }
+                                                  }}
+                                                >
+                                                  Load More ({visibleItems.length} of {totalCount})
+                                                </Button>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
+                                      </Stack>
+                                      )}
+                                    </Collapse>
+                                  </Box>
+
+                                  {/* Poles - Expandable */}
+                                  <Box>
+                                    <Box 
+                                      sx={{ 
+                                        display: 'flex', 
+                                        justifyContent: 'space-between', 
+                                        alignItems: 'center',
+                                        cursor: pinned.asset.poles?.length > 0 ? 'pointer' : 'default',
+                                        '&:hover': pinned.asset.poles?.length > 0 ? { bgcolor: alpha('#fff', 0.03) } : {},
+                                        p: 0.5,
+                                        borderRadius: 1,
+                                        transition: 'background-color 0.2s'
+                                      }}
+                                      onClick={() => {
+                                        if (pinned.asset.poles?.length > 0) {
+                                          setExpandedAssetCategories(prev => ({
+                                            ...prev,
+                                            [pinned.id]: {
+                                              ...(prev[pinned.id] || {}),
+                                              substations: prev[pinned.id]?.substations || false,
+                                              transformers: prev[pinned.id]?.transformers || false,
+                                              poles: !prev[pinned.id]?.poles,
+                                              meters: prev[pinned.id]?.meters || false
+                                            }
+                                          }));
+                                        }
+                                      }}
+                                    >
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        <Typography variant="body2" color="text.secondary">Poles</Typography>
+                                        {pinned.asset.poles?.length > 0 && (
+                                          <IconButton size="small" sx={{ p: 0 }}>
+                                            {expandedAssetCategories[pinned.id]?.poles ? 
+                                              <ExpandLess sx={{ fontSize: 16 }} /> : 
+                                              <ExpandMore sx={{ fontSize: 16 }} />
+                                            }
+                                          </IconButton>
+                                        )}
+                                      </Box>
+                                      <Chip label={pinned.asset.poleCount || 0} size="small" sx={{ bgcolor: COLORS.pole.chip, color: '#8880ff' }} />
+                                    </Box>
+                                    
+                                    <Collapse in={expandedAssetCategories[pinned.id]?.poles}>
+                                      {expandedAssetCategories[pinned.id]?.poles && (
+                                        <Stack spacing={0.5} sx={{ pl: 2, mt: 0.5, maxHeight: 200, overflowY: 'auto' }}>
+                                          {(() => {
+                                          const { visibleItems, hasMore, totalCount } = getPaginatedItems(
+                                            pinned.asset.poles, 
+                                            pinned.id, 
+                                            'poles'
+                                          );
+                                          return (
+                                            <>
+                                              {visibleItems.map((pole: Asset) => (
+                                                <Box 
+                                                  key={pole.id}
+                                                  onClick={() => {
+                                                    setSelectedAsset({
+                                                      ...pole,
+                                                      type: 'pole',
+                                                      name: pole.name || pole.id,
+                                                      latitude: pole.latitude || pole.coords?.[1],
+                                                      longitude: pole.longitude || pole.coords?.[0]
+                                                    });
+                                                    flyToAsset(
+                                                      pole.longitude || pole.coords?.[0],
+                                                      pole.latitude || pole.coords?.[1],
+                                                      15
+                                                    );
+                                                  }}
+                                                  sx={{ 
+                                                    p: 1, 
+                                                    bgcolor: alpha('#8880ff', 0.05), 
+                                                    borderLeft: `2px solid ${alpha('#8880ff', 0.3)}`,
+                                                    borderRadius: 1,
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s',
+                                                    contentVisibility: 'auto',
+                                                    containIntrinsicSize: 'auto 60px',
+                                                    '&:hover': {
+                                                      bgcolor: COLORS.pole.chip,
+                                                      transform: 'translateX(4px)'
+                                                    }
+                                                  }}
+                                                >
+                                                  <Typography variant="caption" fontWeight={600} color="#8880ff" display="block">
+                                                    {pole.name || pole.id}
+                                                  </Typography>
+                                                  <Typography variant="caption" display="block" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'text.secondary' }}>
+                                                    ID: {pole.id}
+                                                  </Typography>
+                                                  {pole.health_score !== undefined && (
+                                                    <Typography variant="caption" display="block" sx={{ fontSize: 9 }}>
+                                                      Health: {pole.health_score}%
+                                                    </Typography>
+                                                  )}
+                                                </Box>
+                                              ))}
+                                              {hasMore && (
+                                                <Button 
+                                                  size="small" 
+                                                  onClick={() => loadMoreItems(pinned.id, 'poles')}
+                                                  sx={{ 
+                                                    mt: 0.5, 
+                                                    fontSize: 10,
+                                                    bgcolor: alpha('#8880ff', 0.1),
+                                                    '&:hover': { bgcolor: alpha('#8880ff', 0.2) }
+                                                  }}
+                                                >
+                                                  Load More ({visibleItems.length} of {totalCount})
+                                                </Button>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
+                                      </Stack>
+                                      )}
+                                    </Collapse>
+                                  </Box>
+
+                                  {/* Meters - Expandable */}
+                                  <Box>
+                                    <Box 
+                                      sx={{ 
+                                        display: 'flex', 
+                                        justifyContent: 'space-between', 
+                                        alignItems: 'center', 
+                                        p: 0.5,
+                                        cursor: pinned.asset.meters?.length > 0 ? 'pointer' : 'default',
+                                        '&:hover': pinned.asset.meters?.length > 0 ? {
+                                          bgcolor: alpha('#9333EA', 0.05)
+                                        } : {},
+                                        borderRadius: 1,
+                                        transition: 'background-color 0.2s'
+                                      }}
+                                      onClick={() => {
+                                        if (pinned.asset.meters?.length > 0) {
+                                          setExpandedAssetCategories(prev => ({
+                                            ...prev,
+                                            [pinned.id]: {
+                                              ...(prev[pinned.id] || {}),
+                                              substations: prev[pinned.id]?.substations || false,
+                                              transformers: prev[pinned.id]?.transformers || false,
+                                              poles: prev[pinned.id]?.poles || false,
+                                              meters: !prev[pinned.id]?.meters
+                                            }
+                                          }));
+                                        }
+                                      }}
+                                    >
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                        <Typography variant="body2" color="text.secondary">Meters</Typography>
+                                        {pinned.asset.meters?.length > 0 && (
+                                          <IconButton size="small" sx={{ p: 0 }}>
+                                            {expandedAssetCategories[pinned.id]?.meters ? 
+                                              <ExpandLess sx={{ fontSize: 16 }} /> : 
+                                              <ExpandMore sx={{ fontSize: 16 }} />
+                                            }
+                                          </IconButton>
+                                        )}
+                                      </Box>
+                                      <Chip label={pinned.asset.meterCount || 0} size="small" sx={{ bgcolor: COLORS.meter.chip, color: '#9333EA' }} />
+                                    </Box>
+                                    
+                                    <Collapse in={expandedAssetCategories[pinned.id]?.meters}>
+                                      {expandedAssetCategories[pinned.id]?.meters && (
+                                        <Stack spacing={0.5} sx={{ pl: 2, mt: 0.5, maxHeight: 200, overflowY: 'auto' }}>
+                                          {(() => {
+                                          const { visibleItems, hasMore, totalCount } = getPaginatedItems(
+                                            pinned.asset.meters, 
+                                            pinned.id, 
+                                            'meters'
+                                          );
+                                          return (
+                                            <>
+                                              {visibleItems.map((meter: Asset) => (
+                                                <Box 
+                                                  key={meter.id}
+                                                  onClick={() => {
+                                                    setSelectedAsset({
+                                                      ...meter,
+                                                      type: 'meter',
+                                                      name: meter.name || meter.id,
+                                                      latitude: meter.latitude || meter.coords?.[1],
+                                                      longitude: meter.longitude || meter.coords?.[0]
+                                                    });
+                                                    flyToAsset(
+                                                      meter.longitude || meter.coords?.[0],
+                                                      meter.latitude || meter.coords?.[1],
+                                                      15
+                                                    );
+                                                  }}
+                                                  sx={{ 
+                                                    p: 1, 
+                                                    bgcolor: alpha('#9333EA', 0.05), 
+                                                    borderLeft: `2px solid ${alpha('#9333EA', 0.3)}`,
+                                                    borderRadius: 1,
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s',
+                                                    contentVisibility: 'auto',
+                                                    containIntrinsicSize: 'auto 60px',
+                                                    '&:hover': {
+                                                      bgcolor: COLORS.meter.chip,
+                                                      transform: 'translateX(4px)'
+                                                    }
+                                                  }}
+                                                >
+                                                  <Typography variant="caption" fontWeight={600} color="#9333EA" display="block">
+                                                    {meter.name || meter.id}
+                                                  </Typography>
+                                                  <Typography variant="caption" display="block" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'text.secondary' }}>
+                                                    ID: {meter.id}
+                                                  </Typography>
+                                                  {meter.usage_kwh !== undefined && (
+                                                    <Typography variant="caption" display="block" sx={{ fontSize: 9 }}>
+                                                      Usage: {meter.usage_kwh} kWh
+                                                    </Typography>
+                                                  )}
+                                                </Box>
+                                              ))}
+                                              {hasMore && (
+                                                <Button 
+                                                  size="small" 
+                                                  onClick={() => loadMoreItems(pinned.id, 'meters')}
+                                                  sx={{ 
+                                                    mt: 0.5, 
+                                                    fontSize: 10,
+                                                    bgcolor: alpha('#9333EA', 0.1),
+                                                    '&:hover': { bgcolor: alpha('#9333EA', 0.2) }
+                                                  }}
+                                                >
+                                                  Load More ({visibleItems.length} of {totalCount})
+                                                </Button>
+                                              )}
+                                            </>
+                                          );
+                                        })()}
+                                      </Stack>
+                                      )}
+                                    </Collapse>
+                                  </Box>
+                                </Stack>
+                              </Box>
+
+                              <Box>
+                                <Box
+                                  sx={{ cursor: 'pointer', mb: 1 }}
+                                  onClick={() => setExpandedSections(prev => ({ ...prev, healthStatus: !prev.healthStatus }))}
+                                >
+                                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                                    <Stack direction="row" spacing={1} alignItems="center">
+                                      <FavoriteOutlined sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                      <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                        HEALTH STATUS
+                                      </Typography>
+                                    </Stack>
+                                    <IconButton size="small">
+                                      {expandedSections.healthStatus ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+                                    </IconButton>
+                                  </Stack>
+                                </Box>
+                                
+                                <Collapse in={expandedSections.healthStatus}>
+                                  <Stack spacing={1}>
+                                    {/* Critical Assets - Expandable */}
+                                    <Box>
+                                      <Box 
+                                        sx={{ 
+                                          display: 'flex', 
+                                          justifyContent: 'space-between', 
+                                          alignItems: 'center',
+                                          cursor: pinned.asset.assetsByHealth?.critical?.length > 0 ? 'pointer' : 'default',
+                                          p: 0.5,
+                                          borderRadius: 1,
+                                          '&:hover': pinned.asset.assetsByHealth?.critical?.length > 0 ? {
+                                            bgcolor: alpha('#EF4444', 0.05)
+                                          } : {}
+                                        }}
+                                        onClick={() => {
+                                          if (pinned.asset.assetsByHealth?.critical?.length > 0) {
+                                            setExpandedAssetCategories(prev => ({
+                                              ...prev,
+                                              [pinned.id]: {
+                                                ...(prev[pinned.id] || {}),
+                                                criticalAssets: !prev[pinned.id]?.criticalAssets
+                                              }
+                                            }));
+                                          }
+                                        }}
+                                      >
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                          <Typography variant="body2" color="text.secondary">Critical Assets</Typography>
+                                          {pinned.asset.assetsByHealth?.critical?.length > 0 && (
+                                            <IconButton size="small" sx={{ p: 0 }}>
+                                              {expandedAssetCategories[pinned.id]?.criticalAssets ? 
+                                                <ExpandLess sx={{ fontSize: 16 }} /> : 
+                                                <ExpandMore sx={{ fontSize: 16 }} />
+                                              }
+                                            </IconButton>
+                                          )}
+                                        </Box>
+                                        <Chip label={pinned.asset.criticalCount || 0} size="small" sx={{ bgcolor: COLORS.status.critical.chip, color: '#EF4444' }} />
+                                      </Box>
+                                      
+                                      <Collapse in={expandedAssetCategories[pinned.id]?.criticalAssets}>
+                                        <Stack spacing={0.5} sx={{ pl: 2, mt: 0.5, maxHeight: 150, overflowY: 'auto' }}>
+                                          {pinned.asset.assetsByHealth?.critical?.map((asset: Asset) => (
+                                            <Box 
+                                              key={asset.id}
+                                              onClick={() => {
+                                                setSelectedAsset(asset);
+                                                flyToAsset(asset.longitude, asset.latitude, 15);
+                                              }}
+                                              sx={{ 
+                                                p: 1, 
+                                                bgcolor: alpha('#EF4444', 0.05), 
+                                                borderLeft: `2px solid ${alpha('#EF4444', 0.5)}`,
+                                                borderRadius: 1,
+                                                cursor: 'pointer',
+                                                transition: 'all 0.2s',
+                                                contentVisibility: 'auto',
+                                                containIntrinsicSize: 'auto 60px',
+                                                '&:hover': {
+                                                  bgcolor: COLORS.status.critical.chip,
+                                                  transform: 'translateX(4px)'
+                                                }
+                                              }}
+                                            >
+                                              <Typography variant="caption" fontWeight={600} color="#EF4444" display="block">
+                                                {asset.name || asset.id} ({asset.type})
+                                              </Typography>
+                                              {asset.health_score !== undefined && (
+                                                <Typography variant="caption" display="block" sx={{ fontSize: 9, color: 'text.secondary' }}>
+                                                  Health: {asset.health_score}%
+                                                </Typography>
+                                              )}
+                                            </Box>
+                                          ))}
+                                        </Stack>
+                                      </Collapse>
+                                    </Box>
+
+                                    {/* Warning Assets - Expandable */}
+                                    <Box>
+                                      <Box 
+                                        sx={{ 
+                                          display: 'flex', 
+                                          justifyContent: 'space-between', 
+                                          alignItems: 'center',
+                                          cursor: pinned.asset.assetsByHealth?.warning?.length > 0 ? 'pointer' : 'default',
+                                          p: 0.5,
+                                          borderRadius: 1,
+                                          '&:hover': pinned.asset.assetsByHealth?.warning?.length > 0 ? {
+                                            bgcolor: alpha('#FBBF24', 0.05)
+                                          } : {}
+                                        }}
+                                        onClick={() => {
+                                          if (pinned.asset.assetsByHealth?.warning?.length > 0) {
+                                            setExpandedAssetCategories(prev => ({
+                                              ...prev,
+                                              [pinned.id]: {
+                                                ...(prev[pinned.id] || {}),
+                                                warningAssets: !prev[pinned.id]?.warningAssets
+                                              }
+                                            }));
+                                          }
+                                        }}
+                                      >
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                          <Typography variant="body2" color="text.secondary">Warning Assets</Typography>
+                                          {pinned.asset.assetsByHealth?.warning?.length > 0 && (
+                                            <IconButton size="small" sx={{ p: 0 }}>
+                                              {expandedAssetCategories[pinned.id]?.warningAssets ? 
+                                                <ExpandLess sx={{ fontSize: 16 }} /> : 
+                                                <ExpandMore sx={{ fontSize: 16 }} />
+                                              }
+                                            </IconButton>
+                                          )}
+                                        </Box>
+                                        <Chip label={pinned.asset.warningCount || 0} size="small" sx={{ bgcolor: COLORS.status.warning.chip, color: '#FBBF24' }} />
+                                      </Box>
+                                      
+                                      <Collapse in={expandedAssetCategories[pinned.id]?.warningAssets}>
+                                        <Stack spacing={0.5} sx={{ pl: 2, mt: 0.5, maxHeight: 150, overflowY: 'auto' }}>
+                                          {pinned.asset.assetsByHealth?.warning?.map((asset: Asset) => (
+                                            <Box 
+                                              key={asset.id}
+                                              onClick={() => {
+                                                setSelectedAsset(asset);
+                                                flyToAsset(asset.longitude, asset.latitude, 15);
+                                              }}
+                                              sx={{ 
+                                                p: 1, 
+                                                bgcolor: alpha('#FBBF24', 0.05), 
+                                                borderLeft: `2px solid ${alpha('#FBBF24', 0.5)}`,
+                                                borderRadius: 1,
+                                                cursor: 'pointer',
+                                                transition: 'all 0.2s',
+                                                contentVisibility: 'auto',
+                                                containIntrinsicSize: 'auto 60px',
+                                                '&:hover': {
+                                                  bgcolor: COLORS.status.warning.chip,
+                                                  transform: 'translateX(4px)'
+                                                }
+                                              }}
+                                            >
+                                              <Typography variant="caption" fontWeight={600} color="#FBBF24" display="block">
+                                                {asset.name || asset.id} ({asset.type})
+                                              </Typography>
+                                              {asset.health_score !== undefined && (
+                                                <Typography variant="caption" display="block" sx={{ fontSize: 9, color: 'text.secondary' }}>
+                                                  Health: {asset.health_score}%
+                                                </Typography>
+                                              )}
+                                            </Box>
+                                          ))}
+                                        </Stack>
+                                      </Collapse>
+                                    </Box>
+
+                                    {/* Healthy Assets - Expandable */}
+                                    <Box>
+                                      <Box 
+                                        sx={{ 
+                                          display: 'flex', 
+                                          justifyContent: 'space-between', 
+                                          alignItems: 'center',
+                                          cursor: pinned.asset.assetsByHealth?.healthy?.length > 0 ? 'pointer' : 'default',
+                                          p: 0.5,
+                                          borderRadius: 1,
+                                          '&:hover': pinned.asset.assetsByHealth?.healthy?.length > 0 ? {
+                                            bgcolor: alpha('#22C55E', 0.05)
+                                          } : {}
+                                        }}
+                                        onClick={() => {
+                                          if (pinned.asset.assetsByHealth?.healthy?.length > 0) {
+                                            setExpandedAssetCategories(prev => ({
+                                              ...prev,
+                                              [pinned.id]: {
+                                                ...(prev[pinned.id] || {}),
+                                                healthyAssets: !prev[pinned.id]?.healthyAssets
+                                              }
+                                            }));
+                                          }
+                                        }}
+                                      >
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                          <Typography variant="body2" color="text.secondary">Healthy Assets</Typography>
+                                          {pinned.asset.assetsByHealth?.healthy?.length > 0 && (
+                                            <IconButton size="small" sx={{ p: 0 }}>
+                                              {expandedAssetCategories[pinned.id]?.healthyAssets ? 
+                                                <ExpandLess sx={{ fontSize: 16 }} /> : 
+                                                <ExpandMore sx={{ fontSize: 16 }} />
+                                              }
+                                            </IconButton>
+                                          )}
+                                        </Box>
+                                        <Chip label={pinned.asset.healthyCount || 0} size="small" sx={{ bgcolor: COLORS.status.healthy.chip, color: '#22C55E' }} />
+                                      </Box>
+                                      
+                                      <Collapse in={expandedAssetCategories[pinned.id]?.healthyAssets}>
+                                        <Stack spacing={0.5} sx={{ pl: 2, mt: 0.5, maxHeight: 150, overflowY: 'auto' }}>
+                                          {pinned.asset.assetsByHealth?.healthy?.map((asset: Asset) => (
+                                            <Box 
+                                              key={asset.id}
+                                              onClick={() => {
+                                                setSelectedAsset(asset);
+                                                flyToAsset(asset.longitude, asset.latitude, 15);
+                                              }}
+                                              sx={{ 
+                                                p: 1, 
+                                                bgcolor: alpha('#22C55E', 0.05), 
+                                                borderLeft: `2px solid ${alpha('#22C55E', 0.5)}`,
+                                                borderRadius: 1,
+                                                cursor: 'pointer',
+                                                transition: 'all 0.2s',
+                                                contentVisibility: 'auto',
+                                                containIntrinsicSize: 'auto 60px',
+                                                '&:hover': {
+                                                  bgcolor: COLORS.status.healthy.chip,
+                                                  transform: 'translateX(4px)'
+                                                }
+                                              }}
+                                            >
+                                              <Typography variant="caption" fontWeight={600} color="#22C55E" display="block">
+                                                {asset.name || asset.id} ({asset.type})
+                                              </Typography>
+                                              {asset.health_score !== undefined && (
+                                                <Typography variant="caption" display="block" sx={{ fontSize: 9, color: 'text.secondary' }}>
+                                                  Health: {asset.health_score}%
+                                                </Typography>
+                                              )}
+                                            </Box>
+                                          ))}
+                                        </Stack>
+                                      </Collapse>
+                                    </Box>
+                                  </Stack>
+                                </Collapse>
+                              </Box>
+                            </>
+                          )}
+
+                          {pinned.asset.type !== 'aggregate' && (
+                            <>
+                              <Box>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>Operational Status</Typography>
+                                <Chip 
+                                  label={pinned.asset.status?.toUpperCase() || 'OPERATIONAL'} 
+                                  size="small" 
+                                  sx={{ 
+                                    mt: 0.5,
+                                    bgcolor: COLORS.status.healthy.chip, 
+                                    color: '#22C55E',
+                                    fontWeight: 700 
+                                  }} 
+                                />
+                              </Box>
+                              {pinned.asset.capacity && (
+                                <Box>
+                                  <Typography variant="caption" color="text.secondary">Capacity</Typography>
+                                  <Typography variant="body2">{pinned.asset.capacity}</Typography>
+                                </Box>
+                              )}
+                              {pinned.asset.voltage && (
+                                <Box>
+                                  <Typography variant="caption" color="text.secondary">Voltage</Typography>
+                                  <Typography variant="body2">{pinned.asset.voltage}</Typography>
+                                </Box>
+                              )}
+                              {pinned.asset.type === 'pole' && pinned.asset.pole_height_ft && (
+                                <Box>
+                                  <Typography variant="caption" color="text.secondary">Pole Height</Typography>
+                                  <Typography variant="body2" sx={{ color: '#8880ff', fontWeight: 600 }}>
+                                    {pinned.asset.pole_height_ft} ft
+                                  </Typography>
+                                </Box>
+                              )}
+                            </>
+                          )}
+
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">Coordinates</Typography>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 11 }}>
+                              {pinned.asset.latitude.toFixed(6)}, {pinned.asset.longitude.toFixed(6)}
+                            </Typography>
+                          </Box>
+                        </Stack>
+                        </Collapse>
+                      </Paper>
+                    </Fade>
+                  );
+                })}
+
+                {/* Selected Asset Panel (Active/Unpinned) */}
+                {selectedAsset && clickPosition && !pinnedAssets.some(p => p.asset.id === selectedAsset.id) && (() => {
+                  // Engineering: Intelligent positioning to ensure full info card visibility
+                  const CARD_WIDTH = 380;
+                  const CARD_HEIGHT = 700; // Increased estimate for scrollability
+                  const MARGIN = 20;
+                  const EDGE_THRESHOLD = 60; // Increased threshold for better edge detection
+                  
+                  // Detect proximity to screen edges with viewport awareness
+                  const viewportWidth = window.innerWidth;
+                  const viewportHeight = window.innerHeight;
+                  const nearRight = clickPosition.x + CARD_WIDTH + EDGE_THRESHOLD > viewportWidth;
+                  const nearBottom = clickPosition.y + CARD_HEIGHT + EDGE_THRESHOLD > viewportHeight;
+                  const nearLeft = clickPosition.x < EDGE_THRESHOLD;
+                  const nearTop = clickPosition.y < EDGE_THRESHOLD;
+                  
+                  // Smart positioning with corner case handling
+                  let cardLeft: number;
+                  let cardTop: number;
+                  
+                  // Horizontal positioning
+                  if (nearRight && !nearLeft) {
+                    cardLeft = Math.max(10, clickPosition.x - CARD_WIDTH - MARGIN);
+                  } else if (nearLeft) {
+                    cardLeft = Math.min(clickPosition.x + MARGIN, viewportWidth - CARD_WIDTH - 10);
+                  } else {
+                    cardLeft = Math.min(clickPosition.x + MARGIN, viewportWidth - CARD_WIDTH - 10);
+                  }
+                  
+                  // Vertical positioning
+                  if (nearBottom && !nearTop) {
+                    cardTop = Math.max(10, clickPosition.y - CARD_HEIGHT - MARGIN);
+                  } else if (nearTop) {
+                    cardTop = Math.min(clickPosition.y + MARGIN, viewportHeight - CARD_HEIGHT - 10);
+                  } else {
+                    cardTop = Math.min(clickPosition.y + MARGIN, viewportHeight - CARD_HEIGHT - 10);
+                  }
+                  
+                  // Ensure card stays within bounds
+                  cardLeft = Math.max(10, Math.min(cardLeft, viewportWidth - CARD_WIDTH - 10));
+                  cardTop = Math.max(10, Math.min(cardTop, viewportHeight - 200)); // Ensure at least 200px visible
+                  
+                  // Use stored position if being dragged, otherwise use calculated position
+                  if (selectedAssetPosition) {
+                    cardLeft = selectedAssetPosition.x;
+                    cardTop = selectedAssetPosition.y;
+                  }
+                  
+                  const isPinned = pinnedAssets.some(p => p.asset.id === selectedAsset.id);
+
+                  const handlePinToggle = () => {
+                    if (isPinned) {
+                      setPinnedAssets(prev => prev.filter(p => p.asset.id !== selectedAsset.id));
+                    } else {
+                      setPinnedAssets(prev => [...prev, {
+                        id: selectedAsset.id,
+                        asset: selectedAsset,
+                        position: { x: cardLeft, y: cardTop },
+                        collapsed: false
+                      }]);
+                      setSelectedAsset(null);
+                      setClickPosition(null);
+                    }
+                  };
+
+                  const handleMouseDown = (e: React.MouseEvent) => {
+                    if ((e.target as HTMLElement).closest('.drag-handle')) {
+                      e.preventDefault();
+                      setDraggedCardId(selectedAsset.id);
+                      setDragOffset({
+                        x: e.clientX - cardLeft,
+                        y: e.clientY - cardTop
+                      });
+                    }
+                  };
+                  
+                  // Pre-compute values to avoid inline calculations (performance optimization)
+                  const isDraggingSelected = draggedCardId === selectedAsset.id;
+                  const borderColorSelected = selectedAsset.type === 'aggregate' ? (
+                    selectedAsset.worstStatus === 'critical' ? '#EF4444' :
+                    selectedAsset.worstStatus === 'warning' ? '#FBBF24' :
+                    '#22C55E'
+                  ) :
+                  selectedAsset.type === 'substation' ? '#00C8FF' :
+                  selectedAsset.type === 'transformer' ? '#EC4899' :
+                  selectedAsset.type === 'pole' ? '#8880ff' : '#9333EA';
+                  
+                  return (
+                    <Fade in={true}>
+                      <Paper 
+                        onMouseDown={handleMouseDown}
+                        sx={{ 
+                        position: 'absolute', 
+                        left: 0,
+                        top: 0,
+                        transform: `translate3d(${cardLeft}px, ${cardTop}px, 0)`,
+                        willChange: isDraggingSelected ? 'transform' : undefined,
+                        p: 3, 
+                        minWidth: 320,
+                        maxWidth: 380,
+                        maxHeight: 'calc(100vh - 40px)',
+                        overflowY: 'auto',
+                        overflowX: 'hidden',
+                        bgcolor: alpha('#1E293B', 0.80),
+                        backdropFilter: 'blur(12px)',
+                        zIndex: 1000,
+                        borderLeft: `4px solid ${borderColorSelected}`,
+                        boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+                        cursor: isDraggingSelected ? 'grabbing' : 'default',
+                        userSelect: 'text',
+                        // CRITICAL OPTIMIZATIONS for drag performance
+                        contain: 'layout style paint',  // CSS containment - isolates rendering
+                        '&::-webkit-scrollbar': {
+                          width: '8px',
+                        },
+                        '&::-webkit-scrollbar-track': {
+                          bgcolor: alpha('#000', 0.2),
+                        },
+                        '&::-webkit-scrollbar-thumb': {
+                          bgcolor: alpha('#fff', 0.3),
+                          borderRadius: '4px',
+                          '&:hover': {
+                            bgcolor: alpha('#fff', 0.4),
+                          },
+                        },
+                      }}>
+                      <Box className="drag-handle" sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2, cursor: 'grab', '&:active': { cursor: 'grabbing' } }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                          {selectedAsset.type === 'aggregate' && <Assessment sx={{ 
+                            color: selectedAsset.worstStatus === 'critical' ? '#EF4444' :
+                                   selectedAsset.worstStatus === 'warning' ? '#FBBF24' : '#22C55E',
+                            fontSize: 28 
+                          }} />}
+                          {selectedAsset.type === 'substation' && <ElectricBolt sx={{ color: '#00C8FF', fontSize: 28 }} />}
+                          {selectedAsset.type === 'transformer' && <Assessment sx={{ color: '#EC4899', fontSize: 28 }} />}
+                          {selectedAsset.type === 'pole' && <Engineering sx={{ color: '#8880ff', fontSize: 28 }} />}
+                          {selectedAsset.type === 'meter' && <Speed sx={{ color: '#9333EA', fontSize: 28 }} />}
+                          <Box>
+                            <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>{selectedAsset.name}</Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ 
+                              fontFamily: 'monospace', 
+                              letterSpacing: 0.5,
+                              maxWidth: 280,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}>
+                              {selectedAsset.id}
+                            </Typography>
+                          </Box>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 0.5 }}>
+                          <Tooltip title={isPinned ? "Unpin card" : "Pin card for comparison"}>
+                            <IconButton 
+                              size="small" 
+                              onClick={handlePinToggle}
+                              sx={{ color: isPinned ? '#FBBF24' : 'inherit' }}
+                            >
+                              <PushPin sx={{ fontSize: 18 }} />
+                            </IconButton>
+                          </Tooltip>
+                          <IconButton size="small" onClick={() => {
+                            setSelectedAsset(null);
+                            setSelectedAssetPosition(null);
+                          }}>
+                            <Close sx={{ fontSize: 18 }} />
+                          </IconButton>
+                        </Box>
+                      </Box>
+
+                      <Chip 
+                        label={selectedAsset.type.toUpperCase()} 
+                        size="small" 
+                        sx={{ mb: 2, fontWeight: 700, letterSpacing: 0.5 }} 
+                      />
+
+                      <Stack spacing={2} divider={<Divider />}>
+                        {/* Aggregate Cell Metrics - Enhanced with Interactivity */}
+                        {selectedAsset.type === 'aggregate' && (
+                          <>
+                            {/* Action Buttons */}
+                            <Stack direction="row" spacing={1}>
+                              <Tooltip title="Center map on this cell">
+                                <Button 
+                                  size="small" 
+                                  variant="outlined" 
+                                  startIcon={<MyLocation />}
+                                  onClick={() => flyToAsset(selectedAsset.longitude, selectedAsset.latitude, 12)}
+                                  sx={{ flex: 1, fontSize: 11 }}
+                                >
+                                  Center
+                                </Button>
+                              </Tooltip>
+                              <Tooltip title="Zoom to see individual assets">
+                                <Button 
+                                  size="small" 
+                                  variant="outlined" 
+                                  startIcon={<ZoomIn />}
+                                  onClick={() => flyToAsset(selectedAsset.longitude, selectedAsset.latitude, 13)}
+                                  sx={{ flex: 1, fontSize: 11 }}
+                                >
+                                  Zoom In
+                                </Button>
+                              </Tooltip>
+                            </Stack>
+
+                            {/* Critical Status Alert */}
+                            {selectedAsset.worstStatus === 'critical' && (
+                              <Paper sx={{ 
+                                p: 1.5, 
+                                bgcolor: alpha('#EF4444', 0.1), 
+                                border: '1px solid',
+                                borderColor: alpha('#EF4444', 0.3)
+                              }}>
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Warning sx={{ color: '#EF4444', fontSize: 20 }} />
+                                  <Box>
+                                    <Typography variant="caption" fontWeight={700} color="#EF4444">
+                                      CRITICAL AREA
+                                    </Typography>
+                                    <Typography variant="caption" display="block" color="text.secondary">
+                                      Requires immediate attention
+                                    </Typography>
+                                  </Box>
+                                </Stack>
+                              </Paper>
+                            )}
+
+                            {/* Infrastructure Summary - Expandable */}
+                            <Box>
+                              <Box 
+                                display="flex" 
+                                justifyContent="space-between" 
+                                alignItems="center"
+                                sx={{ cursor: 'pointer' }}
+                                onClick={() => setExpandedSections(prev => ({ ...prev, infrastructure: !prev.infrastructure }))}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <GridOn sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                    INFRASTRUCTURE SUMMARY
+                                  </Typography>
+                                </Stack>
+                                <IconButton size="small">
+                                  {expandedSections.infrastructure ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+                                </IconButton>
+                              </Box>
+                              
+                              <Collapse in={expandedSections.infrastructure}>
+                                <Stack spacing={1} mt={1.5}>
+                                  <Box display="flex" justifyContent="space-between" alignItems="center">
+                                    <Typography variant="body2" color="text.secondary">Total Assets:</Typography>
+                                    <Chip 
+                                      label={selectedAsset.totalAssets} 
+                                      size="small" 
+                                      sx={{ fontWeight: 700, minWidth: 50 }}
+                                    />
+                                  </Box>
+                                  
+                                  <Paper sx={{ p: 1.5, bgcolor: alpha('#00C8FF', 0.05) }}>
+                                    <Box 
+                                      sx={{ cursor: 'pointer' }}
+                                      onClick={() => {
+                                        const activeCardId = 'active_card';
+                                        setExpandedAssetCategories(prev => ({
+                                          ...prev,
+                                          [activeCardId]: {
+                                            ...(prev[activeCardId] || {}),
+                                            substations: !prev[activeCardId]?.substations,
+                                            transformers: prev[activeCardId]?.transformers || false,
+                                            poles: prev[activeCardId]?.poles || false,
+                                            meters: prev[activeCardId]?.meters || false
+                                          }
+                                        }));
+                                      }}
+                                    >
+                                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                          <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#00C8FF' }} />
+                                          <Typography variant="body2" color="text.secondary">Substations</Typography>
+                                        </Stack>
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                          <Typography variant="h6" fontWeight={700} color="#00C8FF">
+                                            {selectedAsset.substationCount}
+                                          </Typography>
+                                          <IconButton size="small">
+                                            {expandedAssetCategories['active_card']?.substations ? <ExpandLess sx={{ fontSize: 14 }} /> : <ExpandMore sx={{ fontSize: 14 }} />}
+                                          </IconButton>
+                                        </Stack>
+                                      </Stack>
+                                    </Box>
+                                    
+                                    <Collapse in={expandedAssetCategories['active_card']?.substations}>
+                                      <Stack spacing={0.5} mt={1} sx={{ maxHeight: 200, overflowY: 'auto' }}>
+                                        {selectedAsset.substations?.map((asset: any) => (
+                                          <Paper 
+                                            key={asset.id}
+                                            sx={{ 
+                                              p: 1, 
+                                              bgcolor: alpha('#00C8FF', 0.08),
+                                              cursor: 'pointer',
+                                              contentVisibility: 'auto',
+                                              containIntrinsicSize: 'auto 60px',
+                                              '&:hover': {
+                                                bgcolor: COLORS.substation.chip,
+                                                transform: 'translateX(4px)',
+                                                transition: 'all 0.2s'
+                                              }
+                                            }}
+                                            onClick={() => {
+                                              flyToAsset(asset.longitude, asset.latitude, 13.5);
+                                              setSelectedAsset(asset);
+                                            }}
+                                          >
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                              <Box>
+                                                <Typography variant="caption" fontWeight={600} color="#00C8FF">
+                                                  {asset.name || asset.id}
+                                                </Typography>
+                                                <Typography variant="caption" display="block" color="text.secondary" sx={{ fontSize: 9 }}>
+                                                  Health: {asset.health_score ?? 'N/A'}%
+                                                </Typography>
+                                              </Box>
+                                              <MyLocation sx={{ fontSize: 12, color: alpha('#00C8FF', 0.5) }} />
+                                            </Stack>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Collapse>
+                                  </Paper>
+                                  
+                                  <Paper sx={{ p: 1.5, bgcolor: alpha('#EC4899', 0.05) }}>
+                                    <Box 
+                                      sx={{ cursor: 'pointer' }}
+                                      onClick={() => {
+                                        const activeCardId = 'active_card';
+                                        setExpandedAssetCategories(prev => ({
+                                          ...prev,
+                                          [activeCardId]: {
+                                            ...(prev[activeCardId] || {}),
+                                            substations: prev[activeCardId]?.substations || false,
+                                            transformers: !prev[activeCardId]?.transformers,
+                                            poles: prev[activeCardId]?.poles || false,
+                                            meters: prev[activeCardId]?.meters || false
+                                          }
+                                        }));
+                                      }}
+                                    >
+                                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                          <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#EC4899' }} />
+                                          <Typography variant="body2" color="text.secondary">Transformers</Typography>
+                                        </Stack>
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                          <Typography variant="h6" fontWeight={700} color="#EC4899">
+                                            {selectedAsset.transformerCount}
+                                          </Typography>
+                                          <IconButton size="small">
+                                            {expandedAssetCategories['active_card']?.transformers ? <ExpandLess sx={{ fontSize: 14 }} /> : <ExpandMore sx={{ fontSize: 14 }} />}
+                                          </IconButton>
+                                        </Stack>
+                                      </Stack>
+                                    </Box>
+                                    
+                                    <Collapse in={expandedAssetCategories['active_card']?.transformers}>
+                                      <Stack spacing={0.5} mt={1} sx={{ maxHeight: 200, overflowY: 'auto' }}>
+                                        {selectedAsset.transformers?.map((asset: any) => (
+                                          <Paper 
+                                            key={asset.id}
+                                            sx={{ 
+                                              p: 1, 
+                                              bgcolor: alpha('#EC4899', 0.08),
+                                              cursor: 'pointer',
+                                              contentVisibility: 'auto',
+                                              containIntrinsicSize: 'auto 60px',
+                                              '&:hover': {
+                                                bgcolor: COLORS.transformer.chip,
+                                                transform: 'translateX(4px)',
+                                                transition: 'all 0.2s'
+                                              }
+                                            }}
+                                            onClick={() => {
+                                              flyToAsset(asset.longitude, asset.latitude, 13.5);
+                                              setSelectedAsset(asset);
+                                            }}
+                                          >
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                              <Box>
+                                                <Typography variant="caption" fontWeight={600} color="#EC4899">
+                                                  {asset.name || asset.id}
+                                                </Typography>
+                                                <Typography variant="caption" display="block" color="text.secondary" sx={{ fontSize: 9 }}>
+                                                  Load: {asset.load_percent ?? 'N/A'}% • Health: {asset.health_score ?? 'N/A'}%
+                                                </Typography>
+                                              </Box>
+                                              <MyLocation sx={{ fontSize: 12, color: alpha('#EC4899', 0.5) }} />
+                                            </Stack>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Collapse>
+                                  </Paper>
+                                  
+                                  <Paper sx={{ p: 1.5, bgcolor: alpha('#8880ff', 0.05) }}>
+                                    <Box 
+                                      sx={{ cursor: 'pointer' }}
+                                      onClick={() => {
+                                        const activeCardId = 'active_card';
+                                        setExpandedAssetCategories(prev => ({
+                                          ...prev,
+                                          [activeCardId]: {
+                                            ...(prev[activeCardId] || {}),
+                                            substations: prev[activeCardId]?.substations || false,
+                                            transformers: prev[activeCardId]?.transformers || false,
+                                            poles: !prev[activeCardId]?.poles,
+                                            meters: prev[activeCardId]?.meters || false
+                                          }
+                                        }));
+                                      }}
+                                    >
+                                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                          <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#8880ff' }} />
+                                          <Typography variant="body2" color="text.secondary">Poles</Typography>
+                                        </Stack>
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                          <Typography variant="h6" fontWeight={700} color="#8880ff">
+                                            {selectedAsset.poleCount}
+                                          </Typography>
+                                          <IconButton size="small">
+                                            {expandedAssetCategories['active_card']?.poles ? <ExpandLess sx={{ fontSize: 14 }} /> : <ExpandMore sx={{ fontSize: 14 }} />}
+                                          </IconButton>
+                                        </Stack>
+                                      </Stack>
+                                    </Box>
+                                    
+                                    <Collapse in={expandedAssetCategories['active_card']?.poles}>
+                                      <Stack spacing={0.5} mt={1} sx={{ maxHeight: 200, overflowY: 'auto' }}>
+                                        {selectedAsset.poles?.map((asset: any) => (
+                                          <Paper 
+                                            key={asset.id}
+                                            sx={{ 
+                                              p: 1, 
+                                              bgcolor: alpha('#8880ff', 0.08),
+                                              cursor: 'pointer',
+                                              contentVisibility: 'auto',
+                                              containIntrinsicSize: 'auto 60px',
+                                              '&:hover': {
+                                                bgcolor: COLORS.pole.chip,
+                                                transform: 'translateX(4px)',
+                                                transition: 'all 0.2s'
+                                              }
+                                            }}
+                                            onClick={() => {
+                                              flyToAsset(asset.longitude, asset.latitude, 13.5);
+                                              setSelectedAsset(asset);
+                                            }}
+                                          >
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                              <Box>
+                                                <Typography variant="caption" fontWeight={600} color="#8880ff">
+                                                  {asset.name || asset.id}
+                                                </Typography>
+                                                <Typography variant="caption" display="block" color="text.secondary" sx={{ fontSize: 9 }}>
+                                                  Health: {asset.health_score ?? 'N/A'}%
+                                                </Typography>
+                                              </Box>
+                                              <MyLocation sx={{ fontSize: 12, color: alpha('#8880ff', 0.5) }} />
+                                            </Stack>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Collapse>
+                                  </Paper>
+                                  
+                                  <Paper sx={{ p: 1.5, bgcolor: alpha('#9333EA', 0.05) }}>
+                                    <Box 
+                                      sx={{ cursor: 'pointer' }}
+                                      onClick={() => {
+                                        const activeCardId = 'active_card';
+                                        setExpandedAssetCategories(prev => ({
+                                          ...prev,
+                                          [activeCardId]: {
+                                            ...(prev[activeCardId] || {}),
+                                            substations: prev[activeCardId]?.substations || false,
+                                            transformers: prev[activeCardId]?.transformers || false,
+                                            poles: prev[activeCardId]?.poles || false,
+                                            meters: !prev[activeCardId]?.meters
+                                          }
+                                        }));
+                                      }}
+                                    >
+                                      <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                          <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: '#9333EA' }} />
+                                          <Typography variant="body2" color="text.secondary">Meters</Typography>
+                                        </Stack>
+                                        <Stack direction="row" spacing={1} alignItems="center">
+                                          <Typography variant="h6" fontWeight={700} color="#9333EA">
+                                            {selectedAsset.meterCount}
+                                          </Typography>
+                                          <IconButton size="small">
+                                            {expandedAssetCategories['active_card']?.meters ? <ExpandLess sx={{ fontSize: 14 }} /> : <ExpandMore sx={{ fontSize: 14 }} />}
+                                          </IconButton>
+                                        </Stack>
+                                      </Stack>
+                                    </Box>
+                                    
+                                    <Collapse in={expandedAssetCategories['active_card']?.meters}>
+                                      <Stack spacing={0.5} mt={1} sx={{ maxHeight: 200, overflowY: 'auto' }}>
+                                        {selectedAsset.meters?.map((asset: any) => (
+                                          <Paper 
+                                            key={asset.id}
+                                            sx={{ 
+                                              p: 1, 
+                                              bgcolor: alpha('#9333EA', 0.08),
+                                              cursor: 'pointer',
+                                              contentVisibility: 'auto',
+                                              containIntrinsicSize: 'auto 60px',
+                                              '&:hover': {
+                                                bgcolor: COLORS.meter.chip,
+                                                transform: 'translateX(4px)',
+                                                transition: 'all 0.2s'
+                                              }
+                                            }}
+                                            onClick={() => {
+                                              flyToAsset(asset.longitude, asset.latitude, 13.5);
+                                              setSelectedAsset(asset);
+                                            }}
+                                          >
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                              <Box>
+                                                <Typography variant="caption" fontWeight={600} color="#9333EA">
+                                                  {asset.name || asset.id}
+                                                </Typography>
+                                                <Typography variant="caption" display="block" color="text.secondary" sx={{ fontSize: 9 }}>
+                                                  Usage: {asset.current_load ?? 'N/A'} kW
+                                                </Typography>
+                                              </Box>
+                                              <MyLocation sx={{ fontSize: 12, color: alpha('#9333EA', 0.5) }} />
+                                            </Stack>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Collapse>
+                                  </Paper>
+                                </Stack>
+                              </Collapse>
+                            </Box>
+
+                            {/* Health & Load Metrics - Expandable */}
+                            <Box>
+                              <Box 
+                                display="flex" 
+                                justifyContent="space-between" 
+                                alignItems="center"
+                                sx={{ cursor: 'pointer' }}
+                                onClick={() => setExpandedSections(prev => ({ ...prev, health: !prev.health }))}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Assessment sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                    PERFORMANCE METRICS
+                                  </Typography>
+                                </Stack>
+                                <IconButton size="small">
+                                  {expandedSections.health ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+                                </IconButton>
+                              </Box>
+                              
+                              <Collapse in={expandedSections.health}>
+                                <Stack spacing={2} mt={1.5}>
+                                  {/* Average Health */}
+                                  <Box>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center" mb={0.5}>
+                                      <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                        AVERAGE HEALTH
+                                      </Typography>
+                                      <Typography variant="h5" sx={{ 
+                                        fontWeight: 800, 
+                                        color: selectedAsset.avgHealth === null ? '#9CA3AF' : selectedAsset.avgHealth > 70 ? '#22C55E' : selectedAsset.avgHealth > 50 ? '#FBBF24' : '#EF4444' 
+                                      }}>
+                                        {selectedAsset.avgHealth === null ? 'N/A' : `${selectedAsset.avgHealth}%`}
+                                      </Typography>
+                                    </Stack>
+                                    {selectedAsset.avgHealth !== null && (
+                                      <LinearProgress 
+                                        variant="determinate" 
+                                        value={selectedAsset.avgHealth} 
+                                        sx={{ 
+                                          height: 8, 
+                                          borderRadius: 1,
+                                          bgcolor: alpha('#fff', 0.1),
+                                          '& .MuiLinearProgress-bar': {
+                                            bgcolor: selectedAsset.avgHealth > 70 ? '#22C55E' : selectedAsset.avgHealth > 50 ? '#FBBF24' : '#EF4444'
+                                          }
+                                        }} 
+                                      />
+                                    )}
+                                    {selectedAsset.avgHealth === null && (
+                                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5, fontStyle: 'italic' }}>
+                                        No health sensors in this cell
+                                      </Typography>
+                                    )}
+                                  </Box>
+
+                                  {/* Average Load */}
+                                  <Box>
+                                    <Stack direction="row" justifyContent="space-between" alignItems="center" mb={0.5}>
+                                      <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                        AVERAGE LOAD (TRANSFORMERS)
+                                      </Typography>
+                                      <Typography variant="h5" sx={{ 
+                                        fontWeight: 800, 
+                                        color: selectedAsset.avgLoad > 85 ? '#EF4444' : selectedAsset.avgLoad > 70 ? '#FBBF24' : '#22C55E'
+                                      }}>
+                                        {selectedAsset.avgLoad}%
+                                      </Typography>
+                                    </Stack>
+                                    <LinearProgress 
+                                      variant="determinate" 
+                                      value={selectedAsset.avgLoad} 
+                                      sx={{ 
+                                        height: 8, 
+                                        borderRadius: 1,
+                                        bgcolor: alpha('#fff', 0.1),
+                                        '& .MuiLinearProgress-bar': {
+                                          bgcolor: selectedAsset.avgLoad > 85 ? '#EF4444' : selectedAsset.avgLoad > 70 ? '#FBBF24' : '#22C55E'
+                                        }
+                                      }} 
+                                    />
+                                  </Box>
+
+                                  {/* Status Badge */}
+                                  <Box>
+                                    <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" mb={0.5}>
+                                      OPERATIONAL STATUS
+                                    </Typography>
+                                    <Chip 
+                                      icon={selectedAsset.worstStatus === 'critical' ? <Warning /> : undefined}
+                                      label={selectedAsset.worstStatus.toUpperCase()} 
+                                      sx={{ 
+                                        width: '100%',
+                                        bgcolor: selectedAsset.worstStatus === 'critical' ? alpha('#EF4444', 0.2) :
+                                                 selectedAsset.worstStatus === 'warning' ? alpha('#FBBF24', 0.2) :
+                                                 alpha('#22C55E', 0.2),
+                                        color: selectedAsset.worstStatus === 'critical' ? '#EF4444' :
+                                               selectedAsset.worstStatus === 'warning' ? '#FBBF24' :
+                                               '#22C55E',
+                                        fontWeight: 700,
+                                        fontSize: 12,
+                                        height: 32
+                                      }} 
+                                    />
+                                  </Box>
+                                </Stack>
+                              </Collapse>
+                            </Box>
+
+                            {/* Health Status Breakdown - Expandable */}
+                            <Box>
+                              <Box
+                                display="flex"
+                                justifyContent="space-between"
+                                alignItems="center"
+                                sx={{ cursor: 'pointer' }}
+                                onClick={() => setExpandedSections(prev => ({ ...prev, healthStatus: !prev.healthStatus }))}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <FavoriteOutlined sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                    HEALTH STATUS
+                                  </Typography>
+                                </Stack>
+                                <IconButton size="small">
+                                  {expandedSections.healthStatus ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+                                </IconButton>
+                              </Box>
+                              
+                              <Collapse in={expandedSections.healthStatus}>
+                                <Stack spacing={2} mt={1.5}>
+                                  {/* Overall Counts */}
+                                  <Stack spacing={1}>
+                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <Typography variant="body2" color="text.secondary">Critical Assets</Typography>
+                                      <Chip label={selectedAsset.criticalCount || 0} size="small" sx={{ bgcolor: COLORS.status.critical.chip, color: '#EF4444' }} />
+                                    </Box>
+                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <Typography variant="body2" color="text.secondary">Warning Assets</Typography>
+                                      <Chip label={selectedAsset.warningCount || 0} size="small" sx={{ bgcolor: COLORS.status.warning.chip, color: '#FBBF24' }} />
+                                    </Box>
+                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <Typography variant="body2" color="text.secondary">Healthy Assets</Typography>
+                                      <Chip label={selectedAsset.healthyCount || 0} size="small" sx={{ bgcolor: COLORS.status.healthy.chip, color: '#22C55E' }} />
+                                    </Box>
+                                  </Stack>
+
+                                  {/* Breakdown by Asset Type */}
+                                  {selectedAsset.healthByType && (
+                                    <Stack spacing={1.5} sx={{ pl: 1 }}>
+                                      {/* Substations */}
+                                      {(selectedAsset.healthByType.substations.critical > 0 || 
+                                        selectedAsset.healthByType.substations.warning > 0 || 
+                                        selectedAsset.healthByType.substations.healthy > 0) && (
+                                        <Box>
+                                          <Typography variant="caption" fontWeight={600} sx={{ color: '#00C8FF', mb: 0.5, display: 'block' }}>
+                                            Substations
+                                          </Typography>
+                                          <Stack spacing={0.5} sx={{ pl: 1 }}>
+                                            {selectedAsset.healthByType.substations.critical > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Critical</Typography>
+                                                <Chip label={selectedAsset.healthByType.substations.critical} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.critical.chip, color: '#EF4444' }} />
+                                              </Box>
+                                            )}
+                                            {selectedAsset.healthByType.substations.warning > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Warning</Typography>
+                                                <Chip label={selectedAsset.healthByType.substations.warning} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.warning.chip, color: '#FBBF24' }} />
+                                              </Box>
+                                            )}
+                                            {selectedAsset.healthByType.substations.healthy > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Healthy</Typography>
+                                                <Chip label={selectedAsset.healthByType.substations.healthy} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.healthy.chip, color: '#22C55E' }} />
+                                              </Box>
+                                            )}
+                                          </Stack>
+                                        </Box>
+                                      )}
+                                      
+                                      {/* Transformers */}
+                                      {(selectedAsset.healthByType.transformers.critical > 0 || 
+                                        selectedAsset.healthByType.transformers.warning > 0 || 
+                                        selectedAsset.healthByType.transformers.healthy > 0) && (
+                                        <Box>
+                                          <Typography variant="caption" fontWeight={600} sx={{ color: '#EC4899', mb: 0.5, display: 'block' }}>
+                                            Transformers
+                                          </Typography>
+                                          <Stack spacing={0.5} sx={{ pl: 1 }}>
+                                            {selectedAsset.healthByType.transformers.critical > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Critical</Typography>
+                                                <Chip label={selectedAsset.healthByType.transformers.critical} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.critical.chip, color: '#EF4444' }} />
+                                              </Box>
+                                            )}
+                                            {selectedAsset.healthByType.transformers.warning > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Warning</Typography>
+                                                <Chip label={selectedAsset.healthByType.transformers.warning} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.warning.chip, color: '#FBBF24' }} />
+                                              </Box>
+                                            )}
+                                            {selectedAsset.healthByType.transformers.healthy > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Healthy</Typography>
+                                                <Chip label={selectedAsset.healthByType.transformers.healthy} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.healthy.chip, color: '#22C55E' }} />
+                                              </Box>
+                                            )}
+                                          </Stack>
+                                        </Box>
+                                      )}
+                                      
+                                      {/* Poles */}
+                                      {(selectedAsset.healthByType.poles.critical > 0 || 
+                                        selectedAsset.healthByType.poles.warning > 0 || 
+                                        selectedAsset.healthByType.poles.healthy > 0) && (
+                                        <Box>
+                                          <Typography variant="caption" fontWeight={600} sx={{ color: '#8880ff', mb: 0.5, display: 'block' }}>
+                                            Poles
+                                          </Typography>
+                                          <Stack spacing={0.5} sx={{ pl: 1 }}>
+                                            {selectedAsset.healthByType.poles.critical > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Critical</Typography>
+                                                <Chip label={selectedAsset.healthByType.poles.critical} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.critical.chip, color: '#EF4444' }} />
+                                              </Box>
+                                            )}
+                                            {selectedAsset.healthByType.poles.warning > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Warning</Typography>
+                                                <Chip label={selectedAsset.healthByType.poles.warning} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.warning.chip, color: '#FBBF24' }} />
+                                              </Box>
+                                            )}
+                                            {selectedAsset.healthByType.poles.healthy > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Healthy</Typography>
+                                                <Chip label={selectedAsset.healthByType.poles.healthy} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.healthy.chip, color: '#22C55E' }} />
+                                              </Box>
+                                            )}
+                                          </Stack>
+                                        </Box>
+                                      )}
+                                      
+                                      {/* Meters */}
+                                      {(selectedAsset.healthByType.meters.critical > 0 || 
+                                        selectedAsset.healthByType.meters.warning > 0 || 
+                                        selectedAsset.healthByType.meters.healthy > 0) && (
+                                        <Box>
+                                          <Typography variant="caption" fontWeight={600} sx={{ color: '#9333EA', mb: 0.5, display: 'block' }}>
+                                            Meters
+                                          </Typography>
+                                          <Stack spacing={0.5} sx={{ pl: 1 }}>
+                                            {selectedAsset.healthByType.meters.critical > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Critical</Typography>
+                                                <Chip label={selectedAsset.healthByType.meters.critical} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.critical.chip, color: '#EF4444' }} />
+                                              </Box>
+                                            )}
+                                            {selectedAsset.healthByType.meters.warning > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Warning</Typography>
+                                                <Chip label={selectedAsset.healthByType.meters.warning} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.warning.chip, color: '#FBBF24' }} />
+                                              </Box>
+                                            )}
+                                            {selectedAsset.healthByType.meters.healthy > 0 && (
+                                              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <Typography variant="caption" color="text.secondary">Healthy</Typography>
+                                                <Chip label={selectedAsset.healthByType.meters.healthy} size="small" sx={{ height: 18, fontSize: 10, bgcolor: COLORS.status.healthy.chip, color: '#22C55E' }} />
+                                              </Box>
+                                            )}
+                                          </Stack>
+                                        </Box>
+                                      )}
+                                    </Stack>
+                                  )}
+                                </Stack>
+                              </Collapse>
+                            </Box>
+
+                            {/* Cell Center Coordinates */}
+                            <Box>
+                              <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" mb={0.5}>
+                                CELL CENTER
+                              </Typography>
+                              <Paper sx={{ p: 1, bgcolor: alpha('#0EA5E9', 0.05) }}>
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 11, color: '#0EA5E9' }}>
+                                  {selectedAsset.latitude.toFixed(6)}, {selectedAsset.longitude.toFixed(6)}
+                                </Typography>
+                              </Paper>
+                            </Box>
+                          </>
+                        )}
+
+                        {/* Individual Asset Metrics */}
+                        {selectedAsset.health_score !== undefined && selectedAsset.health_score !== null && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" fontWeight={600}>HEALTH SCORE</Typography>
+                            <Typography variant="h4" sx={{ 
+                              fontWeight: 800, 
+                              color: selectedAsset.health_score > 80 ? '#22C55E' : selectedAsset.health_score > 50 ? '#FBBF24' : '#EF4444' 
+                            }}>
+                              {selectedAsset.health_score.toFixed(0)}%
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {selectedAsset.load_percent !== undefined && selectedAsset.load_percent !== null && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" fontWeight={600}>LOAD CAPACITY</Typography>
+                            <Typography variant="h4" sx={{ 
+                              fontWeight: 800, 
+                              color: selectedAsset.load_percent > 85 ? '#EF4444' : 
+                                     selectedAsset.load_percent > 70 ? '#FBBF24' : 
+                                     '#22C55E'
+                            }}>
+                              {selectedAsset.load_percent.toFixed(0)}%
+                            </Typography>
+                            <LinearProgress 
+                              variant="determinate" 
+                              value={selectedAsset.load_percent} 
+                              sx={{ 
+                                height: 6, 
+                                borderRadius: 1,
+                                mt: 1,
+                                bgcolor: alpha('#fff', 0.1),
+                                '& .MuiLinearProgress-bar': {
+                                  bgcolor: selectedAsset.load_percent > 85 ? '#EF4444' : 
+                                           selectedAsset.load_percent > 70 ? '#FBBF24' : 
+                                           '#22C55E'
+                                }
+                              }} 
+                            />
+                          </Box>
+                        )}
+
+                        {selectedAsset.usage_kwh !== undefined && selectedAsset.usage_kwh !== null && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" fontWeight={600}>POWER USAGE</Typography>
+                            <Typography variant="h4" sx={{ fontWeight: 800, color: '#9333EA' }}>
+                              {selectedAsset.usage_kwh.toFixed(1)} kWh
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {selectedAsset.voltage && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">Voltage Class</Typography>
+                            <Typography variant="body1" fontWeight={600}>{selectedAsset.voltage}</Typography>
+                          </Box>
+                        )}
+
+                        {selectedAsset.status && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>Operational Status</Typography>
+                            <Chip 
+                              label={(() => {
+                                // Derive status from load capacity for transformers
+                                if (selectedAsset.type === 'transformer' && selectedAsset.load_percent !== undefined) {
+                                  if (selectedAsset.load_percent > 85) return 'Critical Load';
+                                  if (selectedAsset.load_percent > 70) return 'High Load';
+                                  return 'Operational';
+                                }
+                                // Substations: map Postgres status to display labels
+                                if (selectedAsset.type === 'substation' && selectedAsset.status) {
+                                  const statusLower = selectedAsset.status.toLowerCase();
+                                  if (statusLower === 'critical') return 'Critical';
+                                  if (statusLower === 'warning') return 'Warning';
+                                  if (statusLower === 'good') return 'Operational';
+                                }
+                                // Derive status from health score for other assets
+                                if (selectedAsset.health_score !== undefined && selectedAsset.health_score !== null) {
+                                  if (selectedAsset.health_score < 60) return 'Critical';
+                                  if (selectedAsset.health_score < 80) return 'Fair';
+                                  return 'Excellent';
+                                }
+                                return selectedAsset.status;
+                              })()} 
+                              size="small" 
+                              sx={{ 
+                                mt: 0.5,
+                                bgcolor: (() => {
+                                  // Status color based on load capacity for transformers
+                                  if (selectedAsset.type === 'transformer' && selectedAsset.load_percent !== undefined) {
+                                    if (selectedAsset.load_percent > 85) return alpha('#EF4444', 0.2);
+                                    if (selectedAsset.load_percent > 70) return alpha('#FBBF24', 0.2);
+                                    return alpha('#22C55E', 0.2);
+                                  }
+                                  // Substations: map Postgres status to colors
+                                  if (selectedAsset.type === 'substation' && selectedAsset.status) {
+                                    const statusLower = selectedAsset.status.toLowerCase();
+                                    if (statusLower === 'critical') return alpha('#EF4444', 0.2);
+                                    if (statusLower === 'warning') return alpha('#FBBF24', 0.2);
+                                    if (statusLower === 'good') return alpha('#22C55E', 0.2);
+                                  }
+                                  // Status color based on health score for other assets
+                                  if (selectedAsset.health_score !== undefined && selectedAsset.health_score !== null) {
+                                    if (selectedAsset.health_score < 60) return alpha('#EF4444', 0.2);
+                                    if (selectedAsset.health_score < 80) return alpha('#FBBF24', 0.2);
+                                    return alpha('#22C55E', 0.2);
+                                  }
+                                  // Fallback: status string-based coloring
+                                  return selectedAsset.status.includes('Operational') || selectedAsset.status.includes('Active') || 
+                                         selectedAsset.status.includes('Connected') || selectedAsset.status.includes('Healthy') ||
+                                         selectedAsset.status.includes('Good') || selectedAsset.status.includes('Excellent')
+                                    ? alpha('#22C55E', 0.2) 
+                                    : alpha('#F59E0B', 0.2);
+                                })(),
+                                color: (() => {
+                                  // Status color based on load capacity for transformers
+                                  if (selectedAsset.type === 'transformer' && selectedAsset.load_percent !== undefined) {
+                                    if (selectedAsset.load_percent > 85) return '#EF4444';
+                                    if (selectedAsset.load_percent > 70) return '#FBBF24';
+                                    return '#22C55E';
+                                  }
+                                  // Substations: map Postgres status to colors
+                                  if (selectedAsset.type === 'substation' && selectedAsset.status) {
+                                    const statusLower = selectedAsset.status.toLowerCase();
+                                    if (statusLower === 'critical') return '#EF4444';
+                                    if (statusLower === 'warning') return '#FBBF24';
+                                    if (statusLower === 'good') return '#22C55E';
+                                  }
+                                  // Status color based on health score for other assets
+                                  if (selectedAsset.health_score !== undefined && selectedAsset.health_score !== null) {
+                                    if (selectedAsset.health_score < 60) return '#EF4444';
+                                    if (selectedAsset.health_score < 80) return '#FBBF24';
+                                    return '#22C55E';
+                                  }
+                                  // Fallback: status string-based coloring
+                                  return selectedAsset.status.includes('Operational') || selectedAsset.status.includes('Active') || 
+                                         selectedAsset.status.includes('Connected') || selectedAsset.status.includes('Healthy') ||
+                                         selectedAsset.status.includes('Good') || selectedAsset.status.includes('Excellent')
+                                    ? '#22C55E' 
+                                    : '#F59E0B';
+                                })(),
+                                fontWeight: 700
+                              }} 
+                            />
+                          </Box>
+                        )}
+
+                        {selectedAsset.last_maintenance && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">Last Maintenance</Typography>
+                            <Typography variant="body2">{selectedAsset.last_maintenance}</Typography>
+                          </Box>
+                        )}
+
+                        {selectedAsset.commissioned_date && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">Commissioned</Typography>
+                            <Typography variant="body2">
+                              {selectedAsset.commissioned_date}
+                              {(() => {
+                                try {
+                                  const commissionedYear = new Date(selectedAsset.commissioned_date).getFullYear();
+                                  const currentYear = new Date().getFullYear();
+                                  const age = currentYear - commissionedYear;
+                                  return age > 0 ? ` (${age} years old)` : '';
+                                } catch {
+                                  return '';
+                                }
+                              })()}
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {selectedAsset.type === 'pole' && selectedAsset.pole_height_ft && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">Pole Height</Typography>
+                            <Typography variant="body2" sx={{ color: '#8880ff', fontWeight: 600 }}>
+                              {selectedAsset.pole_height_ft} ft
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {selectedAsset.type !== 'aggregate' && (
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">Coordinates</Typography>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 11 }}>
+                              {selectedAsset.latitude.toFixed(6)}, {selectedAsset.longitude.toFixed(6)}
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {/* Connected Assets Section - Show connected grid infrastructure */}
+                        {selectedAsset.type !== 'aggregate' && (() => {
+                          // Find all connected assets via topology
+                          const connectedAssetIds = new Set<string>();
+                          topology.forEach(link => {
+                            if (link.from_asset_id === selectedAsset.id) {
+                              connectedAssetIds.add(link.to_asset_id);
+                            }
+                            if (link.to_asset_id === selectedAsset.id) {
+                              connectedAssetIds.add(link.from_asset_id);
+                            }
+                          });
+
+                          // Retrieve full asset objects
+                          const connectedAssets = assets.filter(a => connectedAssetIds.has(a.id));
+                          
+                          // Group by asset type
+                          const groupedAssets = {
+                            substation: connectedAssets.filter(a => a.type?.toLowerCase() === 'substation'),
+                            transformer: connectedAssets.filter(a => a.type?.toLowerCase() === 'transformer'),
+                            pole: connectedAssets.filter(a => a.type?.toLowerCase() === 'pole'),
+                            meter: connectedAssets.filter(a => a.type?.toLowerCase() === 'meter')
+                          };
+
+                          const totalConnected = connectedAssets.length;
+                          if (totalConnected === 0) return null;
+
+                          return (
+                            <Box>
+                              <Box 
+                                display="flex" 
+                                justifyContent="space-between" 
+                                alignItems="center"
+                                sx={{ cursor: 'pointer', mb: 1 }}
+                                onClick={() => setExpandedSections(prev => ({ ...prev, connected: !prev.connected }))}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Hub sx={{ fontSize: 16, color: 'text.secondary' }} />
+                                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                    CONNECTED ASSETS
+                                  </Typography>
+                                </Stack>
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Chip label={totalConnected} size="small" sx={{ height: 20, fontSize: 10, fontWeight: 700 }} />
+                                  <IconButton size="small">
+                                    {expandedSections.connected ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+                                  </IconButton>
+                                </Stack>
+                              </Box>
+
+                              <Collapse in={expandedSections.connected}>
+                                <Stack spacing={1} mt={1}>
+                                  {/* Substations */}
+                                  {groupedAssets.substation.length > 0 && (
+                                    <Paper sx={{ p: 1, bgcolor: alpha('#00C8FF', 0.05) }}>
+                                      <Typography variant="caption" fontWeight={600} sx={{ color: '#00C8FF', mb: 0.5, display: 'block' }}>
+                                        Substations ({groupedAssets.substation.length})
+                                      </Typography>
+                                      <Stack spacing={0.5} sx={{ maxHeight: 120, overflowY: 'auto' }}>
+                                        {groupedAssets.substation.map((asset: any) => (
+                                          <Paper 
+                                            key={asset.id}
+                                            sx={{ 
+                                              p: 0.75, 
+                                              bgcolor: alpha('#00C8FF', 0.08),
+                                              cursor: 'pointer',
+                                              '&:hover': {
+                                                bgcolor: COLORS.substation.chip,
+                                                transform: 'translateX(4px)',
+                                                transition: 'all 0.2s'
+                                              }
+                                            }}
+                                            onClick={() => {
+                                              flyToAsset(asset.longitude, asset.latitude, 13.5);
+                                              setSelectedAsset(asset);
+                                            }}
+                                          >
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                              <Typography variant="caption" fontWeight={600} color="#00C8FF" sx={{ fontSize: 10 }}>
+                                                {asset.name || asset.id}
+                                              </Typography>
+                                              <MyLocation sx={{ fontSize: 10, color: alpha('#00C8FF', 0.5) }} />
+                                            </Stack>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Paper>
+                                  )}
+
+                                  {/* Transformers */}
+                                  {groupedAssets.transformer.length > 0 && (
+                                    <Paper sx={{ p: 1, bgcolor: alpha('#EC4899', 0.05) }}>
+                                      <Typography variant="caption" fontWeight={600} sx={{ color: '#EC4899', mb: 0.5, display: 'block' }}>
+                                        Transformers ({groupedAssets.transformer.length})
+                                      </Typography>
+                                      <Stack spacing={0.5} sx={{ maxHeight: 120, overflowY: 'auto' }}>
+                                        {groupedAssets.transformer.map((asset: any) => (
+                                          <Paper 
+                                            key={asset.id}
+                                            sx={{ 
+                                              p: 0.75, 
+                                              bgcolor: alpha('#EC4899', 0.08),
+                                              cursor: 'pointer',
+                                              '&:hover': {
+                                                bgcolor: COLORS.transformer.chip,
+                                                transform: 'translateX(4px)',
+                                                transition: 'all 0.2s'
+                                              }
+                                            }}
+                                            onClick={() => {
+                                              flyToAsset(asset.longitude, asset.latitude, 13.5);
+                                              setSelectedAsset(asset);
+                                            }}
+                                          >
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                              <Typography variant="caption" fontWeight={600} color="#EC4899" sx={{ fontSize: 10 }}>
+                                                {asset.name || asset.id}
+                                              </Typography>
+                                              <MyLocation sx={{ fontSize: 10, color: alpha('#EC4899', 0.5) }} />
+                                            </Stack>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Paper>
+                                  )}
+
+                                  {/* Poles */}
+                                  {groupedAssets.pole.length > 0 && (
+                                    <Paper sx={{ p: 1, bgcolor: alpha('#8880ff', 0.05) }}>
+                                      <Typography variant="caption" fontWeight={600} sx={{ color: '#8880ff', mb: 0.5, display: 'block' }}>
+                                        Poles ({groupedAssets.pole.length})
+                                      </Typography>
+                                      <Stack spacing={0.5} sx={{ maxHeight: 120, overflowY: 'auto' }}>
+                                        {groupedAssets.pole.map((asset: any) => (
+                                          <Paper 
+                                            key={asset.id}
+                                            sx={{ 
+                                              p: 0.75, 
+                                              bgcolor: alpha('#8880ff', 0.08),
+                                              cursor: 'pointer',
+                                              '&:hover': {
+                                                bgcolor: COLORS.pole.chip,
+                                                transform: 'translateX(4px)',
+                                                transition: 'all 0.2s'
+                                              }
+                                            }}
+                                            onClick={() => {
+                                              flyToAsset(asset.longitude, asset.latitude, 14);
+                                              setSelectedAsset(asset);
+                                            }}
+                                          >
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                              <Typography variant="caption" fontWeight={600} color="#8880ff" sx={{ fontSize: 10 }}>
+                                                {asset.name || asset.id}
+                                              </Typography>
+                                              <MyLocation sx={{ fontSize: 10, color: alpha('#8880ff', 0.5) }} />
+                                            </Stack>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Paper>
+                                  )}
+
+                                  {/* Meters */}
+                                  {groupedAssets.meter.length > 0 && (
+                                    <Paper sx={{ p: 1, bgcolor: alpha('#9333EA', 0.05) }}>
+                                      <Typography variant="caption" fontWeight={600} sx={{ color: '#9333EA', mb: 0.5, display: 'block' }}>
+                                        Meters ({groupedAssets.meter.length})
+                                      </Typography>
+                                      <Stack spacing={0.5} sx={{ maxHeight: 120, overflowY: 'auto' }}>
+                                        {groupedAssets.meter.map((asset: any) => (
+                                          <Paper 
+                                            key={asset.id}
+                                            sx={{ 
+                                              p: 0.75, 
+                                              bgcolor: alpha('#9333EA', 0.08),
+                                              cursor: 'pointer',
+                                              '&:hover': {
+                                                bgcolor: COLORS.meter.chip,
+                                                transform: 'translateX(4px)',
+                                                transition: 'all 0.2s'
+                                              }
+                                            }}
+                                            onClick={() => {
+                                              flyToAsset(asset.longitude, asset.latitude, 14.5);
+                                              setSelectedAsset(asset);
+                                            }}
+                                          >
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                              <Box sx={{ flex: 1 }}>
+                                                <Typography variant="caption" fontWeight={600} color="#9333EA" sx={{ fontSize: 10 }}>
+                                                  {asset.name || asset.id}
+                                                </Typography>
+                                                <Typography variant="caption" display="block" color="text.secondary" sx={{ fontSize: 8 }}>
+                                                  {asset.customer_segment || 'N/A'}
+                                                </Typography>
+                                              </Box>
+                                              <MyLocation sx={{ fontSize: 10, color: alpha('#9333EA', 0.5) }} />
+                                            </Stack>
+                                          </Paper>
+                                        ))}
+                                      </Stack>
+                                    </Paper>
+                                  )}
+                                </Stack>
+                              </Collapse>
+                            </Box>
+                          );
+                        })()}
+                      </Stack>
+                      </Paper>
+                    </Fade>
+                  );
+                })()}
+
+                {hoveredAsset && hoverPosition && (
+                  <Fade in timeout={150}>
+                    <Paper
+                      elevation={12}
+                      sx={{
+                        position: 'absolute',
+                        left: hoverPosition.x + 15,
+                        top: hoverPosition.y + 15,
+                        pointerEvents: 'none',
+                        bgcolor: 'rgba(15, 23, 42, 0.6)',
+                        backdropFilter: 'blur(20px)',
+                        border: `2px solid ${
+                          hoveredAsset.type === 'substation' ? 'rgba(0, 200, 255, 0.6)' :
+                          hoveredAsset.type === 'transformer' ? 'rgba(236, 72, 153, 0.6)' :
+                          hoveredAsset.type === 'pole' ? 'rgba(136, 128, 255, 0.6)' :
+                          'rgba(147, 51, 234, 0.6)'
+                        }`,
+                        borderRadius: 2,
+                        p: 1.5,
+                        minWidth: 220,
+                        maxWidth: 280,
+                        zIndex: 10000,
+                        boxShadow: `0 8px 32px ${
+                          hoveredAsset.type === 'substation' ? 'rgba(0, 200, 255, 0.2)' :
+                          hoveredAsset.type === 'transformer' ? 'rgba(236, 72, 153, 0.2)' :
+                          hoveredAsset.type === 'pole' ? 'rgba(136, 128, 255, 0.2)' :
+                          'rgba(147, 51, 234, 0.2)'
+                        }`
+                      }}
+                    >
+                      {/* Status Badge - Top Right */}
+                      {hoveredAsset.status && (
+                        <Chip 
+                          label={hoveredAsset.status}
+                          size="small"
+                          sx={{ 
+                            position: 'absolute',
+                            top: 8,
+                            right: 8,
+                            height: 20,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            bgcolor: hoveredAsset.status.includes('Operational') || hoveredAsset.status.includes('Active') || 
+                                     hoveredAsset.status.includes('Connected') || hoveredAsset.status.includes('Healthy') ||
+                                     hoveredAsset.status.includes('Good') || hoveredAsset.status.includes('Excellent')
+                              ? 'rgba(34, 197, 94, 0.2)' : 'rgba(245, 158, 11, 0.2)',
+                            color: hoveredAsset.status.includes('Operational') || hoveredAsset.status.includes('Active') || 
+                                   hoveredAsset.status.includes('Connected') || hoveredAsset.status.includes('Healthy') ||
+                                   hoveredAsset.status.includes('Good') || hoveredAsset.status.includes('Excellent')
+                              ? '#22C55E' : '#F59E0B',
+                            textTransform: 'capitalize',
+                            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)'
+                          }}
+                        />
+                      )}
+                      <Stack spacing={0.75} divider={<Divider sx={{ borderColor: 'rgba(255,255,255,0.1)' }} />}>
+                        {hoveredAsset.type === 'substation' && (
+                          <>
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Asset Type</Typography>
+                              <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, textTransform: 'capitalize', color: '#00C8FF' }}>
+                                {hoveredAsset.type}
+                              </Typography>
+                            </Box>
+                            {hoveredAsset.name && hoveredAsset.name !== hoveredAsset.id && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Name</Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3 }}>
+                                  {hoveredAsset.name}
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Asset ID</Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
+                                {hoveredAsset.id}
+                              </Typography>
+                            </Box>
+                            {hoveredAsset.voltage && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Voltage</Typography>
+                                <Typography variant="body2" sx={{ color: '#3b82f6', fontWeight: 700, fontSize: 13 }}>
+                                  {hoveredAsset.voltage}
+                                </Typography>
+                              </Box>
+                            )}
+                            {hoveredAsset.commissioned_date && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Commissioned</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 10, color: 'rgba(255,255,255,0.7)' }}>
+                                  {hoveredAsset.commissioned_date}
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Coordinates</Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.6)' }}>
+                                {hoveredAsset.latitude.toFixed(6)}, {hoveredAsset.longitude.toFixed(6)}
+                              </Typography>
+                            </Box>
+                          </>
+                        )}
+                        
+                        {hoveredAsset.type === 'transformer' && (
+                          <>
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Asset Type</Typography>
+                              <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, textTransform: 'capitalize', color: '#EC4899' }}>
+                                {hoveredAsset.type}
+                              </Typography>
+                            </Box>
+                            {hoveredAsset.name && hoveredAsset.name !== hoveredAsset.id && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Name</Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3 }}>
+                                  {hoveredAsset.name}
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Asset ID</Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
+                                {hoveredAsset.id}
+                              </Typography>
+                            </Box>
+                            {hoveredAsset.load_percent !== undefined && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Load Capacity</Typography>
+                                <Typography variant="h6" sx={{ 
+                                  color: hoveredAsset.load_percent > 85 ? '#EF4444' : hoveredAsset.load_percent > 70 ? '#FBBF24' : '#22C55E',
+                                  fontWeight: 800,
+                                  fontSize: 18,
+                                  lineHeight: 1
+                                }}>
+                                  {hoveredAsset.load_percent}%
+                                </Typography>
+                              </Box>
+                            )}
+                            {hoveredAsset.commissioned_date && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Commissioned</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 10, color: 'rgba(255,255,255,0.7)' }}>
+                                  {hoveredAsset.commissioned_date}
+                                </Typography>
+                              </Box>
+                            )}
+                            {hoveredAsset.voltage && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Voltage</Typography>
+                                <Typography variant="body2" sx={{ color: '#3b82f6', fontSize: 11 }}>
+                                  {hoveredAsset.voltage}
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Coordinates</Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.6)' }}>
+                                {hoveredAsset.latitude.toFixed(6)}, {hoveredAsset.longitude.toFixed(6)}
+                              </Typography>
+                            </Box>
+                          </>
+                        )}
+                        
+                        {hoveredAsset.type === 'meter' && (
+                          <>
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Asset Type</Typography>
+                              <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, textTransform: 'capitalize', color: '#9333EA' }}>
+                                {hoveredAsset.type}
+                              </Typography>
+                            </Box>
+                            {hoveredAsset.name && hoveredAsset.name !== hoveredAsset.id && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Name</Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3 }}>
+                                  {hoveredAsset.name}
+                                </Typography>
+                              </Box>
+                            )}
+                            {hoveredAsset.usage_kwh !== undefined && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Usage</Typography>
+                                <Typography variant="h6" sx={{ color: '#10b981', fontWeight: 800, fontSize: 16, lineHeight: 1 }}>
+                                  {hoveredAsset.usage_kwh} kWh
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Asset ID</Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
+                                {hoveredAsset.id}
+                              </Typography>
+                            </Box>
+                            {hoveredAsset.last_maintenance && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Last Maintenance</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 10, color: 'rgba(255,255,255,0.7)' }}>
+                                  {hoveredAsset.last_maintenance}
+                                </Typography>
+                              </Box>
+                            )}
+                            {hoveredAsset.commissioned_date && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Commissioned</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 10, color: 'rgba(255,255,255,0.7)' }}>
+                                  {hoveredAsset.commissioned_date}
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Coordinates</Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.6)' }}>
+                                {hoveredAsset.latitude.toFixed(6)}, {hoveredAsset.longitude.toFixed(6)}
+                              </Typography>
+                            </Box>
+                          </>
+                        )}
+                        
+                        {hoveredAsset.type === 'pole' && (
+                          <>
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Asset Type</Typography>
+                              <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, textTransform: 'capitalize', color: '#8880FF' }}>
+                                {hoveredAsset.type}
+                              </Typography>
+                            </Box>
+                            {hoveredAsset.name && hoveredAsset.name !== hoveredAsset.id && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Name</Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3 }}>
+                                  {hoveredAsset.name}
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Asset ID</Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
+                                {hoveredAsset.id}
+                              </Typography>
+                            </Box>
+                            {hoveredAsset.health_score !== undefined && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Health Score</Typography>
+                                <Typography variant="h6" sx={{ 
+                                  color: hoveredAsset.health_score > 80 ? '#22C55E' : hoveredAsset.health_score > 50 ? '#FBBF24' : '#EF4444', 
+                                  fontWeight: 800,
+                                  fontSize: 18,
+                                  lineHeight: 1
+                                }}>
+                                  {hoveredAsset.health_score}%
+                                </Typography>
+                              </Box>
+                            )}
+                            {hoveredAsset.pole_height_ft !== undefined && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Height</Typography>
+                                <Typography variant="body2" sx={{ color: '#3b82f6', fontSize: 11 }}>
+                                  {hoveredAsset.pole_height_ft} ft
+                                </Typography>
+                              </Box>
+                            )}
+                            {hoveredAsset.commissioned_date && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Commissioned</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 10, color: 'rgba(255,255,255,0.7)' }}>
+                                  {hoveredAsset.commissioned_date}
+                                </Typography>
+                              </Box>
+                            )}
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Coordinates</Typography>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.6)' }}>
+                                {hoveredAsset.latitude.toFixed(6)}, {hoveredAsset.longitude.toFixed(6)}
+                              </Typography>
+                            </Box>
+                          </>
+                        )}
+                      </Stack>
+                    </Paper>
+                  </Fade>
+                )}
+
+              </Box>
+            </>
+          </Box>
+
+          {/* Other Tabs - Tab-specific skeleton loaders */}
+          {currentTab > 0 && (
+            <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', p: 4, gap: 3, overflow: 'auto' }}>
+              <Typography variant="h4" sx={{ color: '#29B5E8', fontWeight: 300, mb: 1 }}>
+                {['Network Topology', 'Asset Health', 'AMI Analytics', 'Outage Management'][currentTab - 1]}
+              </Typography>
+              
+              {/* Tab-specific layouts */}
+              {currentTab === 1 && (
+                // Network Topology - Graph visualization skeleton
+                <Box sx={{ display: 'flex', gap: 3, height: '100%' }}>
+                  <Card sx={{ flex: 2, bgcolor: 'rgba(41, 181, 232, 0.03)', border: '1px solid rgba(41, 181, 232, 0.1)' }}>
+                    <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <Box sx={{ display: 'flex', gap: 2 }}>
+                        <Box sx={{ height: 32, width: 120, bgcolor: 'rgba(41, 181, 232, 0.15)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite' }} />
+                        <Box sx={{ height: 32, width: 100, bgcolor: 'rgba(41, 181, 232, 0.15)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: '0.2s' }} />
+                      </Box>
+                      <Box sx={{ flexGrow: 1, bgcolor: 'rgba(41, 181, 232, 0.08)', borderRadius: 2, position: 'relative', overflow: 'hidden' }}>
+                        <Box sx={{ position: 'absolute', top: '30%', left: '20%', width: 60, height: 60, bgcolor: 'rgba(41, 181, 232, 0.3)', borderRadius: '50%', animation: 'pulse 2s ease-in-out infinite' }} />
+                        <Box sx={{ position: 'absolute', top: '50%', right: '25%', width: 50, height: 50, bgcolor: 'rgba(6, 182, 212, 0.3)', borderRadius: '50%', animation: 'pulse 2s ease-in-out infinite', animationDelay: '0.3s' }} />
+                        <Box sx={{ position: 'absolute', bottom: '25%', left: '40%', width: 55, height: 55, bgcolor: 'rgba(14, 165, 233, 0.3)', borderRadius: '50%', animation: 'pulse 2s ease-in-out infinite', animationDelay: '0.6s' }} />
+                      </Box>
+                    </CardContent>
+                  </Card>
+                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {[0, 1, 2].map((i) => (
+                      <Card key={i} sx={{ bgcolor: 'rgba(6, 182, 212, 0.03)', border: '1px solid rgba(6, 182, 212, 0.1)' }}>
+                        <CardContent>
+                          <Box sx={{ height: 16, width: '70%', bgcolor: 'rgba(6, 182, 212, 0.2)', borderRadius: 1, mb: 2, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.2}s` }} />
+                          <Box sx={{ height: 40, width: '100%', bgcolor: 'rgba(6, 182, 212, 0.1)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.2 + 0.1}s` }} />
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </Box>
+                </Box>
+              )}
+              
+              {currentTab === 2 && (
+                // Asset Health - Card grid skeleton
+                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 3 }}>
+                  {[0, 1, 2, 3, 4, 5].map((i) => (
+                    <Card key={i} sx={{ bgcolor: 'rgba(34, 197, 94, 0.03)', border: '1px solid rgba(34, 197, 94, 0.1)' }}>
+                      <CardContent>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
+                          <Box sx={{ height: 20, width: '60%', bgcolor: 'rgba(34, 197, 94, 0.2)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.1}s` }} />
+                          <Box sx={{ height: 20, width: 50, bgcolor: 'rgba(34, 197, 94, 0.3)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.1 + 0.1}s` }} />
+                        </Box>
+                        <Box sx={{ height: 80, width: '100%', bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 1, mb: 2, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.1 + 0.2}s` }} />
+                        <Box sx={{ height: 16, width: '40%', bgcolor: 'rgba(34, 197, 94, 0.15)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.1 + 0.3}s` }} />
+                      </CardContent>
+                    </Card>
+                  ))}
+                </Box>
+              )}
+              
+              {currentTab === 3 && (
+                // AMI Analytics - Table skeleton
+                <Card sx={{ bgcolor: 'rgba(251, 191, 36, 0.03)', border: '1px solid rgba(251, 191, 36, 0.1)' }}>
+                  <CardContent>
+                    <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
+                      <Box sx={{ height: 32, width: 150, bgcolor: 'rgba(251, 191, 36, 0.2)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite' }} />
+                      <Box sx={{ height: 32, width: 120, bgcolor: 'rgba(251, 191, 36, 0.15)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: '0.2s' }} />
+                    </Box>
+                    {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+                      <Box key={i} sx={{ display: 'flex', gap: 2, mb: 1.5 }}>
+                        <Box sx={{ height: 40, flex: 1, bgcolor: 'rgba(251, 191, 36, 0.1)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.1}s` }} />
+                        <Box sx={{ height: 40, flex: 1, bgcolor: 'rgba(251, 191, 36, 0.08)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.1 + 0.1}s` }} />
+                        <Box sx={{ height: 40, flex: 1, bgcolor: 'rgba(251, 191, 36, 0.12)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.1 + 0.2}s` }} />
+                      </Box>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+              
+              {currentTab === 4 && (
+                // Outage Management - Map + list skeleton
+                <Box sx={{ display: 'flex', gap: 3, height: '100%' }}>
+                  <Card sx={{ flex: 3, bgcolor: 'rgba(239, 68, 68, 0.03)', border: '1px solid rgba(239, 68, 68, 0.1)' }}>
+                    <CardContent sx={{ height: '100%' }}>
+                      <Box sx={{ height: '100%', bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, position: 'relative' }}>
+                        {[0, 1, 2, 3].map((i) => (
+                          <Box key={i} sx={{ 
+                            position: 'absolute', 
+                            top: `${20 + i * 20}%`, 
+                            left: `${15 + i * 20}%`, 
+                            width: 40, 
+                            height: 40, 
+                            bgcolor: 'rgba(239, 68, 68, 0.4)', 
+                            borderRadius: '50%', 
+                            animation: 'pulse 2s ease-in-out infinite',
+                            animationDelay: `${i * 0.3}s`
+                          }} />
+                        ))}
+                      </Box>
+                    </CardContent>
+                  </Card>
+                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {[0, 1, 2, 3, 4].map((i) => (
+                      <Card key={i} sx={{ bgcolor: 'rgba(239, 68, 68, 0.03)', border: '1px solid rgba(239, 68, 68, 0.1)' }}>
+                        <CardContent sx={{ py: 1.5 }}>
+                          <Box sx={{ height: 16, width: '80%', bgcolor: 'rgba(239, 68, 68, 0.2)', borderRadius: 1, mb: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.15}s` }} />
+                          <Box sx={{ height: 12, width: '50%', bgcolor: 'rgba(239, 68, 68, 0.15)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.15 + 0.1}s` }} />
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </Box>
+                </Box>
+              )}
+              
+              <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', mt: 2, fontStyle: 'italic' }}>
+                Coming Soon - Feature
+              </Typography>
+            </Box>
+          )}
+        </Box>
+
+      </Box>
+    </ThemeProvider>
+  );
+}
+
+export default App;

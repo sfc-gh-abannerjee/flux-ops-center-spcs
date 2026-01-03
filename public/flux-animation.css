@@ -1,0 +1,155 @@
+/* Flux Spinner Animation */
+
+@keyframes fluxSpin {
+    0% {
+        transform: rotate(0deg) scale(0.8);
+        filter: drop-shadow(0 0 7.5px #0ea5e9) brightness(1);
+    }
+
+    7.5% {
+        transform: rotate(27deg) scale(0.9);
+        filter: drop-shadow(0 0 15px #0ea5e9) brightness(1.1700000000000002);
+    }
+
+    12.5% {
+        transform: rotate(45deg) scale(0.9);
+        filter: drop-shadow(0 0 15px #0ea5e9) brightness(1.1700000000000002);
+    }
+
+    17.5% {
+        transform: rotate(63deg) scale(0.9);
+        filter: drop-shadow(0 0 15px #0ea5e9) brightness(1.1700000000000002);
+    }
+
+    25% {
+        transform: rotate(94.5deg) scale(1);
+        filter: drop-shadow(0 0 15px #0ea5e9) brightness(1.105);
+    }
+
+    35% {
+        transform: rotate(90deg) scale(1);
+        filter: drop-shadow(0 0 15px #0ea5e9) brightness(1.105);
+    }
+
+    50% {
+        transform: rotate(184.5deg) scale(0.8);
+        filter: drop-shadow(0 0 25px #fbbf24) brightness(1.3);
+    }
+
+    60% {
+        transform: rotate(180deg) scale(0.8);
+        filter: drop-shadow(0 0 25px #fbbf24) brightness(1.2349999999999999);
+    }
+
+    75% {
+        transform: rotate(274.5deg) scale(1);
+        filter: drop-shadow(0 0 25px #fbbf24) brightness(1.105);
+    }
+
+    85% {
+        transform: rotate(270deg) scale(1);
+        filter: drop-shadow(0 0 15px #0ea5e9) brightness(1.105);
+    }
+
+    100% {
+        transform: rotate(360deg) scale(0.8);
+        filter: drop-shadow(0 0 7.5px #0ea5e9) brightness(1);
+    }
+}
+
+@keyframes fluxSlowdown {
+    0% {
+        transform: rotate(0deg) scale(0.8);
+        filter: drop-shadow(0 0 7.5px #0ea5e9) brightness(1);
+        animation-timing-function: cubic-bezier(0.2, 0.8, 0.4, 1);
+    }
+    33% {
+        transform: rotate(90deg) scale(0.85);
+        filter: drop-shadow(0 0 5px #0ea5e9) brightness(1);
+        animation-timing-function: cubic-bezier(0.3, 0.9, 0.5, 1);
+    }
+    66% {
+        transform: rotate(150deg) scale(0.9);
+        filter: drop-shadow(0 0 3px #0ea5e9) brightness(1);
+        animation-timing-function: cubic-bezier(0.4, 0.95, 0.6, 1);
+    }
+    100% {
+        transform: rotate(180deg) scale(1);
+        filter: drop-shadow(0 0 4px rgba(41, 181, 232, 0.3)) brightness(1.02);
+    }
+}
+
+
+.flux-spinner {
+    width: 200px;
+    height: 200px;
+    object-fit: contain;
+    animation: fluxSpin 2.9s ease-in-out infinite;
+    animation-play-state: running;
+}
+
+.flux-logo {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+    filter: drop-shadow(0 0 4px rgba(41, 181, 232, 0.3)) brightness(1.02);
+    will-change: transform, filter;
+    animation: fluxGlow 2.5s ease-in-out infinite;
+}
+
+.flux-logo.loading {
+    animation: fluxSpin 2.9s ease-in-out infinite !important;
+}
+
+.flux-logo.slowing-down {
+    animation: fluxSlowdown 1.5s cubic-bezier(0.2, 0.8, 0.5, 1) forwards !important;
+}
+
+/* Animated Gradient for Title */
+@keyframes fluxGradientShift {
+    0% {
+        background-position: 0% 50%;
+    }
+    50% {
+        background-position: 100% 50%;
+    }
+    100% {
+        background-position: 0% 50%;
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.6;
+    }
+}
+
+@keyframes orangeGlow {
+    0%, 100% {
+        filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.5)) brightness(1.05);
+    }
+    50% {
+        filter: drop-shadow(0 0 14px rgba(251, 191, 36, 0.8)) brightness(1.1);
+    }
+}
+
+@keyframes fluxGlow {
+    0%, 100% {
+        filter: drop-shadow(0 0 4px rgba(41, 181, 232, 0.3)) brightness(1.02);
+    }
+    50% {
+        filter: drop-shadow(0 0 8px rgba(41, 181, 232, 0.5)) brightness(1.04);
+    }
+}
+
+.flux-gradient-text {
+    background: linear-gradient(135deg, #29B5E8 0%, #FF9F36 25%, #29B5E8 50%, #FF9F36 75%, #29B5E8 100%);
+    background-size: 200% 200%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: fluxGradientShift 4s ease infinite;
+}
