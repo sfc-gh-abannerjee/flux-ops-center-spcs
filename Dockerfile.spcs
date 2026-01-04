@@ -21,7 +21,7 @@ RUN echo 'server { \n\
     server_name _; \n\
     \n\
     # CSP headers for SPCS \n\
-    add_header Content-Security-Policy "default-src '\''self'\''; connect-src '\''self'\'' https://*.cartocdn.com https://*.mapbox.com; style-src '\''self'\'' '\''unsafe-inline'\'' https://*.cartocdn.com https://unpkg.com; style-src-elem '\''self'\'' '\''unsafe-inline'\'' https://*.cartocdn.com https://unpkg.com; img-src '\''self'\'' data: https://*.cartocdn.com https://*.mapbox.com blob:; worker-src '\''self'\'' blob:; script-src '\''self'\'' '\''unsafe-eval'\'';" always; \n\
+    add_header Content-Security-Policy "default-src '\''self'\''; connect-src '\''self'\'' https://*.cartocdn.com https://*.mapbox.com; style-src '\''self'\'' '\''unsafe-inline'\'' https://*.cartocdn.com https://*.googleapis.com https://unpkg.com; style-src-elem '\''self'\'' '\''unsafe-inline'\'' https://*.cartocdn.com https://*.googleapis.com https://unpkg.com; font-src '\''self'\'' https://*.gstatic.com https://*.googleapis.com data:; img-src '\''self'\'' data: https://*.cartocdn.com https://*.mapbox.com blob:; worker-src '\''self'\'' blob:; script-src '\''self'\'' '\''unsafe-eval'\'';" always; \n\
     \n\
     # Frontend \n\
     location / { \n\
