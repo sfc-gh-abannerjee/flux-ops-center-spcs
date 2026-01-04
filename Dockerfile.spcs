@@ -45,9 +45,10 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080')"
 
-# Start script
+# Start script - use gunicorn for production stability instead of Flask dev server
 RUN echo '#!/bin/bash\n\
-python /app/backend/server.py &\n\
+cd /app/backend\n\
+gunicorn --bind 127.0.0.1:3001 --workers 4 --timeout 120 --access-logfile - --error-logfile - server:app &\n\
 nginx -g "daemon off;"' > /app/start.sh && chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]

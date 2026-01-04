@@ -1,0 +1,15 @@
+spec:
+  containers:
+  - name: frontend
+    image: /si_demos/applications/flux_ops_center_repo/flux_ops_center:latest
+    env:
+      SNOWFLAKE_WAREHOUSE: SI_DEMO_WH
+      VITE_POSTGRES_HOST: <your_postgres_host>
+      VITE_POSTGRES_PORT: "5432"
+      VITE_POSTGRES_DATABASE: postgres
+      VITE_POSTGRES_USER: application
+      VITE_POSTGRES_PASSWORD: <REDACTED_PASSWORD>
+  endpoints:
+  - name: ui
+    port: 8080
+    public: true

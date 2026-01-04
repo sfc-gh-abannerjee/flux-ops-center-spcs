@@ -3,6 +3,7 @@ flask-cors
 flask-compress
 snowflake-connector-python
 psycopg2-binary
+gunicorn
 matplotlib
 pillow
 numpy
