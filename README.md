@@ -21,12 +21,7 @@ Snowflake Connector (Backend - TODO)
 
 ---
 
-## Demo Screenshots
-
-### Operations Dashboard (Default View)
-![screenshot](/var/folders/.../step_3.png)
-
-**Features Visible:**
+**Features:**
 1. ✅ **Header:** "Flux Operations Center" with Flux blue gradient logo
 2. ✅ **Subtitle:** "Grid Operations • Houston TX • Real-time"
 3. ✅ **6 Navigation Tabs:** Operations Dashboard (active), AMI Analytics, Outage Management, Asset Health, Field Operations, AI Assistant
