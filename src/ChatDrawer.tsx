@@ -166,8 +166,12 @@ export default function ChatDrawer({
       console.log('🚀 Sending agent request:', {
         thread_id: currentThreadId,
         parent_message_id: lastMessageId || 0,
+        has_thread: currentThreadId !== null,
+        is_continuation: lastMessageId !== null,
         query: queryText.substring(0, 60) + '...'
       });
+      
+      console.log(`📊 Current state BEFORE request: threadId=${threadId}, lastMessageId=${lastMessageId}, currentThreadId=${currentThreadId}`);
       
       const response = await fetch(agentEndpoint, {
         method: 'POST',
@@ -288,16 +292,24 @@ export default function ChatDrawer({
                     break;
                     
                   case 'metadata':
-                    // CRITICAL: Capture assistant message ID for thread continuity
-                    // Per Snowflake docs: parent_message_id must be last assistant message ID
+                    // CRITICAL: Capture message IDs for thread continuity
+                    console.log(`📋 Metadata event:`, data);
+                    
+                    if (data.role === 'user' && data.message_id) {
+                      console.log(`👤 User message ID: ${data.message_id}`);
+                    }
+                    
                     if (data.role === 'assistant' && data.message_id) {
-                      console.log(`📝 Thread context: Assistant message ${data.message_id}`);
+                      console.log(`🤖 Assistant message ID: ${data.message_id} - Setting as parent for next turn`);
                       setLastMessageId(data.message_id);
                     }
-                    // Capture thread_id from first response
-                    if (data.thread_id && !threadId) {
-                      console.log(`🧵 Thread created: ${data.thread_id}`);
-                      setThreadId(data.thread_id);
+                    
+                    // Note: metadata event doesn't contain thread_id per Snowflake docs
+                    if (data.thread_id) {
+                      console.log(`⚠️ Unexpected thread_id in metadata: ${data.thread_id}`);
+                      if (!threadId) {
+                        setThreadId(data.thread_id);
+                      }
                     }
                     break;
                 }
