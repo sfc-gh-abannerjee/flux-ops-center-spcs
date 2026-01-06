@@ -15,7 +15,9 @@ import {
   TableHead,
   TableRow,
   Fade,
-  Grow
+  Grow,
+  Modal,
+  Backdrop
 } from '@mui/material';
 import {
   Send,
@@ -24,7 +26,9 @@ import {
   Code,
   TableChart,
   InsertChart,
-  Description
+  Description,
+  Fullscreen,
+  FullscreenExit
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import FormattedMarkdown from './FormattedMarkdown';
@@ -532,6 +536,7 @@ export default function ChatDrawer({
 function MessageBubble({ message }: { message: Message }) {
   const [expandedSql, setExpandedSql] = useState(false);
   const [expandedThinking, setExpandedThinking] = useState(true);
+  const [fullscreenChart, setFullscreenChart] = useState(false);
 
   const isUser = message.role === 'user';
   
@@ -682,6 +687,13 @@ function MessageBubble({ message }: { message: Message }) {
               }}>
                 Chart Visualization
               </Typography>
+              <IconButton
+                size="small"
+                onClick={() => setFullscreenChart(true)}
+                sx={{ ml: 'auto', color: '#0EA5E9' }}
+              >
+                <Fullscreen />
+              </IconButton>
             </Box>
             <Paper
               elevation={2}
@@ -694,10 +706,109 @@ function MessageBubble({ message }: { message: Message }) {
               }}
             >
               <VegaEmbed 
-                spec={message.chart.spec} 
-                actions={false as any}
+                spec={{
+                  ...message.chart.spec,
+                  config: {
+                    ...message.chart.spec.config,
+                    mark: { tooltip: true }
+                  }
+                }}
+                options={{
+                  actions: {
+                    export: { png: true, svg: true },
+                    source: true,
+                    compiled: true,
+                    editor: true
+                  },
+                  tooltip: { theme: 'custom' },
+                  hover: true
+                }}
               />
             </Paper>
+            
+            <Modal
+              open={fullscreenChart}
+              onClose={() => setFullscreenChart(false)}
+              closeAfterTransition
+              slots={{ backdrop: Backdrop }}
+              slotProps={{
+                backdrop: {
+                  timeout: 500,
+                  sx: { backgroundColor: 'rgba(0, 0, 0, 0.8)' }
+                }
+              }}
+            >
+              <Fade in={fullscreenChart}>
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    width: '71vw',
+                    height: '67vh',
+                    bgcolor: 'white',
+                    borderRadius: '12px',
+                    boxShadow: 24,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden'
+                  }}
+                >
+                  <Box sx={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    p: 2,
+                    borderBottom: '1px solid #e5e7eb'
+                  }}>
+                    <Typography variant="h6" sx={{ color: '#0EA5E9', fontWeight: 600 }}>
+                      Chart Visualization
+                    </Typography>
+                    <IconButton
+                      onClick={() => setFullscreenChart(false)}
+                      sx={{ color: '#0EA5E9' }}
+                    >
+                      <Close />
+                    </IconButton>
+                  </Box>
+                  <Box sx={{ 
+                    flex: 1, 
+                    overflow: 'auto',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    p: 2,
+                    '& > div': {
+                      width: '100%',
+                      height: '100%'
+                    }
+                  }}>
+                    <VegaEmbed 
+                      spec={{
+                        ...message.chart.spec,
+                        width: 'container',
+                        height: 'container',
+                        config: {
+                          ...message.chart.spec.config,
+                          mark: { tooltip: true }
+                        }
+                      }}
+                      options={{
+                        actions: {
+                          export: { png: true, svg: true },
+                          source: true,
+                          compiled: true,
+                          editor: true
+                        },
+                        tooltip: { theme: 'custom' },
+                        hover: true
+                      }}
+                    />
+                  </Box>
+                </Box>
+              </Fade>
+            </Modal>
           </Box>
         )}
       </Paper>
