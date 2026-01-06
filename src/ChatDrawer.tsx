@@ -139,9 +139,32 @@ export default function ChatDrawer({
     setMessages(prev => [...prev, currentMessage]);
 
     try {
+      // Create thread if this is the first message
+      let currentThreadId = threadId;
+      if (currentThreadId === null) {
+        console.log('🧵 Creating new thread for conversation...');
+        try {
+          const threadResponse = await fetch('/api/agent/threads/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          });
+          
+          if (threadResponse.ok) {
+            const { thread_id } = await threadResponse.json();
+            console.log(`✅ Thread created: ${thread_id}`);
+            currentThreadId = thread_id;
+            setThreadId(thread_id);
+          } else {
+            console.warn('⚠️ Thread creation failed, continuing without explicit thread');
+          }
+        } catch (threadError) {
+          console.warn('⚠️ Thread creation failed:', threadError);
+        }
+      }
+
       // Log thread context for debugging
       console.log('🚀 Sending agent request:', {
-        thread_id: threadId,
+        thread_id: currentThreadId,
         parent_message_id: lastMessageId || 0,
         query: queryText.substring(0, 60) + '...'
       });
@@ -153,7 +176,7 @@ export default function ChatDrawer({
         },
         body: JSON.stringify({
           query: queryText,
-          thread_id: threadId || undefined,
+          thread_id: currentThreadId || undefined,
           parent_message_id: lastMessageId || 0
         })
       });
