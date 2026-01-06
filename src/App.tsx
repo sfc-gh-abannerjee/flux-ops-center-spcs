@@ -9,16 +9,17 @@ import maplibregl from 'maplibre-gl';
 import { 
   ThemeProvider, createTheme, CssBaseline, Box, AppBar, Toolbar, Typography, 
   Tabs, Tab, Grid, Card, CardContent, Paper, Chip, Stack, IconButton, 
-  Switch, FormControlLabel, Divider, Badge, alpha, Fade, Grow, Collapse, Button, LinearProgress, Tooltip, Fab
+  Switch, FormControlLabel, Divider, Badge, alpha, Fade, Grow, Collapse, Button, LinearProgress, Tooltip
 } from '@mui/material';
 import { 
   ElectricBolt, Assessment, Warning, Engineering, TrendingUp,
   Speed, Memory, NetworkCheck, FilterList, Close, Refresh, ExpandMore, ExpandLess,
   MyLocation, ZoomIn, GridOn, BarChart, PieChart, PushPin, FavoriteOutlined, ElectricMeter,
   Whatshot, WbSunny, Thermostat, Opacity, SkipPrevious, FastRewind, PlayArrow, Pause, 
-  FastForward, SkipNext, Layers, Power, Hub, Psychology
+  FastForward, SkipNext, Layers, Power, Hub
 } from '@mui/icons-material';
 import ChatDrawer from './ChatDrawer';
+import DraggableFab from './DraggableFab';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const theme = createTheme({
@@ -498,7 +499,9 @@ function KPICard({ title, value, subtitle, icon, color, trend, sx }: KPICardProp
 
 function App() {
   const [currentTab, setCurrentTab] = useState(0);
-  const [chatDrawerOpen, setChatDrawerOpen] = useState(false);  // Grid Intelligence Assistant
+  const [chatDrawerOpen, setChatDrawerOpen] = useState(false);
+  const [fabPosition, setFabPosition] = useState({ x: window.innerWidth - 100, y: window.innerHeight - 100 });
+  const [fabSpinning, setFabSpinning] = useState(false);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isSpinning, setIsSpinning] = useState(true);
   const [isSlowingDown, setIsSlowingDown] = useState(false);
@@ -8524,36 +8527,27 @@ function App() {
           )}
         </Box>
 
-        {/* Floating Action Button - Grid Intelligence Assistant */}
-        <Tooltip title="Grid Intelligence Assistant" placement="left">
-          <Fab
-            onClick={() => setChatDrawerOpen(true)}
-            sx={{
-              position: 'fixed',
-              bottom: 24,
-              right: 24,
-              bgcolor: '#29B5E8',
-              color: 'white',
-              width: 56,
-              height: 56,
-              boxShadow: '0 4px 16px rgba(41, 181, 232, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2)',
-              '&:hover': {
-                bgcolor: '#1da3d8',
-                boxShadow: '0 6px 24px rgba(41, 181, 232, 0.5), 0 3px 12px rgba(0, 0, 0, 0.25)',
-                transform: 'scale(1.05)'
-              },
-              transition: 'all 0.2s ease-in-out',
-              zIndex: 1300
-            }}
-          >
-            <Psychology sx={{ fontSize: 28 }} />
-          </Fab>
-        </Tooltip>
+        {/* Draggable FAB - Grid Intelligence Assistant */}
+        <DraggableFab
+          visible={!chatDrawerOpen}
+          spinning={fabSpinning}
+          onPositionChange={setFabPosition}
+          onClick={() => {
+            setFabSpinning(true);
+            setChatDrawerOpen(true);
+            setTimeout(() => setFabSpinning(false), 1000);
+          }}
+        />
 
         {/* Chat Drawer */}
         <ChatDrawer
           open={chatDrawerOpen}
-          onClose={() => setChatDrawerOpen(false)}
+          onClose={() => {
+            setFabSpinning(true);
+            setChatDrawerOpen(false);
+            setTimeout(() => setFabSpinning(false), 1000);
+          }}
+          fabPosition={fabPosition}
           agentEndpoint="/api/agent/stream"
         />
 

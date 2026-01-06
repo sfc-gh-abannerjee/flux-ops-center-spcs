@@ -790,3 +790,211 @@ Ready to proceed with infrastructure setup:
 - Evaluate need for MIN_INSTANCES=2 if high availability becomes critical
 - Consider implementing materialized views for top queries
 - Blue-green deployment pipeline for zero-downtime updates
+
+---
+
+## Grid Intelligence Chat Assistant - UX Improvements (Jan 6, 2026)
+
+### Overview
+Enhanced chat interface based on AI chatbot UX best practices and Snowflake Cortex Agent multi-turn conversation capabilities.
+
+### Changes Implemented ✅
+
+#### 1. **Thinking Process Display (Moved to Top)**
+**Rationale:** Transparency builds trust. Showing AI reasoning process before the answer helps users understand how conclusions were reached.
+
+**Implementation:**
+- Moved thinking process section above main content in message bubble
+- **Expanded by default** (was collapsed) - users see reasoning immediately
+- Visual enhancements:
+  - Purple accent color (`#7C3AED`) with brain emoji 🧠
+  - Left border accent (`3px solid #7C3AED`)
+  - Italic font style to differentiate from main content
+  - Smooth transition animation on expand/collapse
+  - Hover state on chip button
+
+**Files Modified:** `src/ChatDrawer.tsx` lines 484-515
+
+#### 2. **Multi-Turn Conversation Context (Thread Management)**
+**Reference:** [Snowflake Cortex Agent Threading Documentation](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-threads)
+
+**Key Requirements from Snowflake Docs:**
+- First message: `parent_message_id: 0`, omit `thread_id` (API creates thread)
+- Follow-up messages: use **last assistant message ID** as `parent_message_id`
+- Must capture message IDs from metadata events: `{"role":"assistant","message_id":456}`
+- Never use user message ID as parent (API validation error)
+
+**Frontend Changes:**
+- Changed state types: `threadId: number | null`, `lastMessageId: number | null`
+- Send `undefined` for thread_id on first message (not 0)
+- Capture thread_id from first metadata event
+- Always capture assistant message_id for next turn's parent
+- Added debug logging: "🧵 Thread created: {id}", "📝 Thread context: Assistant message {id}"
+
+**Backend Changes:**
+- Properly handle `null`/`undefined` thread_id
+- Only include thread fields when thread_id exists
+- Added logging: "🆕 Starting new conversation", "🔗 Continuing thread X from message Y"
+- Follow exact Snowflake API pattern for payload structure
+
+**Files Modified:**
+- Frontend: `src/ChatDrawer.tsx` lines 74-78, 142-147, 239-251
+- Backend: `backend/server.py` lines 1445-1505
+
+#### 3. **FAB Dragging Improvements**
+**Issues Resolved:**
+- ❌ **Sloppy drag behavior:** Position lagged behind cursor during drag
+- ❌ **Chat overflow:** Chat window could extend past viewport edges
+- ❌ **Incorrect bounds:** Original logic assumed chat appears RIGHT of FAB (actually appears LEFT/ABOVE)
+
+**Solution:**
+- **Separated drag handlers:**
+  - `onDrag`: Real-time position updates (smooth dragging)
+  - `onStop`: Apply viewport constraints (snap to valid position)
+- **Fixed bounds calculation:**
+  ```typescript
+  minX = chatWidth + chatOffset  // Chat must fit to the left
+  maxX = window.innerWidth - fabSize  // FAB must be visible on right
+  minY = chatHeight + chatOffset  // Chat must fit above
+  maxY = window.innerHeight - fabSize  // FAB must be visible at bottom
+  ```
+- **Added ChatDrawer viewport constraints:** Prevents chat from rendering off-screen
+
+**Files Modified:**
+- `src/DraggableFab.tsx` lines 16-44
+- `src/ChatDrawer.tsx` lines 271-286
+
+#### 4. **Enhanced Streaming Feedback**
+**Improvements:**
+- Larger, more prominent loading indicator (18px vs 16px)
+- Two-line status display:
+  - Primary: "Processing your request..." (bright cyan)
+  - Secondary: Thread/message context or "Initializing conversation" (muted gray)
+- Styled container with border, background, and padding
+- Real-time thread visibility during processing
+
+**Files Modified:** `src/ChatDrawer.tsx` lines 383-402
+
+#### 5. **Improved Welcome Message**
+**Enhancements:**
+- H6 title with emoji: "👋 Welcome to Grid Intelligence"
+- Emphasized "Cortex Agent" technology in purple accent color
+- Better typography (line-height 1.6, improved spacing)
+- More engaging copy explaining capabilities
+- Light bulb emoji 💡 for suggestions section
+
+**Files Modified:** `src/ChatDrawer.tsx` lines 341-351
+
+#### 6. **Message Timestamps**
+**Purpose:** Context awareness - users should know when messages were sent.
+
+**Implementation:**
+- Small timestamp label above each message bubble
+- Format: "You • 3:45 PM" or "Assistant • 3:46 PM"
+- Subtle gray color (`#64748b`) to avoid visual clutter
+- Uses browser's locale for time formatting via `toLocaleTimeString()`
+
+**Files Modified:** `src/ChatDrawer.tsx` lines 456-471
+
+### UX Best Practices Applied
+
+Based on research from [Mind the Product - AI Chatbot UX Best Practices](https://www.mindtheproduct.com/deep-dive-ux-best-practices-for-ai-chatbots/):
+
+1. **Effectiveness vs Efficiency Balance**
+   - Show thinking process (effectiveness) but keep it collapsible (efficiency)
+   - Default expanded to build trust, user can hide for speed reading
+
+2. **Transparency & Trust**
+   - Thinking process shows AI reasoning step-by-step
+   - Thread context visible during streaming (users see continuity)
+   - Timestamps provide temporal context for conversation flow
+
+3. **Dynamic Feedback**
+   - Real-time position updates during FAB drag
+   - Streaming status with thread/message tracking
+   - Clear visual states (streaming, complete, error)
+
+4. **Conversational Context**
+   - Proper thread management ensures AI remembers conversation history
+   - Message timestamps help users track conversation chronology
+   - Visual hierarchy (thinking → content → tools) guides natural reading order
+
+### Testing Checklist
+
+#### Thread Context:
+- [ ] First message creates new thread (no thread_id sent to backend)
+- [ ] Backend logs show "🆕 Starting new conversation"
+- [ ] Metadata event provides thread_id and assistant message_id
+- [ ] Second message includes thread_id and parent_message_id
+- [ ] Backend logs show "🔗 Continuing thread X from message Y"
+- [ ] Agent responses reference previous messages in conversation
+
+#### UI/UX:
+- [ ] Thinking process appears at top of assistant message bubbles
+- [ ] Thinking process expanded by default (collapsed = false)
+- [ ] Purple chip with brain emoji 🧠 clearly visible
+- [ ] Timestamps show correct time for each message
+- [ ] FAB drags smoothly in real-time (no lag)
+- [ ] FAB cannot be dragged such that chat goes off-screen
+- [ ] Streaming indicator shows thread context during processing
+- [ ] Welcome message displays on first chat open with no messages
+
+#### Chat Positioning:
+- [ ] Chat always fully visible within viewport
+- [ ] Dragging FAB to viewport edges constrains properly
+- [ ] Chat doesn't overlap FAB when expanded
+- [ ] No horizontal scrolling caused by chat overflow
+
+### Snowflake Cortex Agent Thread Architecture
+
+**Thread Structure:**
+```
+0 -> 1 (user) -> 2 (assistant) -> 3 (user) -> 4 (assistant)
+```
+
+**Forking Support (for alternate conversation paths):**
+```
+0 -> 1 (user) -> 2 (assistant) -> 3 (user) -> 4 (assistant)
+                               -> 5 (user) -> 6 (assistant)
+```
+
+**Frontend State:**
+- `threadId`: Thread UUID from API (null until first metadata event)
+- `lastMessageId`: Last assistant message ID (null until first assistant response)
+- `messages`: Array of all messages with timestamps
+
+**Backend Payload (First Message):**
+```python
+{
+  "messages": [{"role": "user", "content": [...]}],
+  "parent_message_id": 0,
+  "tool_choice": {"type": "auto"}
+}
+```
+
+**Backend Payload (Follow-up Messages):**
+```python
+{
+  "thread_id": 1234,
+  "parent_message_id": 456,  # Last assistant message ID
+  "messages": [{"role": "user", "content": [...]}],
+  "tool_choice": {"type": "auto"}
+}
+```
+
+### References
+1. [Snowflake Cortex Agent Threading Docs](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-threads)
+2. [Mind the Product - Nine UX Best Practices for AI Chatbots](https://www.mindtheproduct.com/deep-dive-ux-best-practices-for-ai-chatbots/)
+3. [Stream - Chat UX Best Practices](https://getstream.io/blog/chat-ux/)
+
+### Future Enhancements
+
+**Potential Improvements:**
+1. Citation display - Show sources for technical manual searches from Cortex Search
+2. Chart rendering - Visualize Vega-Lite specs from Cortex Analyst
+3. Table display - Format SQL results in interactive data grid
+4. Message editing - Allow users to edit/regenerate responses
+5. Thread history - Browse past conversations with persistent storage
+6. Export conversation - Download chat transcript as markdown/PDF
+7. Voice input - Speech-to-text for queries (accessibility)
+8. Dark mode toggle - User preference for theme customization
