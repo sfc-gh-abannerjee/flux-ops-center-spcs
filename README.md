@@ -1,28 +1,4 @@
-# Flux Operations Center - Pure SPCS Architecture
-
-**Status:** ✅ **MVP COMPLETE** - Grid 360-quality UX achieved  
-**Demo:** http://localhost:8081  
-**Build Time:** 2 hours (Phase 1)  
-**Last Updated:** December 28, 2025
-
----
-
-## What We Built
-
-### Grid 360 Replacement - Visual Parity Achieved ✅
-
-**Pure SPCS React Application:**
-- ⚡ **Flux-branded operations center** (dark mode, control center aesthetics)
-- 🗺️ **Multi-layer deck.gl map** (1,700 assets: poles, transformers, meters)
-- 📊 **Real-time KPI dashboard** (SAIDI, SAIFI, outages, load, crews)
-- 🖱️ **Interactive drill-down** (click asset → details panel)
-- 🎨 **Material-UI design system** (professional, Grid 360-quality)
-- 📱 **6-tab navigation** (Operations, AMI, Outage, Asset, Field, AI)
-
-**Competitive Achievement:**
-- **Visual parity with Palantir Grid 360** ($5.75M platform)
-- **Professional UX** (NOT Streamlit-y, NOT chatbot-y)
-- **Production-grade design** (suitable for Fortune 500 demos)
+# Flux Operations Center - SPCS + Snowflake Managed Postgres
 
 ---
 
@@ -45,12 +21,7 @@ Snowflake Connector (Backend - TODO)
 
 ---
 
-## Demo Screenshots
-
-### Operations Dashboard (Default View)
-![screenshot](/var/folders/.../step_3.png)
-
-**Features Visible:**
+**Features:**
 1. ✅ **Header:** "Flux Operations Center" with Flux blue gradient logo
 2. ✅ **Subtitle:** "Grid Operations • Houston TX • Real-time"
 3. ✅ **6 Navigation Tabs:** Operations Dashboard (active), AMI Analytics, Outage Management, Asset Health, Field Operations, AI Assistant
@@ -313,95 +284,3 @@ CREATE SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER
 -- Get public endpoint
 SHOW ENDPOINTS IN SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER;
 ```
-
----
-
-## Competitive Analysis
-
-### Palantir Grid 360 vs Snowflake Flux
-
-| Feature | Palantir Grid 360 | **Snowflake Flux (This App)** |
-|---------|-------------------|-------------------------------|
-| **Visual Quality** | Professional, Blueprint design | **Grid 360 parity achieved** ✅ |
-| **Map Performance** | Good (Gaia add-on $100K/yr) | **Same quality, FREE PostGIS** ✅ |
-| **Time-series** | "Underwhelming" (100M+ rows) | **Sub-5s (11.9B rows)** ✅ |
-| **Real-time Latency** | 5-10 min (batch) | **<2s (OpenFlow CDC)** ✅ |
-| **TCO (3yr)** | $5.75M | **$417K (93% savings)** ✅ |
-| **Implementation** | 6-12 months | **10 weeks** ✅ |
-| **Tech Stack** | Proprietary Foundry | **Standard React + Snowflake** ✅ |
-
----
-
-## Strategic Value (#Assessment)
-
-### Customer Impact
-- ✅ **Visual parity with $5.75M platform** achieved in 2 hours
-- ✅ **Professional demo-ready** for utility leadership
-- ✅ **93% cost savings** story ($417K vs $5.75M)
-
-### Snowflake Product Showcase
-- ✅ **SPCS capability** (React in Snowflake containers)
-- 🔄 **Cortex AI integration** (upcoming tabs 2-6)
-- 🔄 **Hybrid Tables** (real-time outages, <10ms updates)
-- 🔄 **Dynamic Tables** (auto-refresh KPIs)
-- 🔄 **Postgres integration** (sub-1ms asset queries)
-
-### Reusability
-- ✅ **Reference architecture** for 3,000 US utilities
-- ✅ **Production-grade code** (TypeScript, error handling, logging)
-- ✅ **Competitive positioning** (Grid 360 killer battle card)
-
----
-
-## Known Limitations (To Fix in Phase 2)
-
-1. **Synthetic Data:** Currently generating random assets
-   - **Fix:** Connect to real Snowflake tables (Postgres, Hybrid Tables)
-
-2. **No Authentication:** No Snowflake login
-   - **Fix:** Implement OAuth token-based auth
-
-3. **Tabs 2-6 Empty:** Only Operations Dashboard functional
-   - **Fix:** Implement AMI Analytics, Outage Management, etc.
-
-4. **No Real-time Streaming:** KPIs update every 5s via timer
-   - **Fix:** WebSocket connection to Hybrid Tables for <10ms updates
-
-5. **Not Deployed to SPCS:** Running locally
-   - **Fix:** Docker build + SPCS service creation
-
----
-
-## Success Metrics
-
-### Phase 1 (Complete) ✅
-- [x] Grid 360-quality visual design
-- [x] Multi-layer interactive map (1,700 assets)
-- [x] Real-time KPI dashboard (5 metrics)
-- [x] Click-to-drill-down interactions
-- [x] Flux brand consistency
-- [x] 6-tab navigation structure
-
-### Phase 2 (Next) 🔄
-- [ ] Snowflake REST API connector
-- [ ] Real data from Postgres + Hybrid Tables
-- [ ] OAuth authentication
-- [ ] <2s data refresh latency
-- [ ] 10K+ assets rendered
-
-### Phase 3 (Future) ⏳
-- [ ] Docker + SPCS deployment
-- [ ] Public endpoint with SSL
-- [ ] Tabs 2-6 implementation
-- [ ] Load testing (50+ concurrent users)
-- [ ] Reference documentation
-
----
-
-## Contact
-
-**Project:** Snowflake Flux Operations Center (Grid 360 Replacement)  
-**Customer:** Grid Operations (CNP/Daniel)  
-**#Mode:** ACTIVE ⚡  
-**Status:** Phase 1 MVP Complete, Phase 2 Starting  
-**Demo:** http://localhost:8081
