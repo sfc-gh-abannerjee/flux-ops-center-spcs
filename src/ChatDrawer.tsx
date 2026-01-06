@@ -295,20 +295,22 @@ export default function ChatDrawer({
                     // CRITICAL: Capture message IDs for thread continuity
                     console.log(`📋 Metadata event:`, data);
                     
-                    if (data.role === 'user' && data.message_id) {
-                      console.log(`👤 User message ID: ${data.message_id}`);
+                    const metadata = data.metadata || data;
+                    
+                    if (metadata.role === 'user' && metadata.message_id) {
+                      console.log(`👤 User message ID: ${metadata.message_id}`);
                     }
                     
-                    if (data.role === 'assistant' && data.message_id) {
-                      console.log(`🤖 Assistant message ID: ${data.message_id} - Setting as parent for next turn`);
-                      setLastMessageId(data.message_id);
+                    if (metadata.role === 'assistant' && metadata.message_id) {
+                      console.log(`🤖 Assistant message ID: ${metadata.message_id} - Setting as parent for next turn`);
+                      setLastMessageId(metadata.message_id);
                     }
                     
                     // Note: metadata event doesn't contain thread_id per Snowflake docs
-                    if (data.thread_id) {
-                      console.log(`⚠️ Unexpected thread_id in metadata: ${data.thread_id}`);
+                    if (metadata.thread_id) {
+                      console.log(`⚠️ Unexpected thread_id in metadata: ${metadata.thread_id}`);
                       if (!threadId) {
-                        setThreadId(data.thread_id);
+                        setThreadId(metadata.thread_id);
                       }
                     }
                     break;
@@ -693,7 +695,7 @@ function MessageBubble({ message }: { message: Message }) {
             >
               <VegaEmbed 
                 spec={message.chart.spec} 
-                actions={false}
+                actions={false as any}
               />
             </Paper>
           </Box>
