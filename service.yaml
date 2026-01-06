@@ -1,0 +1,31 @@
+spec:
+  containers:
+  - name: frontend
+    image: /si_demos/applications/flux_ops_center_repo/flux_ops_center:latest
+    env:
+      SNOWFLAKE_WAREHOUSE: SI_DEMO_WH
+      VITE_POSTGRES_HOST: <your_postgres_host>
+      VITE_POSTGRES_PORT: "5432"
+      VITE_POSTGRES_DATABASE: postgres
+      VITE_POSTGRES_USER: application
+      VITE_POSTGRES_PASSWORD: <REDACTED_PASSWORD>
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: "2"
+      limits:
+        memory: 4Gi
+        cpu: "4"
+    readinessProbe:
+      port: 8080
+      path: /
+  
+  endpoints:
+  - name: ui
+    port: 8080
+    public: true
+  
+  # High availability: Keep minimum 2 instances always running
+  # This eliminates cold start delays (30-45s) on every restart
+  min_instances: 2
+  max_instances: 5

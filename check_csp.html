@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSP Header Checker</title>
+</head>
+<body>
+    <h1>Checking CSP...</h1>
+    <script>
+        // Try to load external font
+        const link = document.createElement('link');
+        link.href = 'https://fonts.googleapis.com/css2?family=Roboto';
+        link.rel = 'stylesheet';
+        link.onerror = () => console.error('Failed to load font');
+        link.onload = () => console.log('Font loaded successfully');
+        document.head.appendChild(link);
+        
+        // Log any CSP violations
+        document.addEventListener('securitypolicyviolation', (e) => {
+            console.error('CSP Violation:', {
+                blockedURI: e.blockedURI,
+                violatedDirective: e.violatedDirective,
+                originalPolicy: e.originalPolicy
+            });
+        });
+    </script>
+</body>
+</html>
