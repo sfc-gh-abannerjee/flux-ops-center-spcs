@@ -8,3 +8,4 @@ matplotlib
 pillow
 numpy
 scipy
+toml

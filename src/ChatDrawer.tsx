@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   TextField,
@@ -87,6 +88,16 @@ export default function ChatDrawer({
   const [lastMessageId, setLastMessageId] = useState<number | null>(null);
   const [showWelcome, setShowWelcome] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const paperRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  
+  const isDraggingRef = useRef(false);
+  const originPosition = useRef({ x: 0, y: 0 });
+  const startPosition = useRef({ x: 0, y: 0 });
+  const currentPosition = useRef({ x: 0, y: 0 });
+  const rafId = useRef<number | null>(null);
+  const velocityHistory = useRef<Array<{ x: number; y: number; time: number }>>([]);
+  const momentumAnimationRef = useRef<number | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -342,6 +353,211 @@ export default function ChatDrawer({
     handleSend(prompt);
   };
 
+  const calculatePosition = () => {
+    return {
+      x: originPosition.current.x + currentPosition.current.x - startPosition.current.x,
+      y: originPosition.current.y + currentPosition.current.y - startPosition.current.y
+    };
+  };
+
+  const updatePosition = () => {
+    const pos = calculatePosition();
+    if (paperRef.current) {
+      paperRef.current.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0)`;
+    }
+    rafId.current = null;
+  };
+
+  const requestUpdate = () => {
+    if (!rafId.current) {
+      rafId.current = requestAnimationFrame(updatePosition);
+    }
+  };
+
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header || !open) return;
+
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!e.isPrimary || isDraggingRef.current) return;
+      
+      const target = e.target as HTMLElement;
+      if (target.closest('button') || target.closest('[role="button"]')) {
+        return;
+      }
+      
+      e.preventDefault();
+      e.stopPropagation();
+      
+      if (momentumAnimationRef.current) {
+        cancelAnimationFrame(momentumAnimationRef.current);
+        momentumAnimationRef.current = null;
+      }
+      
+      isDraggingRef.current = true;
+      velocityHistory.current = [];
+      
+      if (paperRef.current) {
+        paperRef.current.style.willChange = 'transform';
+        paperRef.current.style.backdropFilter = 'none';
+        paperRef.current.style.webkitBackdropFilter = 'none';
+      }
+      
+      startPosition.current = { x: e.clientX, y: e.clientY };
+      currentPosition.current = { x: e.clientX, y: e.clientY };
+      
+      header.setPointerCapture(e.pointerId);
+      document.addEventListener('pointermove', handlePointerMove, { passive: true });
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!e.isPrimary || !isDraggingRef.current) return;
+      
+      currentPosition.current = { x: e.clientX, y: e.clientY };
+      
+      const pos = calculatePosition();
+      
+      const minX = -(window.innerWidth - chatWidth - constrainedRight);
+      const maxX = constrainedRight;
+      const minY = -(window.innerHeight - chatHeight - constrainedBottom);
+      const maxY = constrainedBottom;
+      
+      const clampedX = Math.max(minX, Math.min(maxX, pos.x));
+      const clampedY = Math.max(minY, Math.min(maxY, pos.y));
+      
+      originPosition.current = { x: clampedX, y: clampedY };
+      startPosition.current = currentPosition.current;
+      
+      velocityHistory.current.push({
+        x: clampedX,
+        y: clampedY,
+        time: Date.now()
+      });
+      
+      if (velocityHistory.current.length > 5) {
+        velocityHistory.current.shift();
+      }
+      
+      requestUpdate();
+    };
+
+    const cleanup = (e: PointerEvent) => {
+      if (!e.isPrimary || !isDraggingRef.current) return;
+      
+      isDraggingRef.current = false;
+      
+      if (paperRef.current) {
+        paperRef.current.style.willChange = 'auto';
+        paperRef.current.style.backdropFilter = 'blur(20px) saturate(180%)';
+        paperRef.current.style.webkitBackdropFilter = 'blur(20px) saturate(180%)';
+      }
+      
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = null;
+      }
+      
+      const finalPos = calculatePosition();
+      originPosition.current = finalPos;
+      
+      let velocityX = 0;
+      let velocityY = 0;
+      
+      if (velocityHistory.current.length >= 2) {
+        const recent = velocityHistory.current[velocityHistory.current.length - 1];
+        const previous = velocityHistory.current[0];
+        const timeDelta = recent.time - previous.time;
+        
+        if (timeDelta > 0) {
+          velocityX = (recent.x - previous.x) / timeDelta * 16;
+          velocityY = (recent.y - previous.y) / timeDelta * 16;
+        }
+      }
+      
+      const friction = 0.94;
+      const minVelocity = 0.3;
+      let lastTimestamp = performance.now();
+      
+      const applyMomentum = (timestamp: number) => {
+        const deltaTime = Math.min((timestamp - lastTimestamp) / 16.667, 2);
+        lastTimestamp = timestamp;
+        
+        const frictionFactor = Math.pow(friction, deltaTime);
+        velocityX *= frictionFactor;
+        velocityY *= frictionFactor;
+        
+        if (Math.abs(velocityX) < minVelocity && Math.abs(velocityY) < minVelocity) {
+          momentumAnimationRef.current = null;
+          return;
+        }
+        
+        const deltaX = (velocityX / 60) * deltaTime;
+        const deltaY = (velocityY / 60) * deltaTime;
+        
+        let newX = originPosition.current.x + deltaX;
+        let newY = originPosition.current.y + deltaY;
+        
+        const minX = -(window.innerWidth - chatWidth - constrainedRight);
+        const maxX = constrainedRight;
+        const minY = -(window.innerHeight - chatHeight - constrainedBottom);
+        const maxY = constrainedBottom;
+        
+        if (newX < minX || newX > maxX) {
+          newX = Math.max(minX, Math.min(maxX, newX));
+          velocityX = 0;
+        }
+        
+        if (newY < minY || newY > maxY) {
+          newY = Math.max(minY, Math.min(maxY, newY));
+          velocityY = 0;
+        }
+        
+        originPosition.current = { x: newX, y: newY };
+        
+        if (paperRef.current) {
+          paperRef.current.style.transform = `translate3d(${newX}px, ${newY}px, 0)`;
+        }
+        
+        if (Math.abs(velocityX) > 0.1 || Math.abs(velocityY) > 0.1) {
+          momentumAnimationRef.current = requestAnimationFrame(applyMomentum);
+        } else {
+          momentumAnimationRef.current = null;
+        }
+      };
+      
+      if (Math.abs(velocityX) > 0.5 || Math.abs(velocityY) > 0.5) {
+        momentumAnimationRef.current = requestAnimationFrame(applyMomentum);
+      }
+      
+      document.removeEventListener('pointermove', handlePointerMove);
+    };
+
+    const releasePointer = (e: PointerEvent) => {
+      if (!e.isPrimary) return;
+      header.releasePointerCapture(e.pointerId);
+    };
+
+    header.addEventListener('pointerdown', handlePointerDown);
+    header.addEventListener('pointerup', releasePointer);
+    header.addEventListener('pointercancel', releasePointer);
+    header.addEventListener('lostpointercapture', cleanup);
+
+    return () => {
+      header.removeEventListener('pointerdown', handlePointerDown);
+      header.removeEventListener('pointerup', releasePointer);
+      header.removeEventListener('pointercancel', releasePointer);
+      header.removeEventListener('lostpointercapture', cleanup);
+      document.removeEventListener('pointermove', handlePointerMove);
+      
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+      }
+      if (momentumAnimationRef.current) {
+        cancelAnimationFrame(momentumAnimationRef.current);
+      }
+    };
+  }, [open]);
+
   if (!open) return null;
 
   const chatWidth = 480;
@@ -358,9 +574,10 @@ export default function ChatDrawer({
   const constrainedBottom = Math.max(chatOffset, Math.min(bottomPosition + chatOffset, window.innerHeight - chatHeight));
   const constrainedRight = Math.max(0, Math.min(rightPosition, window.innerWidth - chatWidth));
 
-  return (
+  return createPortal(
     <Grow in={open} timeout={300}>
       <Paper
+        ref={paperRef}
         elevation={8}
         sx={{
           position: 'fixed',
@@ -370,19 +587,20 @@ export default function ChatDrawer({
           height: chatHeight,
           display: 'flex',
           flexDirection: 'column',
-          // Glassmorphic background
-          bgcolor: 'rgba(15, 23, 42, 0.85)',
+          bgcolor: 'rgba(15, 23, 42, 0.7)',
           backdropFilter: 'blur(20px) saturate(180%)',
           WebkitBackdropFilter: 'blur(20px) saturate(180%)',
           borderRadius: '16px',
           overflow: 'hidden',
           zIndex: 1299,
-          // Enhanced shadow with cyan glow
           boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(14, 165, 233, 0.2), 0 0 40px rgba(14, 165, 233, 0.1)',
           border: '1px solid rgba(51, 65, 85, 0.5)',
+          transform: 'translate3d(0, 0, 0)',
+          cursor: 'default',
         }}
       >
         <Box
+          ref={headerRef}
           sx={{
             display: 'flex',
             alignItems: 'center',
@@ -392,12 +610,23 @@ export default function ChatDrawer({
             bgcolor: 'rgba(15, 23, 42, 0.6)',
             backdropFilter: 'blur(10px)',
             color: '#0EA5E9',
+            cursor: 'grab',
+            userSelect: 'none',
+            touchAction: 'none',
           }}
         >
-          <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '18px' }}>
+          <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '18px', pointerEvents: 'none' }}>
             Grid Intelligence Assistant
           </Typography>
-          <IconButton onClick={onClose} size="small" sx={{ color: 'white' }}>
+          <IconButton 
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }} 
+            onPointerDown={(e) => e.stopPropagation()}
+            size="small" 
+            sx={{ color: 'white', pointerEvents: 'auto', zIndex: 1 }}
+          >
             <Close />
           </IconButton>
         </Box>
@@ -417,7 +646,7 @@ export default function ChatDrawer({
                   👋 Welcome to Grid Intelligence
                 </Typography>
                 <Typography variant="body2" sx={{ mb: 2, color: '#94a3b8', lineHeight: 1.6 }}>
-                  I'm your AI assistant powered by <strong style={{ color: '#7C3AED' }}>Cortex Agent</strong>. I can help you analyze grid operations, energy burden patterns, and equipment performance using available data.
+                  I can help you analyze grid operations, energy burden patterns, and equipment performance using available data.
                 </Typography>
                 <Typography variant="body2" sx={{ mb: 2, color: '#64748b', fontSize: '13px' }}>
                   💡 Try these questions:
@@ -520,8 +749,23 @@ export default function ChatDrawer({
               sx={{
                 bgcolor: '#0EA5E9',
                 color: 'white',
-                '&:hover': { bgcolor: '#0284c7' },
-                '&:disabled': { bgcolor: '#ccc' },
+                width: 40,
+                height: 40,
+                boxShadow: '0 2px 8px rgba(14, 165, 233, 0.3)',
+                transition: 'all 0.2s ease',
+                '&:hover': { 
+                  bgcolor: '#0284c7',
+                  boxShadow: '0 4px 12px rgba(14, 165, 233, 0.5)',
+                  transform: 'scale(1.05)'
+                },
+                '&:active': {
+                  transform: 'scale(0.95)'
+                },
+                '&:disabled': { 
+                  bgcolor: '#475569',
+                  color: '#94a3b8',
+                  boxShadow: 'none'
+                },
               }}
             >
               <Send fontSize="small" />
@@ -529,7 +773,8 @@ export default function ChatDrawer({
           </Box>
         </Box>
       </Paper>
-    </Grow>
+    </Grow>,
+    document.body
   );
 }
 
@@ -589,9 +834,10 @@ function MessageBubble({ message }: { message: Message }) {
               sx={{ 
                 fontSize: '12px', 
                 cursor: 'pointer',
-                bgcolor: '#7C3AED',
-                color: 'white',
-                '&:hover': { bgcolor: '#6D28D9' }
+                bgcolor: '#FBBF24',
+                color: '#0F172A',
+                fontWeight: 600,
+                '&:hover': { bgcolor: '#F59E0B' }
               }}
             />
             <Collapse in={expandedThinking}>
@@ -603,7 +849,7 @@ function MessageBubble({ message }: { message: Message }) {
                 color: '#94a3b8', 
                 borderRadius: '8px', 
                 fontSize: '12px',
-                borderLeft: '3px solid #7C3AED',
+                borderLeft: '3px solid #FBBF24',
                 fontStyle: 'italic'
               }}>
                 <ReactMarkdown>{message.thinking}</ReactMarkdown>
