@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Query, Request, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, Response, ORJSONResponse
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
@@ -452,6 +452,12 @@ async def request_tracking_middleware(request: Request, call_next):
     request.state.request_id = request_id
     request.state.start_time = start_time
     
+    path = request.url.path
+    if "/stream" in path or path.endswith("/stream"):
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    
     response = await call_next(request)
     
     duration_ms = (time.time() - start_time) * 1000
@@ -481,7 +487,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# Custom GZip middleware that excludes SSE streaming endpoints
+class SelectiveGZipMiddleware(GZipMiddleware):
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            # Skip GZip for streaming endpoints
+            if "/stream" in path or path.endswith("/stream"):
+                await self.app(scope, receive, send)
+                return
+        await super().__call__(scope, receive, send)
+
+app.add_middleware(SelectiveGZipMiddleware, minimum_size=1000)
 
 
 class ErrorResponse(BaseModel):
@@ -777,7 +794,15 @@ async def get_initial_load(request: Request, bypass_cache: bool = Query(False)):
                             avg_load_percent, avg_health_score, last_updated
                         FROM circuit_status_realtime
                     """)
-                    results = [dict(row) for row in rows]
+                    results = [{
+                        'CIRCUIT_ID': row['circuit_id'],
+                        'SUBSTATION_ID': row['substation_id'],
+                        'SUBSTATION_NAME': row['substation_name'],
+                        'CENTROID_LAT': float(row['centroid_lat']) if row['centroid_lat'] else None,
+                        'CENTROID_LON': float(row['centroid_lon']) if row['centroid_lon'] else None,
+                        'AVG_LOAD_PERCENT': float(row['avg_load_percent']) if row['avg_load_percent'] else None,
+                        'AVG_HEALTH_SCORE': float(row['avg_health_score']) if row['avg_health_score'] else None
+                    } for row in rows]
                     await response_cache.set(cache_key, results, ttl=CACHE_TTL_SERVICE_AREAS)
                     timing["service_areas"] = time.time() - t0
                     return results
@@ -795,13 +820,13 @@ async def get_initial_load(request: Request, bypass_cache: bool = Query(False)):
             results = []
             for row in cursor.fetchall():
                 results.append({
-                    'circuit_id': row[0],
-                    'substation_id': row[1],
-                    'substation_name': row[2],
-                    'centroid_lat': float(row[3]) if row[3] else None,
-                    'centroid_lon': float(row[4]) if row[4] else None,
-                    'avg_load_percent': float(row[5]) if row[5] else None,
-                    'avg_health_score': float(row[6]) if row[6] else None
+                    'CIRCUIT_ID': row[0],
+                    'SUBSTATION_ID': row[1],
+                    'SUBSTATION_NAME': row[2],
+                    'CENTROID_LAT': float(row[3]) if row[3] else None,
+                    'CENTROID_LON': float(row[4]) if row[4] else None,
+                    'AVG_LOAD_PERCENT': float(row[5]) if row[5] else None,
+                    'AVG_HEALTH_SCORE': float(row[6]) if row[6] else None
                 })
             cursor.close()
             conn.close()
@@ -2023,6 +2048,10 @@ async def create_thread():
 
 @app.post("/api/agent/stream", tags=["Cortex Agent"])
 async def agent_stream(request: Request):
+    import requests as sync_requests
+    import queue
+    import threading
+    
     try:
         data = await request.json()
         user_query = data.get('query', '')
@@ -2082,44 +2111,76 @@ async def agent_stream(request: Request):
         
         print(f"Streaming request to agent: {user_query[:100]}...")
         
-        async def generate():
+        line_queue: queue.Queue = queue.Queue()
+        
+        def stream_from_agent():
             try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-                    async with client.stream('POST', agent_url, json=payload, headers=headers) as r:
-                        print(f"Response status: {r.status_code}")
-                        
-                        if r.status_code != 200:
-                            error_body = await r.aread()
-                            error_text = error_body.decode('utf-8')[:500]
-                            print(f"Agent API error {r.status_code}: {error_text}")
-                            yield f"event: error\ndata: {{\"error\": \"Agent API returned status {r.status_code}: {error_text}\"}}\n\n"
-                            return
-                        
-                        print("Starting SSE stream...")
-                        line_count = 0
-                        
-                        async for line in r.aiter_lines():
-                            line_count += 1
-                            if line_count % 10 == 0:
-                                print(f"Streamed {line_count} lines...")
-                            yield line + '\n'
-                        
-                        print(f"Stream complete. Total lines: {line_count}")
-                        
-            except httpx.TimeoutException:
+                with sync_requests.post(agent_url, json=payload, headers=headers, stream=True, timeout=300) as r:
+                    print(f"Response status: {r.status_code}")
+                    
+                    if r.status_code != 200:
+                        error_body = r.text[:500] if r.text else "No response body"
+                        print(f"Agent API error {r.status_code}: {error_body}")
+                        line_queue.put(f"event: error\ndata: {{\"error\": \"Agent API returned status {r.status_code}: {error_body}\"}}\n\n")
+                        line_queue.put(None)
+                        return
+                    
+                    print("Starting SSE stream...")
+                    line_count = 0
+                    buffer = b''
+                    
+                    for chunk in r.iter_content(chunk_size=None, decode_unicode=False):
+                        if chunk:
+                            buffer += chunk
+                            while b'\n' in buffer:
+                                line_bytes, buffer = buffer.split(b'\n', 1)
+                                line = line_bytes.decode('utf-8', errors='replace')
+                                line_count += 1
+                                if line_count % 50 == 0:
+                                    print(f"Streamed {line_count} lines...")
+                                line_queue.put(line + '\n')
+                    
+                    if buffer:
+                        line = buffer.decode('utf-8', errors='replace')
+                        line_queue.put(line + '\n')
+                    
+                    print(f"Stream complete. Total lines: {line_count}")
+                    
+            except sync_requests.exceptions.Timeout:
                 print("Request timed out after 300 seconds")
-                yield "event: error\ndata: {\"error\": \"Request timed out\"}\n\n"
+                line_queue.put("event: error\ndata: {\"error\": \"Request timed out\"}\n\n")
             except Exception as e:
                 print(f"SSE streaming error: {e}")
-                yield f"event: error\ndata: {{\"error\": \"{str(e)}\"}}\n\n"
+                line_queue.put(f"event: error\ndata: {{\"error\": \"{str(e)}\"}}\n\n")
+            finally:
+                line_queue.put(None)
+        
+        thread = threading.Thread(target=stream_from_agent, daemon=True)
+        thread.start()
+        
+        async def generate():
+            while True:
+                try:
+                    line = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: line_queue.get(timeout=1.0)
+                    )
+                    if line is None:
+                        break
+                    yield line
+                except queue.Empty:
+                    if not thread.is_alive():
+                        break
+                    continue
         
         return StreamingResponse(
             generate(),
-            media_type='text/event-stream; charset=utf-8',
+            media_type='text/event-stream',
             headers={
-                'Cache-Control': 'no-cache',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
                 'X-Accel-Buffering': 'no',
-                'Connection': 'keep-alive'
+                'Connection': 'keep-alive',
+                'Content-Encoding': 'identity',
+                'X-Content-Type-Options': 'nosniff'
             }
         )
         

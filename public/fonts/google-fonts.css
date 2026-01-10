@@ -1,0 +1,42 @@
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(yMJMMIlzdpvBhQQL_SC3X9yhF25-T1ny_Cmxpg.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url(yMJMMIlzdpvBhQQL_SC3X9yhF25-T1nysimxpg.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Quantico';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(rax-HiSdp9cPL3KIF4xs.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Quantico';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(rax5HiSdp9cPL3KIF7TQARha.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Space Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(i7dPIFZifjKcF5UAWdDRUEY.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Space Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(i7dMIFZifjKcF5UAWdDRaPpZYFI.ttf) format('truetype');
+}

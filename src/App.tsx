@@ -8628,7 +8628,6 @@ function App() {
             setTimeout(() => setFabSpinning(false), 1000);
           }}
           fabPosition={fabPosition}
-          agentEndpoint="/api/agent/stream"
         />
 
       </Box>

@@ -1210,3 +1210,150 @@ This analysis was created by **Cortex Code CLI** (powered by Claude Sonnet 4.5).
 **Document Version:** 2.0  
 **Last Updated:** January 8, 2026 (Refreshed with 2025 sources)  
 **Next Review:** After FastAPI migration complete
+
+---
+
+## AMI Streaming Architecture - Critical Analysis (January 10, 2026)
+
+### Executive Summary
+
+**Daniel's Requirement:** Sub-minute streaming for AMI records (currently using Kafka)
+
+**#Verdict:** We were solving the wrong problem. Instead of trying to REPLACE Kafka, we should COMPLEMENT it.
+
+### The Problem We Were Solving Wrong
+
+**Our Initial Approach (FLAWED):**
+```
+AMI Generator → [Snowpipe Streaming] → Snowflake → Dynamic Tables
+                      ↓
+              [Direct Write] → Postgres → Flask API → Dashboard
+```
+
+**Why This Was Wrong:**
+1. **Ignores existing investment:** utility has millions invested in Kafka infrastructure
+2. **Can't match latency:** Snowpipe Streaming ~10s vs Kafka <1s
+3. **Two sources of truth:** Postgres + Snowflake creates consistency issues
+4. **Wrong pitch:** "Replace your Kafka" is a non-starter for enterprise utilities
+
+### Insight: Complement, Don't Compete
+
+**What Kafka Does Well (Keep Using It):**
+- Sub-second message delivery
+- High throughput (millions/sec)
+- Exactly-once semantics
+- Real-time event streaming
+
+**What Kafka CANNOT Do (Snowflake Value-Add):**
+- Join 7.1B AMI rows with weather, ERCOT pricing, transformer metadata
+- Answer "Which transformers are overloaded when LMP > $100?" in natural language
+- Train ML models on historical patterns
+- Provide YoY comparisons across multiple data domains
+- Semantic views for business users
+
+### Recommended Architecture: Kafka-Native
+
+```
+CENTERPOINT EXISTING (Keep As-Is)
+   Meters → Head-End → Kafka Cluster (<1s latency)
+                              │
+                              ▼
+SNOWFLAKE KAFKA CONNECTOR
+   • Zero code change to existing Kafka
+   • <1 min latency to Snowflake
+   • Exactly-once delivery
+                              │
+                              ▼
+SNOWFLAKE (Analytics Brain)
+   Raw Landing → Dynamic Tables → Serving Views
+   
+   SNOWFLAKE-ONLY CAPABILITIES:
+   • Cortex Analyst: NL → SQL across 7.1B rows
+   • Cortex Agent: Conversational grid ops AI
+   • ML Training: Anomaly detection, load forecasting
+   • Cross-Domain: AMI + Weather + ERCOT + Vegetation
+                              │
+                              ▼
+REAL-TIME LAYER (Choose One)
+   Option A: Kafka Consumer Direct → <1 second (RECOMMENDED)
+   Option B: Hybrid Tables → ~10 seconds
+   Option C: Keep Postgres → <100ms (demo only)
+```
+
+### Comparison: Current vs Kafka-Native
+
+| Dimension | Current Design | Kafka-Native |
+|-----------|---------------|--------------|
+| Kafka Investment | Ignores/replaces | Leverages existing |
+| Integration Effort | Weeks | Hours (connector) |
+| Real-Time Latency | ~10s | <1s |
+| Data Consistency | Two sources | Single source |
+| utility Buy-In | "Replace Kafka?" | "Enhance Kafka!" |
+
+### The Pitch to Daniel
+
+> "We're not asking you to rip out Kafka. Kafka is great at sub-second delivery.
+>
+> What Kafka CAN'T do is join your AMI data with weather, ERCOT pricing, and vegetation risk across 7B rows. Kafka can't answer 'Which transformers are overloaded when LMP > $100?' in natural language.
+>
+> **Snowflake is the analytics brain. Kafka is the nervous system. They work together.**"
+
+### Implementation Roadmap
+
+| Phase | Action | Timeline |
+|-------|--------|----------|
+| Demo (Current) | Postgres-based real-time | Now |
+| Kafka Integration | Configure Snowflake Kafka Connector | Week 1-2 |
+| Dynamic Tables | Build transformation pipeline | Week 3 |
+| Real-Time Enhancement | Kafka consumer + Redis + WebSocket | Week 4 |
+
+### OpenFlow and Tableflow Analysis (UPDATED with SPCS Option)
+
+**Question:** Did we factor in OpenFlow and Tableflow?
+
+#### Major Discovery: OpenFlow Has TWO Deployment Options
+
+**As of November 2025, OpenFlow is GA with:**
+1. **OpenFlow BYOC** - Customer's AWS EKS cluster (AWS only)
+2. **OpenFlow Snowflake Deployment (SPCS)** - Fully managed on SPCS (AWS + Azure) ⭐
+
+**OpenFlow SPCS Key Benefits:**
+- **Zero infrastructure** - Runs entirely on Snowpark Container Services
+- **Scale to zero** - Auto-scales down after 600s idle (cost savings)
+- **Native security** - Uses Snowflake roles and External Access Integrations
+- **Visual canvas** - NiFi pipeline designer in Snowsight
+- **Multi-source** - Kafka + Oracle + MySQL + 20+ connectors
+
+| Factor | Standalone Connector | OpenFlow BYOC | OpenFlow SPCS ⭐ |
+|--------|---------------------|---------------|------------------|
+| Infrastructure | None | Customer EKS | Snowflake managed |
+| Ops Burden | Low | High | **Zero** |
+| Time to Value | Hours | Days-weeks | **Hours** |
+| Scale to Zero | N/A | Manual | **Automatic** |
+| Multi-Source | Kafka only | 20+ | 20+ |
+
+#### Revised Recommendation for utility
+
+| Phase | Recommendation | Rationale |
+|-------|----------------|-----------|
+| **Phase 1 (Demo)** | Standalone Kafka Connector | Fastest, utility manages Kafka |
+| **Phase 2 (Production)** | **OpenFlow SPCS** ⭐ | Zero-ops, auto-scaling, visual canvas |
+
+**Cost Estimate (OpenFlow SPCS):**
+- Small runtime (scale-to-zero, 8 hrs/day): ~$350/month
+- Control pool: ~$50/month
+- **Total: ~$400/month** (vs BYOC EKS: $500-2,000/month)
+
+#### Tableflow Clarification
+
+**"Tableflow" is a Confluent Cloud product, NOT Snowflake.** Neither Tableflow nor Snowflake's CATALOG_SYNC is needed for this use case.
+
+### Full Architecture Documentation
+
+See `FLUX_ARCHITECTURE_Jan8.md` Part 5 for complete OpenFlow SPCS analysis, cost calculations, and decision tree.
+
+---
+
+**Document Version:** 5.0  
+**Last Updated:** January 10, 2026 (Added OpenFlow SPCS analysis)  
+**Next Review:** After Daniel's feedback on Kafka approach

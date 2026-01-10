@@ -79,7 +79,7 @@ export default function ChatDrawer({
   open, 
   onClose,
   fabPosition,
-  agentEndpoint = '/api/agent/stream' 
+  agentEndpoint = import.meta.env.DEV ? 'http://localhost:3001/api/agent/stream' : '/api/agent/stream' 
 }: ChatDrawerProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -159,7 +159,9 @@ export default function ChatDrawer({
       if (currentThreadId === null) {
         console.log('🧵 Creating new thread for conversation...');
         try {
-          const threadResponse = await fetch('/api/agent/threads/create', {
+          const threadResponse = await fetch(
+            import.meta.env.DEV ? 'http://localhost:3001/api/agent/threads/create' : '/api/agent/threads/create',
+            {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
           });
@@ -188,10 +190,12 @@ export default function ChatDrawer({
       
       console.log(`📊 Current state BEFORE request: threadId=${threadId}, lastMessageId=${lastMessageId}, currentThreadId=${currentThreadId}`);
       
+      console.log(`🔗 Fetching from: ${agentEndpoint}`);
       const response = await fetch(agentEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
         },
         body: JSON.stringify({
           query: queryText,
@@ -200,22 +204,34 @@ export default function ChatDrawer({
         })
       });
 
+      console.log(`📡 Response status: ${response.status}, headers:`, Object.fromEntries(response.headers.entries()));
+
       if (!response.ok) {
+        const errorBody = await response.text();
+        console.error('❌ Agent API error:', errorBody);
         throw new Error(`Agent API returned status ${response.status}`);
       }
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
+      console.log('📖 Got reader, starting stream...');
 
       const decoder = new TextDecoder();
       let buffer = '';
       let currentEvent: { event?: string; data?: string } = {};
 
+      let chunkCount = 0;
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          console.log(`✅ Stream complete. Total chunks: ${chunkCount}`);
+          break;
+        }
 
-        buffer += decoder.decode(value, { stream: true });
+        chunkCount++;
+        const decoded = decoder.decode(value, { stream: true });
+        console.log(`📦 Chunk ${chunkCount}:`, decoded.substring(0, 200));
+        buffer += decoded;
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
@@ -247,13 +263,13 @@ export default function ChatDrawer({
 
                 switch (currentEvent.event) {
                   case 'response.text.delta':
-                    // Cortex Agent format: data.text (not data.delta)
+                    console.log('📝 Text delta:', data.text?.substring(0, 50));
                     currentMessage.content += data.text || '';
                     setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
                     break;
 
                   case 'response.thinking.delta':
-                    // Cortex Agent format: data.text (not data.delta)
+                    console.log('🤔 Thinking delta:', data.text?.substring(0, 50));
                     currentMessage.thinking = (currentMessage.thinking || '') + (data.text || '');
                     setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
                     break;
