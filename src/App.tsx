@@ -448,6 +448,14 @@ interface Asset {
   loadedAt?: number;  // Timestamp for fade-in animation
 }
 
+interface SubstationStatus {
+  substation_id: string;
+  status: 'healthy' | 'warning' | 'critical' | null;
+  load_percent: number | null;
+  health_score: number | null;
+  last_updated?: string;
+}
+
 interface TopologyLink {
   from_asset_id: string;
   to_asset_id: string;
@@ -579,6 +587,7 @@ function App() {
   const pendingAssetCountRef = useRef<number>(0); // Track in-flight asset additions (prevents parallel batch overshoot to 180k)
   const loadedCircuitsRef = useRef<Set<string>>(new Set()); // Track circuits that have been successfully loaded (PERSISTENT across frames)
   const substationsLoadedRef = useRef(false); // Track if substations have been loaded
+  const metroFeedersLoadingRef = useRef(false); // Prevent duplicate metro/feeders fetches
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null); // Polling timer for service areas
   const limitsReachedRef = useRef(false); // Track if we've hit asset/circuit limits (prevents retry spam)
   const lastLoadAttemptViewportRef = useRef<{ lng: number; lat: number; zoom: number } | null>(null); // Track last viewport for change detection
@@ -591,6 +600,18 @@ function App() {
   const [feederTopologyData, setFeederTopologyData] = useState<any[]>([]);
   const [serviceAreas, setServiceAreas] = useState<any[]>([]);
   const [substationStatusMap, setSubstationStatusMap] = useState<Map<string, SubstationStatus>>(new Map());
+  const [gridKpis, setGridKpis] = useState<{
+    TOTAL_CUSTOMERS?: number;
+    ACTIVE_OUTAGES?: number;
+    TOTAL_LOAD_MW?: number;
+    CREWS_ACTIVE?: number;
+    AVG_RESTORATION_MINUTES?: number;
+  }>({});
+  const [initialLoadMetrics, setInitialLoadMetrics] = useState<{
+    loadTime: number;
+    cacheHits: number;
+    timing?: Record<string, number>;
+  } | null>(null);
   const [weather, setWeather] = useState<any[]>([]);
   const [weatherTimelineIndex, setWeatherTimelineIndex] = useState(0);
   const [isWeatherPlaying, setIsWeatherPlaying] = useState(false);
@@ -667,6 +688,7 @@ function App() {
     pendingAssetCountRef.current = 0;
     loadedCircuitsRef.current = new Set();
     substationsLoadedRef.current = false;
+    metroFeedersLoadingRef.current = false;
     limitsReachedRef.current = false;
     lastLoadAttemptViewportRef.current = null;
     clusterCacheRef.current = [];
@@ -756,8 +778,8 @@ function App() {
           throw new Error(`Postgres HTTP ${response.status}: ${errorText || response.statusText}`);
         }
         const substations = await response.json();
-        const statusMap = new Map(
-          substations.map((sub: any) => [sub.substation_id, sub])
+        const statusMap = new Map<string, SubstationStatus>(
+          substations.map((sub: any) => [sub.substation_id, sub as SubstationStatus])
         );
         setSubstationStatusMap(statusMap);
         console.log(`✅ Postgres: Fetched real-time status for ${substations.length} substations (${substations.filter((s: any) => s.status === 'critical').length} critical, ${substations.filter((s: any) => s.status === 'warning').length} warning)`);
@@ -1058,7 +1080,8 @@ function App() {
       
       // Zoom 9+: Load metro + feeders (distribution network view) + substations
       // Load once and keep for all higher zoom levels
-      if (zoom >= 9 && metroTopologyData.length === 0) {
+      if (zoom >= 9 && metroTopologyData.length === 0 && !metroFeedersLoadingRef.current) {
+        metroFeedersLoadingRef.current = true; // Prevent duplicate fetches
         console.log(`📊 Zoom ${zoom.toFixed(1)}: Loading metro topology + feeders + substations...`);
         try {
           const [metroData, feedersData] = await Promise.all([
@@ -1110,6 +1133,7 @@ function App() {
           }
         } catch (error) {
           console.error('Failed to load metro/feeders:', error);
+          metroFeedersLoadingRef.current = false; // Reset on error to allow retry
         }
       }
       
@@ -2871,12 +2895,13 @@ function App() {
     const loadInitial = async () => {
       setIsLoadingData(true);
       try {
-        console.log('🔄 Loading initial data...');
-        // PRODUCTION LOD: Load only critical data for initial view (zoom 9.5)
-        // Service areas show all 251 substations as towers with real-time Postgres status
-        // Assets/topology lazy-load based on zoom level for <2s initial load
-        const [serviceAreas, weather] = await Promise.all([
-          fetch('/api/service-areas').then(async r => {
+        console.log('🔄 Loading initial data via batch endpoint...');
+        const startTime = performance.now();
+        
+        // FASTAPI OPTIMIZATION: Use batch endpoint for parallel fetching
+        // Reduces 3+ minute load to <10 seconds with cache warming
+        const [initialData, weather] = await Promise.all([
+          fetch('/api/initial-load').then(async r => {
             if (!r.ok) throw new Error(`HTTP ${r.status}: ${r.statusText}`);
             return r.json();
           }),
@@ -2885,9 +2910,52 @@ function App() {
             return r.json();
           })
         ]);
-        console.log(`✅ Initial load: ${serviceAreas.length} service areas (circuit-level substations)`);
-        // Set only the data we fetched, leave metro/feeders/assets/topology for lazy loading
-        setServiceAreas(serviceAreas);
+        
+        const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
+        const cacheHits = Object.entries(initialData.cache_hits || {}).filter(([_, hit]) => hit).length;
+        
+        console.log(`✅ Initial load complete in ${loadTime}s (${cacheHits}/4 cache hits)`);
+        console.log(`   📊 Metro: ${initialData.metro?.length || 0} substations (${initialData.timing?.metro?.toFixed(2) || '?'}s)`);
+        console.log(`   📊 Feeders: ${initialData.feeders?.length || 0} connections (${initialData.timing?.feeders?.toFixed(2) || '?'}s)`);
+        console.log(`   📊 Service Areas: ${initialData.service_areas?.length || 0} circuits (${initialData.timing?.service_areas?.toFixed(2) || '?'}s)`);
+        console.log(`   📊 KPIs: ${Object.keys(initialData.kpis || {}).length} metrics (${initialData.timing?.kpis?.toFixed(2) || '?'}s)`);
+        
+        // Set all data from batch response
+        if (initialData.service_areas) setServiceAreas(initialData.service_areas);
+        if (initialData.metro) {
+          setMetroTopologyData(initialData.metro);
+          metroFeedersLoadingRef.current = true; // Mark as loaded
+          
+          // Load substations from metro data immediately
+          if (!substationsLoadedRef.current && initialData.metro.length > 0) {
+            substationsLoadedRef.current = true;
+            const substations: Asset[] = initialData.metro.map((row: any) => ({
+              id: row.SUBSTATION_ID,
+              name: row.SUBSTATION_NAME || row.SUBSTATION_ID,
+              type: 'substation' as const,
+              latitude: row.LATITUDE,
+              longitude: row.LONGITUDE,
+              load_percent: row.AVG_LOAD_PCT ?? null,
+              voltage: null,
+              status: null,
+              commissioned_date: null,
+              health_score: null,
+              usage_kwh: null,
+              pole_height_ft: null,
+              circuit_id: null,
+              loadedAt: Date.now()
+            }));
+            
+            setCircuitBatches(prev => [...prev, {
+              batchId: 'batch-substations',
+              circuitIds: [],
+              assets: substations,
+              loadedAt: Date.now()
+            }]);
+            console.log(`   ✅ Added ${substations.length} substations from batch response`);
+          }
+        }
+        if (initialData.feeders) setFeederTopologyData(initialData.feeders);
         setWeather(weather);
         setIsLoadingData(false);
         setLastUpdateTime(new Date());
@@ -2896,6 +2964,19 @@ function App() {
         startServiceAreaPolling();
       } catch (error) {
         console.error('❌ Initial load failed:', error);
+        // Fallback to legacy loading if batch endpoint fails
+        console.log('⚠️ Falling back to legacy separate API calls...');
+        try {
+          const [serviceAreas, weatherData] = await Promise.all([
+            fetch('/api/service-areas').then(r => r.json()),
+            fetch('/api/weather').then(r => r.json())
+          ]);
+          setServiceAreas(serviceAreas);
+          setWeather(weatherData);
+          console.log(`✅ Fallback load: ${serviceAreas.length} service areas`);
+        } catch (fallbackError) {
+          console.error('❌ Fallback also failed:', fallbackError);
+        }
         setIsLoadingData(false);
       }
     };
@@ -3280,37 +3361,33 @@ function App() {
   const viewportFilteredFeeders = useMemo(() => {
     // INIT OPTIMIZATION: Only compute when feeders are actually visible (zoom 9-11.5)
     // Saves 30-50ms on initialization (zoom 9.5 doesn't need this)
-    if (throttledZoom < 9 || throttledZoom >= 11.5 || topology.length === 0) {
+    if (throttledZoom < 9 || throttledZoom >= 11.5 || feederTopologyData.length === 0) {
+      console.log(`🔌 Feeders skipped: zoom=${throttledZoom.toFixed(1)}, feederData=${feederTopologyData.length}`);
       return [];
     }
     
+    console.log(`🔌 Computing feeders: zoom=${throttledZoom.toFixed(1)}, feederData=${feederTopologyData.length}`);
     const { minLng, maxLng, minLat, maxLat } = viewportBounds;
     
-    // Zoom-based LOD: dramatically reduce connections at lower zoom
+    // Zoom-based LOD: limit connections at lower zoom for performance
     let maxConnections: number;
-    let minLoad: number;
     let maxDistanceKm: number;
     
     if (throttledZoom < 8) {
-      maxConnections = 100;
-      minLoad = 85;
+      maxConnections = 200;
       maxDistanceKm = 15;
     } else if (throttledZoom < 10) {
-      maxConnections = 300;
-      minLoad = 75;
-      maxDistanceKm = 25;
+      maxConnections = 1500;  // Increased from 300 for better coverage at zoom 9-10
+      maxDistanceKm = 30;
     } else if (throttledZoom < 12) {
-      maxConnections = 600;
-      minLoad = 65;
-      maxDistanceKm = 35;
+      maxConnections = 3000;  // Increased from 600
+      maxDistanceKm = 40;
     } else {
-      maxConnections = 1000;
-      minLoad = 50;
+      maxConnections = 5000;  // Increased from 1000
       maxDistanceKm = 50;
     }
     
     const filtered = feederTopologyData.filter((d: any) => {
-      const load = d.LOAD_UTILIZATION_PCT || 0;
       const distance = d.DISTANCE_KM || 0;
       const voltage = d.VOLTAGE_LEVEL || '';
       
@@ -3327,8 +3404,9 @@ function App() {
       const isDistribution = !voltage.includes('138') && !voltage.includes('230') && !voltage.includes('345');
       const isReasonableDistance = distance <= maxDistanceKm;
       
-      // Progressive LOD: only high-priority feeders within reasonable distance
-      return inViewport && isDistribution && isReasonableDistance && load >= minLoad;
+      // Progressive LOD: show all feeders in viewport (load data often unavailable)
+      // Prioritize high-load feeders when sorting, but don't filter them out
+      return inViewport && isDistribution && isReasonableDistance;
     });
     
     // Geographic diversity: sample from grid regions instead of pure priority sort
@@ -3352,7 +3430,9 @@ function App() {
       result.push(...sorted.slice(0, perRegionLimit));
     });
     
-    return result.slice(0, maxConnections);
+    const finalResult = result.slice(0, maxConnections);
+    console.log(`🔌 Feeders result: ${filtered.length} filtered → ${finalResult.length} final (max ${maxConnections})`);
+    return finalResult;
   }, [feederTopologyData, viewportBounds, throttledZoom]);
 
   const unifiedClusters = useMemo(() => {
