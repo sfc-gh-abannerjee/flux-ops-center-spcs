@@ -2138,6 +2138,11 @@ async def agent_stream(request: Request):
                                 line_count += 1
                                 if line_count % 50 == 0:
                                     print(f"Streamed {line_count} lines...")
+                                # Debug: Log events containing tool_result, table, or json
+                                if 'tool_result' in line.lower() or 'response.table' in line.lower():
+                                    print(f"🔍 DEBUG SSE: {line[:500]}")
+                                if line.startswith('data:') and ('sql' in line.lower() or 'results' in line.lower()):
+                                    print(f"📊 DEBUG DATA: {line[:500]}")
                                 line_queue.put(line + '\n')
                     
                     if buffer:
