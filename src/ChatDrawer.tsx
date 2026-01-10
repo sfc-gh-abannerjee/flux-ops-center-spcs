@@ -275,6 +275,7 @@ export default function ChatDrawer({
                     break;
 
                   case 'response.table':
+                    console.log('📋 Table event received:', JSON.stringify(data).substring(0, 500));
                     currentMessage.table = {
                       columns: data.columns || [],
                       rows: data.rows || []
@@ -304,13 +305,51 @@ export default function ChatDrawer({
                     break;
 
                   case 'response.tool_result':
+                    console.log('🔧 Tool result received:', JSON.stringify(data).substring(0, 500));
                     if (data.content) {
                       const toolContent = Array.isArray(data.content) ? data.content : [data.content];
                       for (const item of toolContent) {
+                        console.log('  📦 Tool content item:', item.type, JSON.stringify(item).substring(0, 300));
+                        
+                        // Extract SQL from json.sql (Cortex Analyst format)
+                        if (item.type === 'json' && item.json?.sql) {
+                          currentMessage.sqlQuery = item.json.sql;
+                          // Also add SQL to thinking so users can see what query was generated
+                          const sqlPreview = `\n\n**Generated SQL:**\n\`\`\`sql\n${item.json.sql}\n\`\`\``;
+                          currentMessage.thinking = (currentMessage.thinking || '') + sqlPreview;
+                          console.log('  ✅ Found SQL in json.sql');
+                        }
+                        // Also check for SQL directly on item (legacy format)
                         if (item.type === 'text' && item.sql) {
                           currentMessage.sqlQuery = item.sql;
-                          setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
+                          const sqlPreview = `\n\n**Generated SQL:**\n\`\`\`sql\n${item.sql}\n\`\`\``;
+                          currentMessage.thinking = (currentMessage.thinking || '') + sqlPreview;
+                          console.log('  ✅ Found SQL in item.sql');
                         }
+                        
+                        // Extract table data from tool results
+                        // Cortex Analyst returns results in json.results or as structured data
+                        if (item.type === 'json' && item.json) {
+                          const jsonData = item.json;
+                          // Check for results array (table rows)
+                          if (jsonData.results && Array.isArray(jsonData.results) && jsonData.results.length > 0) {
+                            const firstRow = jsonData.results[0];
+                            const columns = Object.keys(firstRow);
+                            const rows = jsonData.results.map((r: any) => columns.map(c => r[c]));
+                            currentMessage.table = { columns, rows };
+                            console.log('  ✅ Found table in json.results:', columns.length, 'columns,', rows.length, 'rows');
+                          }
+                          // Check for data array (alternative format)
+                          if (jsonData.data && Array.isArray(jsonData.data) && jsonData.data.length > 0) {
+                            const firstRow = jsonData.data[0];
+                            const columns = Object.keys(firstRow);
+                            const rows = jsonData.data.map((r: any) => columns.map(c => r[c]));
+                            currentMessage.table = { columns, rows };
+                            console.log('  ✅ Found table in json.data:', columns.length, 'columns,', rows.length, 'rows');
+                          }
+                        }
+                        
+                        setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
                       }
                     }
                     break;
@@ -345,6 +384,12 @@ export default function ChatDrawer({
                       }
                     }
                     break;
+                    
+                  default:
+                    // Log unknown events for debugging
+                    if (currentEvent.event && !currentEvent.event.startsWith('response.status')) {
+                      console.log(`❓ Unknown event type: ${currentEvent.event}`, JSON.stringify(data).substring(0, 200));
+                    }
                 }
               } catch (e) {
                 // Silently skip - some SSE events don't need error logging
