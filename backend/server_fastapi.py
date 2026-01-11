@@ -2204,6 +2204,78 @@ async def get_thread_history(thread_id: int):
     }
 
 
+class FeedbackRequest(BaseModel):
+    request_id: str
+    positive: bool
+    feedback_message: Optional[str] = None
+    thread_id: Optional[int] = None
+
+
+@app.post("/api/agent/feedback", tags=["Cortex Agent"])
+async def submit_feedback(feedback: FeedbackRequest):
+    """
+    Submit feedback (thumbs up/down) for a Cortex Agent response.
+    
+    Per Snowflake docs: POST /api/v2/databases/{db}/schemas/{schema}/agents/{name}:feedback
+    """
+    try:
+        is_spcs = get_login_token() is not None and settings.snowflake_host is not None
+        
+        if is_spcs:
+            snowflake_host = settings.snowflake_host
+            token = get_login_token()
+            auth_token_type = "OAUTH"
+        else:
+            config_path = os.path.expanduser('~/.snowflake/config.toml')
+            config = toml.load(config_path)
+            conn_config = config['connections'][settings.snowflake_connection_name]
+            token = conn_config['password']
+            account = conn_config['account']
+            snowflake_host = f"{account.lower()}.snowflakecomputing.com"
+            auth_token_type = "PROGRAMMATIC_ACCESS_TOKEN"
+        
+        feedback_url = (
+            f"https://{snowflake_host}"
+            f"/api/v2/databases/SNOWFLAKE_INTELLIGENCE/schemas/AGENTS"
+            f"/agents/CENTERPOINT_ENERGY_AGENT:feedback"
+        )
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Snowflake-Authorization-Token-Type": auth_token_type
+        }
+        
+        payload = {
+            "request_id": feedback.request_id,
+            "positive": feedback.positive
+        }
+        
+        if feedback.feedback_message:
+            payload["feedback_message"] = feedback.feedback_message
+        
+        if feedback.thread_id is not None:
+            payload["thread_id"] = feedback.thread_id
+        
+        print(f"Submitting feedback: request_id={feedback.request_id}, positive={feedback.positive}")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(feedback_url, json=payload, headers=headers, timeout=30.0)
+        
+        if response.status_code != 200:
+            print(f"Feedback submission failed: {response.status_code} - {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=f'Failed to submit feedback: {response.text}')
+        
+        print(f"Feedback submitted successfully for request_id={feedback.request_id}")
+        return {"status": "success", "request_id": feedback.request_id}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Feedback submission error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == '__main__':
     import uvicorn
     print("Starting FastAPI backend server on port 3001...")

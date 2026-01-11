@@ -42,7 +42,11 @@ import {
   Add,
   History,
   ContentCopy,
-  Download
+  Download,
+  ThumbUp,
+  ThumbUpOutlined,
+  ThumbDown,
+  ThumbDownOutlined
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import FormattedMarkdown from './FormattedMarkdown';
@@ -63,6 +67,8 @@ interface Message {
   manualCitations?: Citation[];
   timestamp: Date;
   status?: 'streaming' | 'complete' | 'error';
+  requestId?: string;
+  feedback?: 'positive' | 'negative' | null;
 }
 
 interface TableData {
@@ -574,15 +580,25 @@ export default function ChatDrawer({
                   case 'response':
                     if (data.thread_id) setThreadId(data.thread_id);
                     if (data.message_id) setLastMessageId(data.message_id);
+                    if (data.request_id) {
+                      currentMessage.requestId = data.request_id;
+                      console.log(`📝 Captured request_id: ${data.request_id}`);
+                    }
                     currentMessage.status = 'complete';
                     setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
                     break;
                     
                   case 'metadata':
-                    // CRITICAL: Capture message IDs for thread continuity
+                    // CRITICAL: Capture message IDs and request_id for thread continuity and feedback
                     console.log(`📋 Metadata event:`, data);
                     
                     const metadata = data.metadata || data;
+                    
+                    // Capture request_id from metadata (per Cortex Agent API)
+                    if (data.request_id) {
+                      currentMessage.requestId = data.request_id;
+                      console.log(`📝 Captured request_id from metadata: ${data.request_id}`);
+                    }
                     
                     if (metadata.role === 'user' && metadata.message_id) {
                       console.log(`👤 User message ID: ${metadata.message_id}`);
@@ -624,6 +640,35 @@ export default function ChatDrawer({
       setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
     } finally {
       setStreaming(false);
+    }
+  };
+
+  const handleFeedbackSubmit = async (requestId: string, positive: boolean) => {
+    try {
+      const feedbackEndpoint = import.meta.env.DEV 
+        ? 'http://localhost:3001/api/agent/feedback' 
+        : '/api/agent/feedback';
+      
+      const response = await fetch(feedbackEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: requestId,
+          positive,
+          thread_id: threadId || undefined
+        })
+      });
+
+      if (response.ok) {
+        console.log(`✅ Feedback submitted: ${positive ? 'positive' : 'negative'} for request ${requestId}`);
+        setMessages(prev => prev.map(m => 
+          m.requestId === requestId ? { ...m, feedback: positive ? 'positive' : 'negative' } : m
+        ));
+      } else {
+        console.error(`❌ Feedback submission failed: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('❌ Feedback submission error:', error);
     }
   };
 
@@ -1065,7 +1110,7 @@ export default function ChatDrawer({
           )}
 
           {messages.map((message) => (
-            <MessageBubble key={message.id} message={message} />
+            <MessageBubble key={message.id} message={message} onFeedback={handleFeedbackSubmit} />
           ))}
           
           {streaming && (
@@ -1156,7 +1201,7 @@ export default function ChatDrawer({
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({ message, onFeedback }: { message: Message; onFeedback?: (requestId: string, positive: boolean) => void }) {
   const [expandedSql, setExpandedSql] = useState(false);
   const [expandedThinking, setExpandedThinking] = useState(true);
   const [fullscreenChart, setFullscreenChart] = useState(false);
@@ -1166,6 +1211,17 @@ function MessageBubble({ message }: { message: Message }) {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [sqlCopied, setSqlCopied] = useState(false);
   const [tableCopied, setTableCopied] = useState(false);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+
+  const handleFeedback = async (positive: boolean) => {
+    if (!message.requestId || !onFeedback || message.feedback !== undefined) return;
+    setFeedbackSubmitting(true);
+    try {
+      await onFeedback(message.requestId, positive);
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  };
 
   const copyToClipboard = async (text: string, type: 'sql' | 'table' = 'sql') => {
     try {
@@ -1937,6 +1993,46 @@ function MessageBubble({ message }: { message: Message }) {
           </Box>
         )}
       </Paper>
+
+      {!isUser && message.status === 'complete' && message.requestId && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5, ml: 0.5 }}>
+          <Tooltip title={message.feedback === 'positive' ? "Thanks for the feedback!" : "Helpful"}>
+            <span>
+              <IconButton
+                size="small"
+                disabled={feedbackSubmitting || message.feedback !== undefined}
+                onClick={() => handleFeedback(true)}
+                sx={{ 
+                  color: message.feedback === 'positive' ? '#10B981' : '#64748b',
+                  p: 0.5,
+                  '&:hover': { color: '#10B981', bgcolor: 'rgba(16, 185, 129, 0.1)' },
+                  '&.Mui-disabled': { color: message.feedback === 'positive' ? '#10B981' : '#475569' }
+                }}
+              >
+                {message.feedback === 'positive' ? <ThumbUp sx={{ fontSize: '16px' }} /> : <ThumbUpOutlined sx={{ fontSize: '16px' }} />}
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title={message.feedback === 'negative' ? "Thanks for the feedback!" : "Not helpful"}>
+            <span>
+              <IconButton
+                size="small"
+                disabled={feedbackSubmitting || message.feedback !== undefined}
+                onClick={() => handleFeedback(false)}
+                sx={{ 
+                  color: message.feedback === 'negative' ? '#EF4444' : '#64748b',
+                  p: 0.5,
+                  '&:hover': { color: '#EF4444', bgcolor: 'rgba(239, 68, 68, 0.1)' },
+                  '&.Mui-disabled': { color: message.feedback === 'negative' ? '#EF4444' : '#475569' }
+                }}
+              >
+                {message.feedback === 'negative' ? <ThumbDown sx={{ fontSize: '16px' }} /> : <ThumbDownOutlined sx={{ fontSize: '16px' }} />}
+              </IconButton>
+            </span>
+          </Tooltip>
+          {feedbackSubmitting && <CircularProgress size={12} sx={{ color: '#64748b', ml: 0.5 }} />}
+        </Box>
+      )}
 
       <Typography variant="caption" sx={{ mt: 0.5, color: '#888', fontSize: '11px' }}>
         {message.timestamp.toLocaleTimeString()}
