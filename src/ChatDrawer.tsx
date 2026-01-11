@@ -18,7 +18,13 @@ import {
   Fade,
   Grow,
   Modal,
-  Backdrop
+  Backdrop,
+  Tooltip,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Divider
 } from '@mui/material';
 import {
   Send,
@@ -29,11 +35,19 @@ import {
   InsertChart,
   Description,
   Fullscreen,
-  FullscreenExit
+  FullscreenExit,
+  ArrowUpward,
+  ArrowDownward,
+  DeleteOutline,
+  Add,
+  History,
+  ContentCopy,
+  Download
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import FormattedMarkdown from './FormattedMarkdown';
 import { VegaEmbed } from 'react-vega';
+import { Highlight, themes } from 'prism-react-renderer';
 
 interface Message {
   id: string;
@@ -87,9 +101,13 @@ export default function ChatDrawer({
   const [threadId, setThreadId] = useState<number | null>(null);
   const [lastMessageId, setLastMessageId] = useState<number | null>(null);
   const [showWelcome, setShowWelcome] = useState(true);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [savedSessions, setSavedSessions] = useState<Array<{id: string, name: string, timestamp: string, messageCount: number}>>([]);
+  const [showSessionList, setShowSessionList] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
+  const isLoadingSession = useRef(false);
   
   const isDraggingRef = useRef(false);
   const originPosition = useRef({ x: 0, y: 0 });
@@ -98,6 +116,184 @@ export default function ChatDrawer({
   const rafId = useRef<number | null>(null);
   const velocityHistory = useRef<Array<{ x: number; y: number; time: number }>>([]);
   const momentumAnimationRef = useRef<number | null>(null);
+
+  const SESSIONS_INDEX_KEY = 'grid_intelligence_sessions_index';
+  const SESSION_PREFIX = 'grid_intelligence_session_';
+
+  const loadSessionsIndex = () => {
+    try {
+      const index = localStorage.getItem(SESSIONS_INDEX_KEY);
+      return index ? JSON.parse(index) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const saveSessionsIndex = (sessions: typeof savedSessions) => {
+    localStorage.setItem(SESSIONS_INDEX_KEY, JSON.stringify(sessions));
+    setSavedSessions(sessions);
+  };
+
+  const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  const createInitialSession = () => {
+    const newId = generateSessionId();
+    const newSession = {
+      id: newId,
+      name: 'New Chat',
+      timestamp: new Date().toISOString(),
+      messageCount: 0
+    };
+    const sessions = [newSession];
+    saveSessionsIndex(sessions);
+    setCurrentSessionId(newId);
+    console.log('🆕 Created initial session:', newId);
+    return newId;
+  };
+
+  useEffect(() => {
+    const sessions = loadSessionsIndex();
+    setSavedSessions(sessions);
+    
+    if (sessions.length > 0) {
+      const mostRecent = sessions[0];
+      loadSession(mostRecent.id);
+    } else {
+      createInitialSession();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isLoadingSession.current) return;
+    if (!currentSessionId) return;
+    
+    try {
+      const sessionData = {
+        messages: messages.map(m => ({
+          ...m,
+          timestamp: m.timestamp.toISOString()
+        })),
+        threadId,
+        lastMessageId
+      };
+      localStorage.setItem(SESSION_PREFIX + currentSessionId, JSON.stringify(sessionData));
+      
+      const sessions = loadSessionsIndex();
+      const sessionIdx = sessions.findIndex((s: any) => s.id === currentSessionId);
+      if (sessionIdx >= 0) {
+        sessions[sessionIdx].messageCount = messages.length;
+        sessions[sessionIdx].timestamp = new Date().toISOString();
+        if (messages.length > 0 && sessions[sessionIdx].name === 'New Chat') {
+          const firstMsg = messages[0]?.content || '';
+          sessions[sessionIdx].name = firstMsg.substring(0, 40) + (firstMsg.length > 40 ? '...' : '');
+        }
+        saveSessionsIndex(sessions);
+      }
+    } catch (e) {
+      console.warn('Failed to save session:', e);
+    }
+  }, [messages, threadId, lastMessageId, currentSessionId]);
+
+  const loadSession = (sessionId: string) => {
+    isLoadingSession.current = true;
+    try {
+      const data = localStorage.getItem(SESSION_PREFIX + sessionId);
+      console.log('📂 Loading session:', sessionId, 'raw data length:', data?.length ?? 0);
+      if (data) {
+        const session = JSON.parse(data);
+        const restoredMessages = session.messages?.map((m: any) => ({
+          ...m,
+          timestamp: new Date(m.timestamp)
+        })) || [];
+        setMessages(restoredMessages);
+        setThreadId(session.threadId || null);
+        setLastMessageId(session.lastMessageId || null);
+        setCurrentSessionId(sessionId);
+        setShowWelcome(restoredMessages.length === 0);
+        console.log('📂 Loaded session:', sessionId, restoredMessages.length, 'messages', 'table in first msg:', !!restoredMessages[1]?.table);
+      } else {
+        console.log('⚠️ No data found for session:', sessionId, '- creating empty session state');
+        setMessages([]);
+        setThreadId(null);
+        setLastMessageId(null);
+        setCurrentSessionId(sessionId);
+        setShowWelcome(true);
+      }
+    } catch (e) {
+      console.warn('Failed to load session:', e);
+      setMessages([]);
+      setCurrentSessionId(sessionId);
+      setShowWelcome(true);
+    }
+    setShowSessionList(false);
+    setTimeout(() => { isLoadingSession.current = false; }, 100);
+  };
+
+  const startNewSession = () => {
+    isLoadingSession.current = true;
+    
+    if (currentSessionId && messages.length > 0) {
+      try {
+        const sessionData = {
+          messages: messages.map(m => ({
+            ...m,
+            timestamp: m.timestamp.toISOString()
+          })),
+          threadId,
+          lastMessageId
+        };
+        localStorage.setItem(SESSION_PREFIX + currentSessionId, JSON.stringify(sessionData));
+        
+        const sessions = loadSessionsIndex();
+        const sessionIdx = sessions.findIndex((s: any) => s.id === currentSessionId);
+        if (sessionIdx >= 0) {
+          sessions[sessionIdx].messageCount = messages.length;
+          const firstMsg = messages[0]?.content || '';
+          sessions[sessionIdx].name = firstMsg.substring(0, 40) + (firstMsg.length > 40 ? '...' : '') || 'Chat';
+          sessions[sessionIdx].timestamp = new Date().toISOString();
+          saveSessionsIndex(sessions);
+        }
+        console.log('💾 Saved current session before creating new one');
+      } catch (e) {
+        console.warn('Failed to save current session:', e);
+      }
+    }
+
+    const newId = generateSessionId();
+    const sessions = loadSessionsIndex();
+    const newSession = {
+      id: newId,
+      name: 'New Chat',
+      timestamp: new Date().toISOString(),
+      messageCount: 0
+    };
+    
+    const updatedSessions = [newSession, ...sessions];
+    saveSessionsIndex(updatedSessions);
+    
+    setMessages([]);
+    setThreadId(null);
+    setLastMessageId(null);
+    setCurrentSessionId(newId);
+    setShowWelcome(true);
+    setShowSessionList(false);
+    console.log('🆕 Started new session:', newId);
+    setTimeout(() => { isLoadingSession.current = false; }, 100);
+  };
+
+  const deleteSession = (sessionId: string) => {
+    localStorage.removeItem(SESSION_PREFIX + sessionId);
+    const sessions = loadSessionsIndex().filter((s: any) => s.id !== sessionId);
+    saveSessionsIndex(sessions);
+    
+    if (sessionId === currentSessionId) {
+      if (sessions.length > 0) {
+        loadSession(sessions[0].id);
+      } else {
+        startNewSession();
+      }
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -117,12 +313,20 @@ export default function ChatDrawer({
 
   const generateId = () => Math.random().toString(36).substr(2, 9);
 
-  const updateLastMessage = (messages: Message[], updatedMessage: Message) => {
+  const updateLastMessage = (messages: Message[], updates: Partial<Message>) => {
     const newMessages = [...messages];
     if (newMessages.length > 0 && newMessages[newMessages.length - 1].role === 'assistant') {
-      newMessages[newMessages.length - 1] = updatedMessage;
+      const existing = newMessages[newMessages.length - 1];
+      newMessages[newMessages.length - 1] = {
+        ...existing,
+        ...updates,
+        table: updates.table ?? existing.table,
+        chart: updates.chart ?? existing.chart,
+        sqlQuery: updates.sqlQuery ?? existing.sqlQuery,
+        thinking: updates.thinking ?? existing.thinking
+      };
     } else {
-      newMessages.push(updatedMessage);
+      newMessages.push(updates as Message);
     }
     return newMessages;
   };
@@ -311,42 +515,55 @@ export default function ChatDrawer({
                       for (const item of toolContent) {
                         console.log('  📦 Tool content item:', item.type, JSON.stringify(item).substring(0, 300));
                         
-                        // Extract SQL from json.sql (Cortex Analyst format)
-                        if (item.type === 'json' && item.json?.sql) {
-                          currentMessage.sqlQuery = item.json.sql;
-                          // Also add SQL to thinking so users can see what query was generated
-                          const sqlPreview = `\n\n**Generated SQL:**\n\`\`\`sql\n${item.json.sql}\n\`\`\``;
-                          currentMessage.thinking = (currentMessage.thinking || '') + sqlPreview;
-                          console.log('  ✅ Found SQL in json.sql');
-                        }
-                        // Also check for SQL directly on item (legacy format)
-                        if (item.type === 'text' && item.sql) {
-                          currentMessage.sqlQuery = item.sql;
-                          const sqlPreview = `\n\n**Generated SQL:**\n\`\`\`sql\n${item.sql}\n\`\`\``;
-                          currentMessage.thinking = (currentMessage.thinking || '') + sqlPreview;
-                          console.log('  ✅ Found SQL in item.sql');
-                        }
-                        
-                        // Extract table data from tool results
-                        // Cortex Analyst returns results in json.results or as structured data
                         if (item.type === 'json' && item.json) {
                           const jsonData = item.json;
-                          // Check for results array (table rows)
-                          if (jsonData.results && Array.isArray(jsonData.results) && jsonData.results.length > 0) {
+                          
+                          // Extract SQL from json.sql (Cortex Analyst format)
+                          if (jsonData.sql) {
+                            currentMessage.sqlQuery = jsonData.sql;
+                            console.log('  ✅ Found SQL in json.sql');
+                          }
+                          
+                          // Extract table data from result_set (Cortex Analyst SQL execution results)
+                          if (jsonData.result_set?.data && Array.isArray(jsonData.result_set.data) && jsonData.result_set.data.length > 0) {
+                            // Get column names from resultSetMetaData.rowType
+                            const rowType = jsonData.result_set.resultSetMetaData?.rowType || [];
+                            const columns = rowType.map((col: any) => col.name || `Column ${rowType.indexOf(col)}`);
+                            
+                            // Data is already in array of arrays format
+                            const rows = jsonData.result_set.data;
+                            
+                            if (columns.length > 0) {
+                              currentMessage.table = { columns, rows };
+                              console.log('  ✅ Found table in result_set:', columns.length, 'columns,', rows.length, 'rows');
+                            }
+                          }
+                          
+                          // Fallback: Check for results array (alternative format)
+                          if (!currentMessage.table && jsonData.results && Array.isArray(jsonData.results) && jsonData.results.length > 0) {
                             const firstRow = jsonData.results[0];
                             const columns = Object.keys(firstRow);
                             const rows = jsonData.results.map((r: any) => columns.map(c => r[c]));
                             currentMessage.table = { columns, rows };
                             console.log('  ✅ Found table in json.results:', columns.length, 'columns,', rows.length, 'rows');
                           }
-                          // Check for data array (alternative format)
-                          if (jsonData.data && Array.isArray(jsonData.data) && jsonData.data.length > 0) {
+                          
+                          // Fallback: Check for data array (alternative format)
+                          if (!currentMessage.table && jsonData.data && Array.isArray(jsonData.data) && jsonData.data.length > 0) {
                             const firstRow = jsonData.data[0];
-                            const columns = Object.keys(firstRow);
-                            const rows = jsonData.data.map((r: any) => columns.map(c => r[c]));
-                            currentMessage.table = { columns, rows };
-                            console.log('  ✅ Found table in json.data:', columns.length, 'columns,', rows.length, 'rows');
+                            if (typeof firstRow === 'object' && !Array.isArray(firstRow)) {
+                              const columns = Object.keys(firstRow);
+                              const rows = jsonData.data.map((r: any) => columns.map(c => r[c]));
+                              currentMessage.table = { columns, rows };
+                              console.log('  ✅ Found table in json.data (object format):', columns.length, 'columns,', rows.length, 'rows');
+                            }
                           }
+                        }
+                        
+                        // Also check for SQL directly on item (legacy format)
+                        if (item.type === 'text' && item.sql) {
+                          currentMessage.sqlQuery = item.sql;
+                          console.log('  ✅ Found SQL in item.sql');
                         }
                         
                         setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
@@ -679,18 +896,118 @@ export default function ChatDrawer({
           <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '18px', pointerEvents: 'none' }}>
             Grid Intelligence Assistant
           </Typography>
-          <IconButton 
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }} 
-            onPointerDown={(e) => e.stopPropagation()}
-            size="small" 
-            sx={{ color: 'white', pointerEvents: 'auto', zIndex: 1 }}
-          >
-            <Close />
-          </IconButton>
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
+            <Tooltip title="New Chat">
+              <IconButton 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startNewSession();
+                }} 
+                onPointerDown={(e) => e.stopPropagation()}
+                size="small" 
+                sx={{ color: '#10B981', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#34d399' } }}
+              >
+                <Add />
+              </IconButton>
+            </Tooltip>
+            {savedSessions.length > 0 && (
+              <Tooltip title="Chat History">
+                <IconButton 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowSessionList(!showSessionList);
+                  }} 
+                  onPointerDown={(e) => e.stopPropagation()}
+                  size="small" 
+                  sx={{ color: '#0EA5E9', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#38bdf8' } }}
+                >
+                  <History />
+                </IconButton>
+              </Tooltip>
+            )}
+            {messages.length > 0 && currentSessionId && (
+              <Tooltip title="Delete Current Chat">
+                <IconButton 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (window.confirm('Delete this chat? This cannot be undone.')) {
+                      deleteSession(currentSessionId);
+                    }
+                  }} 
+                  onPointerDown={(e) => e.stopPropagation()}
+                  size="small" 
+                  sx={{ color: '#94a3b8', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#f87171' } }}
+                >
+                  <DeleteOutline />
+                </IconButton>
+              </Tooltip>
+            )}
+            <IconButton 
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }} 
+              onPointerDown={(e) => e.stopPropagation()}
+              size="small" 
+              sx={{ color: 'white', pointerEvents: 'auto', zIndex: 1 }}
+            >
+              <Close />
+            </IconButton>
+          </Box>
         </Box>
+
+        {showSessionList && savedSessions.length > 0 && (
+          <Box sx={{ 
+            p: 1, 
+            borderBottom: '1px solid rgba(51, 65, 85, 0.5)',
+            bgcolor: 'rgba(15, 23, 42, 0.8)',
+            maxHeight: 200,
+            overflowY: 'auto'
+          }}>
+            <Typography sx={{ fontSize: '11px', color: '#64748b', mb: 1, px: 1 }}>
+              Recent Conversations ({savedSessions.length})
+            </Typography>
+            {savedSessions.map((session) => (
+              <Box
+                key={session.id}
+                onClick={() => loadSession(session.id)}
+                sx={{
+                  p: 1,
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  bgcolor: session.id === currentSessionId ? 'rgba(14, 165, 233, 0.2)' : 'transparent',
+                  border: session.id === currentSessionId ? '1px solid rgba(14, 165, 233, 0.3)' : '1px solid transparent',
+                  '&:hover': { bgcolor: 'rgba(14, 165, 233, 0.1)' },
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  mb: 0.5
+                }}
+              >
+                <Box>
+                  <Typography sx={{ fontSize: '12px', color: '#e2e8f0' }}>
+                    {session.name}
+                  </Typography>
+                  <Typography sx={{ fontSize: '10px', color: '#64748b' }}>
+                    {session.messageCount} messages • {new Date(session.timestamp).toLocaleDateString()}
+                  </Typography>
+                </Box>
+                <IconButton
+                  size="small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (window.confirm('Delete this conversation?')) {
+                      deleteSession(session.id);
+                    }
+                  }}
+                  sx={{ color: '#64748b', '&:hover': { color: '#f87171' } }}
+                >
+                  <DeleteOutline sx={{ fontSize: '16px' }} />
+                </IconButton>
+              </Box>
+            ))}
+          </Box>
+        )}
 
         <Box
           sx={{
@@ -843,6 +1160,60 @@ function MessageBubble({ message }: { message: Message }) {
   const [expandedSql, setExpandedSql] = useState(false);
   const [expandedThinking, setExpandedThinking] = useState(true);
   const [fullscreenChart, setFullscreenChart] = useState(false);
+  const [fullscreenTable, setFullscreenTable] = useState(false);
+  const [fullscreenSql, setFullscreenSql] = useState(false);
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [sqlCopied, setSqlCopied] = useState(false);
+  const [tableCopied, setTableCopied] = useState(false);
+
+  const copyToClipboard = async (text: string, type: 'sql' | 'table' = 'sql') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      if (type === 'sql') {
+        setSqlCopied(true);
+        setTimeout(() => setSqlCopied(false), 2000);
+      } else {
+        setTableCopied(true);
+        setTimeout(() => setTableCopied(false), 2000);
+      }
+    } catch (e) {
+      console.error('Failed to copy:', e);
+    }
+  };
+
+  const tableToCSV = () => {
+    if (!message.table) return '';
+    const header = message.table.columns.join(',');
+    const rows = message.table.rows.map(row => 
+      row.map(cell => {
+        const str = String(cell ?? '');
+        return str.includes(',') || str.includes('"') || str.includes('\n') 
+          ? `"${str.replace(/"/g, '""')}"` 
+          : str;
+      }).join(',')
+    );
+    return [header, ...rows].join('\n');
+  };
+
+  const downloadTableAsCSV = () => {
+    const csv = tableToCSV();
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `query_results_${new Date().toISOString().slice(0,10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const copyTableToClipboard = () => {
+    if (!message.table) return;
+    const header = message.table.columns.join('\t');
+    const rows = message.table.rows.map(row => row.map(c => String(c ?? '')).join('\t'));
+    const tsv = [header, ...rows].join('\n');
+    copyToClipboard(tsv, 'table');
+  };
 
   const isUser = message.role === 'user';
   
@@ -922,58 +1293,505 @@ function MessageBubble({ message }: { message: Message }) {
         <FormattedMarkdown>{message.content}</FormattedMarkdown>
 
         {message.sqlQuery && (
-          <Box sx={{ mt: 1 }}>
+          <Box sx={{ mt: 1.5 }}>
             <Chip
               icon={<Code fontSize="small" />}
-              label="SQL Query"
+              label={expandedSql ? "Hide SQL Query" : "View SQL Query"}
               size="small"
               onClick={() => setExpandedSql(!expandedSql)}
-              sx={{ fontSize: '12px', cursor: 'pointer', bgcolor: '#0EA5E9', color: 'white' }}
+              sx={{ 
+                fontSize: '12px', 
+                cursor: 'pointer', 
+                bgcolor: expandedSql ? '#0284c7' : '#0EA5E9', 
+                color: 'white',
+                '&:hover': { bgcolor: '#0369a1' }
+              }}
             />
             <Collapse in={expandedSql}>
               <Box
                 sx={{
                   mt: 1,
-                  p: 1,
-                  bgcolor: '#1e1e1e',
-                  color: '#d4d4d4',
                   borderRadius: '8px',
-                  fontSize: '12px',
-                  fontFamily: 'monospace',
-                  overflowX: 'auto',
+                  overflow: 'hidden',
+                  border: '1px solid rgba(14, 165, 233, 0.3)',
                 }}
               >
-                <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{message.sqlQuery}</pre>
+                <Box sx={{ 
+                  px: 1.5, 
+                  py: 0.5, 
+                  bgcolor: 'rgba(14, 165, 233, 0.1)', 
+                  borderBottom: '1px solid rgba(14, 165, 233, 0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Code sx={{ fontSize: '14px', color: '#0EA5E9' }} />
+                    <Typography sx={{ fontSize: '11px', color: '#0EA5E9', fontWeight: 600 }}>
+                      Generated SQL
+                    </Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 0.5 }}>
+                    <Tooltip title={sqlCopied ? "Copied!" : "Copy SQL"}>
+                      <IconButton
+                        size="small"
+                        onClick={() => copyToClipboard(message.sqlQuery!)}
+                        sx={{ color: sqlCopied ? '#10B981' : '#0EA5E9', p: 0.5 }}
+                      >
+                        <ContentCopy sx={{ fontSize: '14px' }} />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Expand">
+                      <IconButton
+                        size="small"
+                        onClick={() => setFullscreenSql(true)}
+                        sx={{ color: '#0EA5E9', p: 0.5 }}
+                      >
+                        <Fullscreen sx={{ fontSize: '14px' }} />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </Box>
+                <Highlight
+                  theme={themes.nightOwl}
+                  code={message.sqlQuery.trim()}
+                  language="sql"
+                >
+                  {({ className, style, tokens, getLineProps, getTokenProps }) => (
+                    <pre 
+                      className={className} 
+                      style={{ 
+                        ...style, 
+                        margin: 0, 
+                        padding: '12px',
+                        fontSize: '12px',
+                        lineHeight: 1.5,
+                        overflowX: 'auto',
+                        backgroundColor: '#011627',
+                        maxHeight: '200px'
+                      }}
+                    >
+                      {tokens.map((line, i) => (
+                        <div key={i} {...getLineProps({ line })}>
+                          <span style={{ 
+                            display: 'inline-block', 
+                            width: '2em', 
+                            userSelect: 'none', 
+                            opacity: 0.5,
+                            color: '#637777',
+                            marginRight: '1em'
+                          }}>
+                            {i + 1}
+                          </span>
+                          {line.map((token, key) => (
+                            <span key={key} {...getTokenProps({ token })} />
+                          ))}
+                        </div>
+                      ))}
+                    </pre>
+                  )}
+                </Highlight>
               </Box>
             </Collapse>
+            
+            <Modal
+              open={fullscreenSql}
+              onClose={() => setFullscreenSql(false)}
+              closeAfterTransition
+              slots={{ backdrop: Backdrop }}
+              slotProps={{
+                backdrop: {
+                  timeout: 500,
+                  sx: { backgroundColor: 'rgba(0, 0, 0, 0.85)' }
+                }
+              }}
+            >
+              <Fade in={fullscreenSql}>
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    width: '80vw',
+                    maxHeight: '80vh',
+                    bgcolor: '#011627',
+                    borderRadius: '12px',
+                    boxShadow: 24,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                    border: '1px solid rgba(14, 165, 233, 0.3)'
+                  }}
+                >
+                  <Box sx={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    p: 2,
+                    borderBottom: '1px solid rgba(14, 165, 233, 0.2)',
+                    bgcolor: 'rgba(14, 165, 233, 0.05)'
+                  }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Code sx={{ color: '#0EA5E9' }} />
+                      <Typography variant="h6" sx={{ color: '#0EA5E9', fontWeight: 600 }}>
+                        Generated SQL Query
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 1 }}>
+                      <Tooltip title={sqlCopied ? "Copied!" : "Copy SQL"}>
+                        <IconButton
+                          onClick={() => copyToClipboard(message.sqlQuery!)}
+                          sx={{ color: sqlCopied ? '#10B981' : '#0EA5E9' }}
+                        >
+                          <ContentCopy />
+                        </IconButton>
+                      </Tooltip>
+                      <IconButton
+                        onClick={() => setFullscreenSql(false)}
+                        sx={{ color: '#0EA5E9' }}
+                      >
+                        <Close />
+                      </IconButton>
+                    </Box>
+                  </Box>
+                  <Box sx={{ flex: 1, overflow: 'auto' }}>
+                    <Highlight
+                      theme={themes.nightOwl}
+                      code={message.sqlQuery!.trim()}
+                      language="sql"
+                    >
+                      {({ className, style, tokens, getLineProps, getTokenProps }) => (
+                        <pre 
+                          className={className} 
+                          style={{ 
+                            ...style, 
+                            margin: 0, 
+                            padding: '16px',
+                            fontSize: '14px',
+                            lineHeight: 1.6,
+                            backgroundColor: '#011627'
+                          }}
+                        >
+                          {tokens.map((line, i) => (
+                            <div key={i} {...getLineProps({ line })}>
+                              <span style={{ 
+                                display: 'inline-block', 
+                                width: '3em', 
+                                userSelect: 'none', 
+                                opacity: 0.5,
+                                color: '#637777',
+                                marginRight: '1em',
+                                textAlign: 'right'
+                              }}>
+                                {i + 1}
+                              </span>
+                              {line.map((token, key) => (
+                                <span key={key} {...getTokenProps({ token })} />
+                              ))}
+                            </div>
+                          ))}
+                        </pre>
+                      )}
+                    </Highlight>
+                  </Box>
+                </Box>
+              </Fade>
+            </Modal>
           </Box>
         )}
 
         {message.table && (
-          <TableContainer component={Paper} sx={{ mt: 1, maxHeight: 300 }}>
-            <Table size="small" stickyHeader>
-              <TableHead>
-                <TableRow>
-                  {message.table.columns.map((col, idx) => (
-                    <TableCell key={idx} sx={{ fontWeight: 600, fontSize: '12px' }}>
-                      {col}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {message.table.rows.map((row, rowIdx) => (
-                  <TableRow key={rowIdx}>
-                    {row.map((cell, cellIdx) => (
-                      <TableCell key={cellIdx} sx={{ fontSize: '12px' }}>
-                        {cell !== null ? String(cell) : 'NULL'}
+          <Box sx={{ mt: 2 }}>
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: 1, 
+              mb: 1,
+              pb: 1,
+              borderBottom: '1px solid rgba(14, 165, 233, 0.2)'
+            }}>
+              <TableChart sx={{ color: '#10B981', fontSize: '18px' }} />
+              <Typography sx={{ 
+                fontSize: '13px', 
+                fontWeight: 600, 
+                color: '#10B981' 
+              }}>
+                Query Results ({message.table.rows.length} rows)
+              </Typography>
+              <Box sx={{ ml: 'auto', display: 'flex', gap: 0.5 }}>
+                <Tooltip title={tableCopied ? "Copied!" : "Copy to Clipboard"}>
+                  <IconButton
+                    size="small"
+                    onClick={copyTableToClipboard}
+                    sx={{ color: tableCopied ? '#10B981' : '#64748b', '&:hover': { color: '#10B981' } }}
+                  >
+                    <ContentCopy sx={{ fontSize: '16px' }} />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Download CSV">
+                  <IconButton
+                    size="small"
+                    onClick={downloadTableAsCSV}
+                    sx={{ color: '#64748b', '&:hover': { color: '#10B981' } }}
+                  >
+                    <Download sx={{ fontSize: '16px' }} />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Expand">
+                  <IconButton
+                    size="small"
+                    onClick={() => setFullscreenTable(true)}
+                    sx={{ color: '#10B981' }}
+                  >
+                    <Fullscreen sx={{ fontSize: '18px' }} />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+            </Box>
+            <TableContainer 
+              component={Paper} 
+              sx={{ 
+                maxHeight: 200, 
+                bgcolor: 'rgba(15, 23, 42, 0.8)',
+                border: '1px solid rgba(16, 185, 129, 0.2)',
+                borderRadius: '8px'
+              }}
+            >
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    {message.table.columns.map((col, idx) => (
+                      <TableCell 
+                        key={idx} 
+                        onClick={() => {
+                          if (sortColumn === idx) {
+                            setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                          } else {
+                            setSortColumn(idx);
+                            setSortDirection('asc');
+                          }
+                        }}
+                        sx={{ 
+                          fontWeight: 600, 
+                          fontSize: '11px',
+                          bgcolor: '#0d2818',
+                          color: '#10B981',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                          '&:hover': { bgcolor: '#134e2a' },
+                          whiteSpace: 'nowrap',
+                          position: 'sticky',
+                          top: 0,
+                          zIndex: 2
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          {col}
+                          {sortColumn === idx && (
+                            sortDirection === 'asc' ? 
+                              <ArrowUpward sx={{ fontSize: '12px' }} /> : 
+                              <ArrowDownward sx={{ fontSize: '12px' }} />
+                          )}
+                        </Box>
                       </TableCell>
                     ))}
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                </TableHead>
+                <TableBody>
+                  {(() => {
+                    const sortedRows = sortColumn !== null 
+                      ? [...message.table!.rows].sort((a, b) => {
+                          const aVal = a[sortColumn!];
+                          const bVal = b[sortColumn!];
+                          const aNum = parseFloat(aVal);
+                          const bNum = parseFloat(bVal);
+                          if (!isNaN(aNum) && !isNaN(bNum)) {
+                            return sortDirection === 'asc' ? aNum - bNum : bNum - aNum;
+                          }
+                          const aStr = String(aVal ?? '');
+                          const bStr = String(bVal ?? '');
+                          return sortDirection === 'asc' 
+                            ? aStr.localeCompare(bStr) 
+                            : bStr.localeCompare(aStr);
+                        })
+                      : message.table!.rows;
+                    return sortedRows.slice(0, 10).map((row, rowIdx) => (
+                      <TableRow key={rowIdx} sx={{ '&:hover': { bgcolor: 'rgba(16, 185, 129, 0.05)' } }}>
+                        {row.map((cell, cellIdx) => (
+                          <TableCell key={cellIdx} sx={{ fontSize: '11px', color: '#e2e8f0', py: 0.5 }}>
+                            {cell !== null ? String(cell) : 'NULL'}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ));
+                  })()}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            {message.table.rows.length > 10 && (
+              <Typography sx={{ fontSize: '11px', color: '#64748b', mt: 0.5, textAlign: 'center' }}>
+                Showing 10 of {message.table.rows.length} rows • Click expand for full view
+              </Typography>
+            )}
+            
+            <Modal
+              open={fullscreenTable}
+              onClose={() => setFullscreenTable(false)}
+              closeAfterTransition
+              slots={{ backdrop: Backdrop }}
+              slotProps={{
+                backdrop: {
+                  timeout: 500,
+                  sx: { backgroundColor: 'rgba(0, 0, 0, 0.8)' }
+                }
+              }}
+            >
+              <Fade in={fullscreenTable}>
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    width: '85vw',
+                    maxHeight: '80vh',
+                    bgcolor: '#0f172a',
+                    borderRadius: '12px',
+                    boxShadow: 24,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                    border: '1px solid rgba(16, 185, 129, 0.3)'
+                  }}
+                >
+                  <Box sx={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    p: 2,
+                    borderBottom: '1px solid rgba(16, 185, 129, 0.2)',
+                    bgcolor: 'rgba(16, 185, 129, 0.05)'
+                  }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <TableChart sx={{ color: '#10B981' }} />
+                      <Typography variant="h6" sx={{ color: '#10B981', fontWeight: 600 }}>
+                        Query Results
+                      </Typography>
+                      <Chip 
+                        label={`${message.table?.rows.length} rows × ${message.table?.columns.length} columns`}
+                        size="small"
+                        sx={{ bgcolor: 'rgba(16, 185, 129, 0.2)', color: '#10B981', fontSize: '11px' }}
+                      />
+                    </Box>
+                    <Box sx={{ display: 'flex', gap: 1 }}>
+                      <Tooltip title={tableCopied ? "Copied!" : "Copy to Clipboard"}>
+                        <IconButton
+                          onClick={copyTableToClipboard}
+                          sx={{ color: tableCopied ? '#10B981' : '#64748b', '&:hover': { color: '#10B981' } }}
+                        >
+                          <ContentCopy />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="Download CSV">
+                        <IconButton
+                          onClick={downloadTableAsCSV}
+                          sx={{ color: '#64748b', '&:hover': { color: '#10B981' } }}
+                        >
+                          <Download />
+                        </IconButton>
+                      </Tooltip>
+                      <IconButton
+                        onClick={() => setFullscreenTable(false)}
+                        sx={{ color: '#10B981' }}
+                      >
+                        <Close />
+                      </IconButton>
+                    </Box>
+                  </Box>
+                  <TableContainer sx={{ flex: 1, overflow: 'auto' }}>
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          {message.table?.columns.map((col, idx) => (
+                            <TableCell 
+                              key={idx}
+                              onClick={() => {
+                                if (sortColumn === idx) {
+                                  setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+                                } else {
+                                  setSortColumn(idx);
+                                  setSortDirection('asc');
+                                }
+                              }}
+                              sx={{ 
+                                fontWeight: 600, 
+                                fontSize: '12px',
+                                bgcolor: '#1e293b',
+                                color: '#10B981',
+                                cursor: 'pointer',
+                                userSelect: 'none',
+                                '&:hover': { bgcolor: '#134e2a' },
+                                whiteSpace: 'nowrap',
+                                borderBottom: '2px solid rgba(16, 185, 129, 0.3)',
+                                position: 'sticky',
+                                top: 0,
+                                zIndex: 2
+                              }}
+                            >
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                {col}
+                                {sortColumn === idx && (
+                                  sortDirection === 'asc' ? 
+                                    <ArrowUpward sx={{ fontSize: '14px' }} /> : 
+                                    <ArrowDownward sx={{ fontSize: '14px' }} />
+                                )}
+                              </Box>
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {(() => {
+                          const sortedRows = sortColumn !== null 
+                            ? [...message.table!.rows].sort((a, b) => {
+                                const aVal = a[sortColumn!];
+                                const bVal = b[sortColumn!];
+                                const aNum = parseFloat(aVal);
+                                const bNum = parseFloat(bVal);
+                                if (!isNaN(aNum) && !isNaN(bNum)) {
+                                  return sortDirection === 'asc' ? aNum - bNum : bNum - aNum;
+                                }
+                                const aStr = String(aVal ?? '');
+                                const bStr = String(bVal ?? '');
+                                return sortDirection === 'asc' 
+                                  ? aStr.localeCompare(bStr) 
+                                  : bStr.localeCompare(aStr);
+                              })
+                            : message.table!.rows;
+                          return sortedRows.map((row, rowIdx) => (
+                            <TableRow 
+                              key={rowIdx} 
+                              sx={{ 
+                                '&:hover': { bgcolor: 'rgba(16, 185, 129, 0.1)' },
+                                '&:nth-of-type(even)': { bgcolor: 'rgba(30, 41, 59, 0.5)' }
+                              }}
+                            >
+                              {row.map((cell, cellIdx) => (
+                                <TableCell key={cellIdx} sx={{ fontSize: '12px', color: '#e2e8f0', py: 1 }}>
+                                  {cell !== null ? String(cell) : <span style={{ color: '#64748b' }}>NULL</span>}
+                                </TableCell>
+                              ))}
+                            </TableRow>
+                          ));
+                        })()}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Box>
+              </Fade>
+            </Modal>
+          </Box>
         )}
 
         {message.chart && message.chart.spec && (
