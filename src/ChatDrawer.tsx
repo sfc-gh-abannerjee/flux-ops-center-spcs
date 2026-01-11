@@ -577,15 +577,19 @@ export default function ChatDrawer({
                     }
                     break;
 
+                  case 'request_id':
+                    if (data.request_id) {
+                      currentMessage.requestId = data.request_id;
+                      console.log(`📝 Captured request_id from header: ${data.request_id}`);
+                      setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
+                    }
+                    break;
+
                   case 'response':
                     if (data.thread_id) setThreadId(data.thread_id);
                     if (data.message_id) setLastMessageId(data.message_id);
-                    if (data.request_id) {
-                      currentMessage.requestId = data.request_id;
-                      console.log(`📝 Captured request_id: ${data.request_id}`);
-                    }
                     currentMessage.status = 'complete';
-                    setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
+                    setMessages(prev => updateLastMessage(prev, { status: 'complete' }));
                     break;
                     
                   case 'metadata':

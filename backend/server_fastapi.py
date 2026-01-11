@@ -2125,6 +2125,11 @@ async def agent_stream(request: Request):
                         line_queue.put(None)
                         return
                     
+                    request_id = r.headers.get('X-Snowflake-Request-ID', '')
+                    if request_id:
+                        print(f"Captured X-Snowflake-Request-ID: {request_id}")
+                        line_queue.put(f"event: request_id\ndata: {{\"request_id\": \"{request_id}\"}}\n\n")
+                    
                     print("Starting SSE stream...")
                     line_count = 0
                     buffer = b''
