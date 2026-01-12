@@ -46,10 +46,21 @@ import {
   ThumbUp,
   ThumbUpOutlined,
   ThumbDown,
-  ThumbDownOutlined
+  ThumbDownOutlined,
+  OpenInFull,
+  CloseFullscreen,
+  DockOutlined,
+  ViewSidebar,
+  KeyboardArrowDown,
+  KeyboardArrowUp,
+  KeyboardArrowLeft,
+  KeyboardArrowRight,
+  PushPin,
+  PushPinOutlined
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import FormattedMarkdown from './FormattedMarkdown';
+import { LAYOUT } from './layoutConstants';
 import { VegaEmbed } from 'react-vega';
 import { Highlight, themes } from 'prism-react-renderer';
 
@@ -69,6 +80,7 @@ interface Message {
   status?: 'streaming' | 'complete' | 'error';
   requestId?: string;
   feedback?: 'positive' | 'negative' | null;
+  feedbackMessage?: string;
 }
 
 interface TableData {
@@ -110,6 +122,15 @@ export default function ChatDrawer({
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [savedSessions, setSavedSessions] = useState<Array<{id: string, name: string, timestamp: string, messageCount: number}>>([]);
   const [showSessionList, setShowSessionList] = useState(false);
+  
+  // Layout modes: 'floating' | 'expanded' | 'docked-left' | 'docked-right' | 'docked-bottom'
+  const [layoutMode, setLayoutMode] = useState<'floating' | 'expanded' | 'docked-left' | 'docked-right' | 'docked-bottom'>('floating');
+  const [dockedCollapsed, setDockedCollapsed] = useState(false);
+  
+  // Smart scroll - only auto-scroll when user is near bottom
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -301,13 +322,44 @@ export default function ChatDrawer({
     }
   };
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // Smart scroll: only scroll to bottom if user hasn't scrolled up
+  const scrollToBottom = (force = false) => {
+    if (force || !userScrolledUp) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  // Track user scroll position to detect manual scroll-up
+  const handleScroll = () => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    
+    // If user scrolls more than 100px from bottom, they're reading history
+    // If they scroll back within 50px, re-enable auto-scroll
+    if (distanceFromBottom > 100) {
+      setUserScrolledUp(true);
+    } else if (distanceFromBottom < 50) {
+      setUserScrolledUp(false);
+    }
   };
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, streaming]);
+    // Only auto-scroll if user hasn't manually scrolled up
+    if (!userScrolledUp) {
+      scrollToBottom();
+    }
+  }, [messages, streaming, userScrolledUp]);
+
+  // Reset userScrolledUp when starting new message
+  useEffect(() => {
+    if (streaming) {
+      // When streaming starts from user input, auto-scroll is expected
+      setUserScrolledUp(false);
+    }
+  }, [streaming]);
 
   useEffect(() => {
     if (open && messages.length === 0) {
@@ -329,7 +381,8 @@ export default function ChatDrawer({
         table: updates.table ?? existing.table,
         chart: updates.chart ?? existing.chart,
         sqlQuery: updates.sqlQuery ?? existing.sqlQuery,
-        thinking: updates.thinking ?? existing.thinking
+        thinking: updates.thinking ?? existing.thinking,
+        requestId: updates.requestId ?? existing.requestId
       };
     } else {
       newMessages.push(updates as Message);
@@ -647,32 +700,41 @@ export default function ChatDrawer({
     }
   };
 
-  const handleFeedbackSubmit = async (requestId: string, positive: boolean) => {
+  const handleFeedbackSubmit = async (requestId: string, positive: boolean, feedbackMessage?: string) => {
     try {
       const feedbackEndpoint = import.meta.env.DEV 
         ? 'http://localhost:3001/api/agent/feedback' 
         : '/api/agent/feedback';
       
+      const payload: any = {
+        request_id: requestId,
+        positive,
+        thread_id: threadId || undefined
+      };
+      
+      if (feedbackMessage) {
+        payload.feedback_message = feedbackMessage;
+      }
+      
       const response = await fetch(feedbackEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          request_id: requestId,
-          positive,
-          thread_id: threadId || undefined
-        })
+        body: JSON.stringify(payload)
       });
 
       if (response.ok) {
-        console.log(`✅ Feedback submitted: ${positive ? 'positive' : 'negative'} for request ${requestId}`);
+        console.log(`✅ Feedback submitted: ${positive ? 'positive' : 'negative'} for request ${requestId}${feedbackMessage ? ' with message' : ''}`);
         setMessages(prev => prev.map(m => 
-          m.requestId === requestId ? { ...m, feedback: positive ? 'positive' : 'negative' } : m
+          m.requestId === requestId ? { ...m, feedback: positive ? 'positive' : 'negative', feedbackMessage } : m
         ));
+        return true;
       } else {
         console.error(`❌ Feedback submission failed: ${response.status}`);
+        return false;
       }
     } catch (error) {
       console.error('❌ Feedback submission error:', error);
+      return false;
     }
   };
 
@@ -892,6 +954,196 @@ export default function ChatDrawer({
   const fabSize = 56;
   const chatOffset = 68;
 
+  // Layout dimensions based on mode - uses shared constants from layoutConstants.ts
+  const getLayoutStyles = () => {
+    switch (layoutMode) {
+      case 'expanded':
+        return {
+          position: 'fixed' as const,
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: 'auto',
+          height: 'auto',
+          borderRadius: 0,
+          transform: 'none',
+        };
+      case 'docked-left':
+        return {
+          position: 'fixed' as const,
+          top: LAYOUT.DOCK_TOP_OFFSET_LEFT,
+          left: dockedCollapsed ? -400 : 0,
+          bottom: LAYOUT.DOCK_BOTTOM_OFFSET,
+          width: 400,
+          height: 'auto',
+          borderRadius: 0,
+          borderRight: '1px solid rgba(51, 65, 85, 0.8)',
+          transform: 'none',
+          transition: 'left 0.3s ease',
+        };
+      case 'docked-right':
+        return {
+          position: 'fixed' as const,
+          top: LAYOUT.DOCK_TOP_OFFSET_RIGHT,
+          right: dockedCollapsed ? -400 : 0,
+          bottom: 0,
+          width: 400,
+          height: 'auto',
+          borderRadius: 0,
+          borderLeft: '1px solid rgba(51, 65, 85, 0.8)',
+          transform: 'none',
+          transition: 'right 0.3s ease',
+        };
+      case 'docked-bottom':
+        return {
+          position: 'fixed' as const,
+          left: LAYOUT.DOCK_LEFT_OFFSET,
+          right: 0,
+          bottom: dockedCollapsed ? -320 : 0,
+          height: 320,
+          width: 'auto',
+          borderRadius: 0,
+          borderTop: '1px solid rgba(51, 65, 85, 0.8)',
+          transform: 'none',
+          transition: 'bottom 0.3s ease',
+        };
+      default: // floating
+        const bottomPosition = window.innerHeight - fabPosition.y - fabSize;
+        const rightPosition = window.innerWidth - fabPosition.x - fabSize;
+        const constrainedBottom = Math.max(chatOffset, Math.min(bottomPosition + chatOffset, window.innerHeight - chatHeight));
+        const constrainedRight = Math.max(0, Math.min(rightPosition, window.innerWidth - chatWidth));
+        return {
+          position: 'fixed' as const,
+          bottom: constrainedBottom,
+          right: constrainedRight,
+          width: chatWidth,
+          height: chatHeight,
+          borderRadius: '16px',
+          transform: 'translate3d(0, 0, 0)',
+        };
+    }
+  };
+
+  const layoutStyles = getLayoutStyles();
+
+  // Dock toggle button for collapsed docked modes
+  const renderDockToggle = () => {
+    if (layoutMode === 'docked-left' && dockedCollapsed) {
+      return (
+        <Box
+          onClick={() => setDockedCollapsed(false)}
+          sx={{
+            position: 'fixed',
+            left: 0,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            bgcolor: 'rgba(15, 23, 42, 0.95)',
+            borderTopRightRadius: 8,
+            borderBottomRightRadius: 8,
+            p: 0.5,
+            cursor: 'pointer',
+            zIndex: 1300,
+            border: '1px solid rgba(51, 65, 85, 0.5)',
+            borderLeft: 'none',
+            '&:hover': { bgcolor: 'rgba(14, 165, 233, 0.2)' },
+          }}
+        >
+          <KeyboardArrowRight sx={{ color: '#0EA5E9' }} />
+        </Box>
+      );
+    }
+    if (layoutMode === 'docked-right' && dockedCollapsed) {
+      return (
+        <Box
+          onClick={() => setDockedCollapsed(false)}
+          sx={{
+            position: 'fixed',
+            right: 0,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            bgcolor: 'rgba(15, 23, 42, 0.95)',
+            borderTopLeftRadius: 8,
+            borderBottomLeftRadius: 8,
+            p: 0.5,
+            cursor: 'pointer',
+            zIndex: 1300,
+            border: '1px solid rgba(51, 65, 85, 0.5)',
+            borderRight: 'none',
+            '&:hover': { bgcolor: 'rgba(14, 165, 233, 0.2)' },
+          }}
+        >
+          <KeyboardArrowLeft sx={{ color: '#0EA5E9' }} />
+        </Box>
+      );
+    }
+    if (layoutMode === 'docked-bottom' && dockedCollapsed) {
+      return (
+        <Box
+          onClick={() => setDockedCollapsed(false)}
+          sx={{
+            position: 'fixed',
+            bottom: 0,
+            right: 200, // Offset from right edge
+            bgcolor: 'rgba(15, 23, 42, 0.95)',
+            borderTopLeftRadius: 8,
+            borderTopRightRadius: 8,
+            px: 2,
+            py: 0.5,
+            cursor: 'pointer',
+            zIndex: 1300,
+            border: '1px solid rgba(51, 65, 85, 0.5)',
+            borderBottom: 'none',
+            '&:hover': { bgcolor: 'rgba(14, 165, 233, 0.2)' },
+          }}
+        >
+          <KeyboardArrowUp sx={{ color: '#0EA5E9' }} />
+        </Box>
+      );
+    }
+    return null;
+  };
+
+  // Scroll to bottom button when user has scrolled up - positioned above input box
+  const renderScrollToBottomButton = () => {
+    if (!userScrolledUp || messages.length === 0) return null;
+    return (
+      <Box
+        onClick={() => {
+          setUserScrolledUp(false);
+          scrollToBottom(true);
+        }}
+        sx={{
+          position: 'absolute',
+          bottom: 70, // Position above the input box
+          left: '50%',
+          transform: 'translateX(-50%)',
+          bgcolor: 'rgba(14, 165, 233, 0.95)',
+          borderRadius: '16px',
+          px: 1.5,
+          py: 0.5,
+          cursor: 'pointer',
+          zIndex: 10,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.5,
+          boxShadow: '0 2px 12px rgba(14, 165, 233, 0.4)',
+          border: '1px solid rgba(14, 165, 233, 0.5)',
+          '&:hover': { 
+            bgcolor: '#0EA5E9',
+            transform: 'translateX(-50%) scale(1.02)',
+          },
+          transition: 'all 0.2s ease',
+        }}
+      >
+        <KeyboardArrowDown sx={{ fontSize: 16, color: 'white' }} />
+        <Typography sx={{ fontSize: '11px', color: 'white', fontWeight: 500 }}>
+          New messages
+        </Typography>
+      </Box>
+    );
+  };
+
   // Chat appears to the LEFT and ABOVE the FAB
   // Calculate position ensuring chat stays within viewport
   const bottomPosition = window.innerHeight - fabPosition.y - fabSize;
@@ -902,50 +1154,55 @@ export default function ChatDrawer({
   const constrainedRight = Math.max(0, Math.min(rightPosition, window.innerWidth - chatWidth));
 
   return createPortal(
-    <Grow in={open} timeout={300}>
-      <Paper
-        ref={paperRef}
-        elevation={8}
-        sx={{
-          position: 'fixed',
-          bottom: constrainedBottom,
-          right: constrainedRight,
-          width: chatWidth,
-          height: chatHeight,
-          display: 'flex',
-          flexDirection: 'column',
-          bgcolor: 'rgba(15, 23, 42, 0.7)',
-          backdropFilter: 'blur(20px) saturate(180%)',
-          WebkitBackdropFilter: 'blur(20px) saturate(180%)',
-          borderRadius: '16px',
-          overflow: 'hidden',
-          zIndex: 1299,
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(14, 165, 233, 0.2), 0 0 40px rgba(14, 165, 233, 0.1)',
-          border: '1px solid rgba(51, 65, 85, 0.5)',
-          transform: 'translate3d(0, 0, 0)',
-          cursor: 'default',
-        }}
-      >
+    <>
+      {renderDockToggle()}
+      <Grow in={open} timeout={300}>
+        <Paper
+          ref={paperRef}
+          elevation={8}
+          sx={{
+            ...layoutStyles,
+            display: 'flex',
+            flexDirection: 'column',
+            bgcolor: 'rgba(15, 23, 42, 0.95)',
+            backdropFilter: 'blur(20px) saturate(180%)',
+            WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+            overflow: 'hidden',
+            zIndex: 1299,
+            boxShadow: layoutMode === 'floating' 
+              ? '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(14, 165, 233, 0.2), 0 0 40px rgba(14, 165, 233, 0.1)'
+              : '0 0 20px rgba(0, 0, 0, 0.5)',
+            border: layoutMode === 'floating' ? '1px solid rgba(51, 65, 85, 0.5)' : 'none',
+            cursor: 'default',
+          }}
+        >
         <Box
           ref={headerRef}
           sx={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            p: 2,
+            p: layoutMode === 'docked-bottom' ? 1.5 : 2,
             borderBottom: '1px solid rgba(51, 65, 85, 0.5)',
             bgcolor: 'rgba(15, 23, 42, 0.6)',
             backdropFilter: 'blur(10px)',
             color: '#0EA5E9',
-            cursor: 'grab',
+            cursor: layoutMode === 'floating' ? 'grab' : 'default',
             userSelect: 'none',
             touchAction: 'none',
+            flexDirection: 'row',
+            flexShrink: 0,
           }}
         >
           <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '18px', pointerEvents: 'none' }}>
             Grid Intelligence Assistant
           </Typography>
-          <Box sx={{ display: 'flex', gap: 0.5 }}>
+          <Box sx={{ 
+            display: 'flex', 
+            gap: 0.5, 
+            flexDirection: 'row',
+            alignItems: 'center' 
+          }}>
             <Tooltip title="New Chat">
               <IconButton 
                 onClick={(e) => {
@@ -991,6 +1248,74 @@ export default function ChatDrawer({
                 </IconButton>
               </Tooltip>
             )}
+            
+            <Box sx={{ width: '1px', height: 16, bgcolor: 'rgba(51, 65, 85, 0.5)', mx: 0.5 }} />
+            
+            {/* Layout controls */}
+            <Tooltip title={layoutMode === 'expanded' ? "Exit fullscreen" : "Expand fullscreen"}>
+              <IconButton 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLayoutMode(layoutMode === 'expanded' ? 'floating' : 'expanded');
+                  setDockedCollapsed(false);
+                }} 
+                onPointerDown={(e) => e.stopPropagation()}
+                size="small" 
+                sx={{ 
+                  color: layoutMode === 'expanded' ? '#0EA5E9' : '#64748b', 
+                  pointerEvents: 'auto', 
+                  zIndex: 1, 
+                  '&:hover': { color: '#0EA5E9' } 
+                }}
+              >
+                {layoutMode === 'expanded' ? <CloseFullscreen sx={{ fontSize: 18 }} /> : <OpenInFull sx={{ fontSize: 18 }} />}
+              </IconButton>
+            </Tooltip>
+            
+            <Tooltip title="Dock menu">
+              <IconButton 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // Cycle through dock positions: floating -> left -> right -> bottom -> floating
+                  const modes: Array<typeof layoutMode> = ['floating', 'docked-left', 'docked-right', 'docked-bottom'];
+                  const currentIdx = modes.indexOf(layoutMode);
+                  const nextIdx = (currentIdx + 1) % modes.length;
+                  setLayoutMode(modes[nextIdx]);
+                  setDockedCollapsed(false);
+                }} 
+                onPointerDown={(e) => e.stopPropagation()}
+                size="small" 
+                sx={{ 
+                  color: layoutMode.startsWith('docked') ? '#0EA5E9' : '#64748b', 
+                  pointerEvents: 'auto', 
+                  zIndex: 1, 
+                  '&:hover': { color: '#0EA5E9' } 
+                }}
+              >
+                <ViewSidebar sx={{ 
+                  fontSize: 18,
+                  transform: layoutMode === 'docked-left' ? 'scaleX(-1)' : 
+                             layoutMode === 'docked-bottom' ? 'rotate(-90deg)' : 'none'
+                }} />
+              </IconButton>
+            </Tooltip>
+            
+            {layoutMode.startsWith('docked') && (
+              <Tooltip title={dockedCollapsed ? "Expand panel" : "Collapse panel"}>
+                <IconButton 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDockedCollapsed(!dockedCollapsed);
+                  }} 
+                  onPointerDown={(e) => e.stopPropagation()}
+                  size="small" 
+                  sx={{ color: '#64748b', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#0EA5E9' } }}
+                >
+                  {dockedCollapsed ? <PushPinOutlined sx={{ fontSize: 18 }} /> : <PushPin sx={{ fontSize: 18 }} />}
+                </IconButton>
+              </Tooltip>
+            )}
+            
             <IconButton 
               onClick={(e) => {
                 e.stopPropagation();
@@ -1058,15 +1383,19 @@ export default function ChatDrawer({
           </Box>
         )}
 
-        <Box
-          sx={{
-            flex: 1,
-            overflowY: 'auto',
-            p: 2,
-            bgcolor: 'transparent',
-          }}
-        >
-          {showWelcome && (
+        {/* Main content wrapper for scroll area + input */}
+        <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+          <Box
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            sx={{
+              flex: 1,
+              overflowY: 'auto',
+              p: 2,
+              bgcolor: 'transparent',
+            }}
+          >
+            {showWelcome && (
             <Fade in={showWelcome} timeout={500}>
               <Box sx={{ mb: 3 }}>
                 <Typography variant="h6" sx={{ mb: 1, color: '#0EA5E9', fontWeight: 600 }}>
@@ -1144,12 +1473,16 @@ export default function ChatDrawer({
           <div ref={messagesEndRef} />
         </Box>
 
+        {/* New messages pill - anchored above input box */}
+        {renderScrollToBottomButton()}
+
         <Box
           sx={{
             p: 2,
             borderTop: '1px solid rgba(51, 65, 85, 0.5)',
             bgcolor: 'rgba(30, 41, 59, 0.6)',
             backdropFilter: 'blur(10px)',
+            flexShrink: 0,
           }}
         >
           <Box sx={{ display: 'flex', gap: 1 }}>
@@ -1199,13 +1532,15 @@ export default function ChatDrawer({
             </IconButton>
           </Box>
         </Box>
+        </Box>
       </Paper>
-    </Grow>,
+    </Grow>
+    </>,
     document.body
   );
 }
 
-function MessageBubble({ message, onFeedback }: { message: Message; onFeedback?: (requestId: string, positive: boolean) => void }) {
+function MessageBubble({ message, onFeedback }: { message: Message; onFeedback?: (requestId: string, positive: boolean, feedbackMessage?: string) => Promise<boolean> }) {
   const [expandedSql, setExpandedSql] = useState(false);
   const [expandedThinking, setExpandedThinking] = useState(true);
   const [fullscreenChart, setFullscreenChart] = useState(false);
@@ -1216,14 +1551,44 @@ function MessageBubble({ message, onFeedback }: { message: Message; onFeedback?:
   const [sqlCopied, setSqlCopied] = useState(false);
   const [tableCopied, setTableCopied] = useState(false);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [showFeedbackDialog, setShowFeedbackDialog] = useState(false);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [feedbackSuccess, setFeedbackSuccess] = useState<'positive' | 'negative' | null>(null);
 
-  const handleFeedback = async (positive: boolean) => {
+  const handleFeedback = async (positive: boolean, openDialog: boolean = false) => {
     if (!message.requestId || !onFeedback || message.feedback !== undefined) return;
+    
+    if (!positive && openDialog) {
+      setShowFeedbackDialog(true);
+      return;
+    }
+    
     setFeedbackSubmitting(true);
     try {
-      await onFeedback(message.requestId, positive);
+      const success = await onFeedback(message.requestId, positive);
+      if (success) {
+        setFeedbackSuccess(positive ? 'positive' : 'negative');
+        setTimeout(() => setFeedbackSuccess(null), 3000);
+      }
     } finally {
       setFeedbackSubmitting(false);
+    }
+  };
+
+  const handleSubmitFeedbackWithMessage = async () => {
+    if (!message.requestId || !onFeedback) return;
+    
+    setFeedbackSubmitting(true);
+    setShowFeedbackDialog(false);
+    try {
+      const success = await onFeedback(message.requestId, false, feedbackText || undefined);
+      if (success) {
+        setFeedbackSuccess('negative');
+        setTimeout(() => setFeedbackSuccess(null), 3000);
+      }
+    } finally {
+      setFeedbackSubmitting(false);
+      setFeedbackText('');
     }
   };
 
@@ -2000,43 +2365,140 @@ function MessageBubble({ message, onFeedback }: { message: Message; onFeedback?:
 
       {!isUser && message.status === 'complete' && message.requestId && (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5, ml: 0.5 }}>
-          <Tooltip title={message.feedback === 'positive' ? "Thanks for the feedback!" : "Helpful"}>
-            <span>
-              <IconButton
+          {feedbackSuccess && (
+            <Fade in={true}>
+              <Chip 
+                label={feedbackSuccess === 'positive' ? "Thanks! 👍" : "Thanks for the feedback!"} 
                 size="small"
-                disabled={feedbackSubmitting || message.feedback !== undefined}
-                onClick={() => handleFeedback(true)}
                 sx={{ 
-                  color: message.feedback === 'positive' ? '#10B981' : '#64748b',
-                  p: 0.5,
-                  '&:hover': { color: '#10B981', bgcolor: 'rgba(16, 185, 129, 0.1)' },
-                  '&.Mui-disabled': { color: message.feedback === 'positive' ? '#10B981' : '#475569' }
+                  bgcolor: feedbackSuccess === 'positive' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                  color: feedbackSuccess === 'positive' ? '#10B981' : '#EF4444',
+                  fontSize: '11px',
+                  height: '22px'
                 }}
-              >
-                {message.feedback === 'positive' ? <ThumbUp sx={{ fontSize: '16px' }} /> : <ThumbUpOutlined sx={{ fontSize: '16px' }} />}
-              </IconButton>
-            </span>
-          </Tooltip>
-          <Tooltip title={message.feedback === 'negative' ? "Thanks for the feedback!" : "Not helpful"}>
-            <span>
-              <IconButton
-                size="small"
-                disabled={feedbackSubmitting || message.feedback !== undefined}
-                onClick={() => handleFeedback(false)}
-                sx={{ 
-                  color: message.feedback === 'negative' ? '#EF4444' : '#64748b',
-                  p: 0.5,
-                  '&:hover': { color: '#EF4444', bgcolor: 'rgba(239, 68, 68, 0.1)' },
-                  '&.Mui-disabled': { color: message.feedback === 'negative' ? '#EF4444' : '#475569' }
-                }}
-              >
-                {message.feedback === 'negative' ? <ThumbDown sx={{ fontSize: '16px' }} /> : <ThumbDownOutlined sx={{ fontSize: '16px' }} />}
-              </IconButton>
-            </span>
-          </Tooltip>
+              />
+            </Fade>
+          )}
+          {!feedbackSuccess && (
+            <>
+              <Tooltip title={message.feedback === 'positive' ? "Thanks for the feedback!" : "This was helpful"}>
+                <span>
+                  <IconButton
+                    size="small"
+                    disabled={feedbackSubmitting || message.feedback !== undefined}
+                    onClick={() => handleFeedback(true)}
+                    sx={{ 
+                      color: message.feedback === 'positive' ? '#10B981' : '#64748b',
+                      p: 0.5,
+                      '&:hover': { color: '#10B981', bgcolor: 'rgba(16, 185, 129, 0.1)' },
+                      '&.Mui-disabled': { color: message.feedback === 'positive' ? '#10B981' : '#475569' }
+                    }}
+                  >
+                    {message.feedback === 'positive' ? <ThumbUp sx={{ fontSize: '16px' }} /> : <ThumbUpOutlined sx={{ fontSize: '16px' }} />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title={message.feedback === 'negative' ? "Thanks for the feedback!" : "Not helpful - click to provide details"}>
+                <span>
+                  <IconButton
+                    size="small"
+                    disabled={feedbackSubmitting || message.feedback !== undefined}
+                    onClick={() => handleFeedback(false, true)}
+                    sx={{ 
+                      color: message.feedback === 'negative' ? '#EF4444' : '#64748b',
+                      p: 0.5,
+                      '&:hover': { color: '#EF4444', bgcolor: 'rgba(239, 68, 68, 0.1)' },
+                      '&.Mui-disabled': { color: message.feedback === 'negative' ? '#EF4444' : '#475569' }
+                    }}
+                  >
+                    {message.feedback === 'negative' ? <ThumbDown sx={{ fontSize: '16px' }} /> : <ThumbDownOutlined sx={{ fontSize: '16px' }} />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </>
+          )}
           {feedbackSubmitting && <CircularProgress size={12} sx={{ color: '#64748b', ml: 0.5 }} />}
+          {message.feedback && !feedbackSuccess && (
+            <Typography sx={{ fontSize: '10px', color: '#64748b', ml: 0.5 }}>
+              Feedback recorded
+            </Typography>
+          )}
         </Box>
       )}
+
+      <Modal
+        open={showFeedbackDialog}
+        onClose={() => setShowFeedbackDialog(false)}
+        closeAfterTransition
+        slots={{ backdrop: Backdrop }}
+        slotProps={{
+          backdrop: {
+            timeout: 300,
+            sx: { backgroundColor: 'rgba(0, 0, 0, 0.7)' }
+          }
+        }}
+      >
+        <Fade in={showFeedbackDialog}>
+          <Box
+            sx={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 400,
+              bgcolor: '#1e293b',
+              borderRadius: '12px',
+              boxShadow: 24,
+              p: 3,
+              border: '1px solid rgba(239, 68, 68, 0.3)'
+            }}
+          >
+            <Typography variant="h6" sx={{ color: '#f1f5f9', mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+              <ThumbDownOutlined sx={{ color: '#EF4444' }} />
+              Tell us what went wrong
+            </Typography>
+            <TextField
+              fullWidth
+              multiline
+              rows={3}
+              placeholder="What could have been better? (optional)"
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+              sx={{
+                mb: 2,
+                '& .MuiOutlinedInput-root': {
+                  color: '#e2e8f0',
+                  '& fieldset': { borderColor: 'rgba(100, 116, 139, 0.5)' },
+                  '&:hover fieldset': { borderColor: '#64748b' },
+                  '&.Mui-focused fieldset': { borderColor: '#EF4444' }
+                },
+                '& .MuiInputBase-input::placeholder': { color: '#64748b' }
+              }}
+            />
+            <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
+              <IconButton
+                onClick={() => setShowFeedbackDialog(false)}
+                sx={{ color: '#64748b' }}
+              >
+                <Close />
+              </IconButton>
+              <Chip
+                label="Submit Feedback"
+                onClick={handleSubmitFeedbackWithMessage}
+                sx={{
+                  bgcolor: '#EF4444',
+                  color: 'white',
+                  '&:hover': { bgcolor: '#DC2626' },
+                  cursor: 'pointer'
+                }}
+              />
+            </Box>
+            <Typography sx={{ fontSize: '10px', color: '#64748b', mt: 2, textAlign: 'center' }}>
+              Request ID: {message.requestId?.substring(0, 8)}...
+            </Typography>
+          </Box>
+        </Fade>
+      </Modal>
 
       <Typography variant="caption" sx={{ mt: 0.5, color: '#888', fontSize: '11px' }}>
         {message.timestamp.toLocaleTimeString()}

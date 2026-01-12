@@ -20,6 +20,7 @@ import {
 } from '@mui/icons-material';
 import ChatDrawer from './ChatDrawer';
 import DraggableFab from './DraggableFab';
+import { LAYOUT } from './layoutConstants';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const theme = createTheme({
@@ -5431,9 +5432,9 @@ function App() {
                 {/* Floating KPI Cards - Translucent Overlay */}
                 <Box sx={{ 
                   position: 'absolute', 
-                  top: 12, 
-                  left: 12, 
-                  right: 12, 
+                  top: LAYOUT.KPI_TOP, 
+                  left: LAYOUT.KPI_TOP, 
+                  right: LAYOUT.KPI_TOP, 
                   zIndex: 10,
                   display: 'flex',
                   gap: 1,
@@ -5507,8 +5508,8 @@ function App() {
                 {/* Layer Toggle Buttons - Top Right */}
                 <Box sx={{ 
                   position: 'absolute', 
-                  top: 12, 
-                  right: 12, 
+                  top: LAYOUT.LAYERS_TOP, 
+                  right: LAYOUT.LAYERS_TOP, 
                   zIndex: 10,
                   display: 'flex',
                   flexDirection: 'column',
@@ -5814,7 +5815,7 @@ function App() {
                 </Box>
                 
                 {/* Distance & Zoom Indicators - Bottom Left */}
-                <Box sx={{ position: 'absolute', bottom: 20, left: 20, zIndex: 1000 }}>
+                <Box sx={{ position: 'absolute', bottom: LAYOUT.ZOOM_BOTTOM, left: LAYOUT.ZOOM_LEFT, zIndex: 1000 }}>
                   <Stack spacing={0.5}>
                     {/* Zoom Level Indicator */}
                     <Paper 
