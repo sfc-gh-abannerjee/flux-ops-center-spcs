@@ -10,7 +10,8 @@ import maplibregl from 'maplibre-gl';
 import { 
   ThemeProvider, createTheme, CssBaseline, Box, AppBar, Toolbar, Typography, 
   Tabs, Tab, Grid, Card, CardContent, Paper, Chip, Stack, IconButton, 
-  Switch, FormControlLabel, Divider, Badge, alpha, Fade, Grow, Collapse, Button, LinearProgress, Tooltip
+  Switch, FormControlLabel, Divider, Badge, alpha, Fade, Grow, Collapse, 
+  Button, LinearProgress, Tooltip, CircularProgress
 } from '@mui/material';
 import { 
   ElectricBolt, Assessment, Warning, Engineering, TrendingUp,
@@ -56,13 +57,26 @@ const HOUSTON_LAT = 29.7604;
 const METERS_TO_DEG_LON = 1 / 111320 / Math.cos(HOUSTON_LAT * Math.PI / 180);
 const METERS_TO_DEG_LAT = 1 / 110540;
 
+// Helper to validate coordinates are valid numbers (not null, undefined, or NaN)
+function isValidCoordinate(lon: number, lat: number): boolean {
+  return typeof lon === 'number' && typeof lat === 'number' && 
+         !isNaN(lon) && !isNaN(lat) && 
+         isFinite(lon) && isFinite(lat);
+}
+
 // Rotation from backend is computed from nearest power line bearing (PostGIS ST_Azimuth)
 // Fallback to 0 (north-aligned) if no rotation data available
 function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
+  // Safety check: return empty polygon if coordinates are invalid (prevents deck.gl assertion failures)
+  if (!isValidCoordinate(centerLon, centerLat)) {
+    console.warn('getSquarePolygon: Invalid coordinates', { centerLon, centerLat });
+    return [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]];  // Return valid but degenerate polygon
+  }
+  
   const halfLon = (sizeMeters * METERS_TO_DEG_LON) / 2;
   const halfLat = (sizeMeters * METERS_TO_DEG_LAT) / 2;
-  const cos = Math.cos(rotation);
-  const sin = Math.sin(rotation);
+  const cos = Math.cos(rotation || 0);
+  const sin = Math.sin(rotation || 0);
   
   const corners = [
     [-halfLon, -halfLat],
@@ -82,11 +96,18 @@ function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: numb
 }
 
 function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: number, sides: number, rotation: number = 0): number[][] {
+  // Safety check: return empty polygon if coordinates are invalid (prevents deck.gl assertion failures)
+  if (!isValidCoordinate(centerLon, centerLat)) {
+    console.warn('getPolygonShape: Invalid coordinates', { centerLon, centerLat });
+    const emptyVertices = Array(sides + 1).fill([0, 0]);
+    return emptyVertices;
+  }
+  
   const radiusLon = (sizeMeters * METERS_TO_DEG_LON) / 2;
   const radiusLat = (sizeMeters * METERS_TO_DEG_LAT) / 2;
   const vertices: number[][] = [];
   for (let i = 0; i < sides; i++) {
-    const angle = (Math.PI * 2 / sides) * i + rotation;
+    const angle = (Math.PI * 2 / sides) * i + (rotation || 0);
     vertices.push([
       centerLon + radiusLon * Math.cos(angle),
       centerLat + radiusLat * Math.sin(angle)
@@ -466,6 +487,12 @@ function getPyramidPolygon(centerLon: number, centerLat: number, sizeMeters: num
 
 // Helper function to generate hexagon polygon (for substations and poles)
 function getHexagonPolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
+  // Safety check: return empty polygon if coordinates are invalid (prevents deck.gl assertion failures)
+  if (!isValidCoordinate(centerLon, centerLat)) {
+    console.warn('getHexagonPolygon: Invalid coordinates', { centerLon, centerLat });
+    return [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]];  // Return valid but degenerate hexagon
+  }
+  
   const metersToDegreesLon = 1 / 111320 / Math.cos(29.7604 * Math.PI / 180);
   const metersToDegreesLat = 1 / 110540;
   
@@ -474,7 +501,7 @@ function getHexagonPolygon(centerLon: number, centerLat: number, sizeMeters: num
   
   const vertices: number[][] = [];
   for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 3) * i + rotation; // 60 degrees between vertices + rotation
+    const angle = (Math.PI / 3) * i + (rotation || 0); // 60 degrees between vertices + rotation
     vertices.push([
       centerLon + radiusLon * Math.cos(angle),
       centerLat + radiusLat * Math.sin(angle)
@@ -533,6 +560,18 @@ interface SpatialPowerLine {
   conductor_type?: string;
   installation_year?: number;
   coordinates: number[][];
+  // Connected assets (loaded on demand when selecting power line)
+  connected_assets?: Array<{
+    id: string;
+    name: string;
+    type: string;
+    latitude: number;
+    longitude: number;
+    health_score?: number;
+    load_percent?: number;
+    circuit_id?: string;
+    distance_m?: number;
+  }>;
 }
 
 interface SpatialVegetation {
@@ -721,6 +760,21 @@ function App() {
   const [spatialHoverPosition, setSpatialHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const [selectedSpatialObject, setSelectedSpatialObject] = useState<SpatialBuilding | SpatialPowerLine | SpatialVegetation | null>(null);
   const [spatialClickPosition, setSpatialClickPosition] = useState<{ x: number; y: number } | null>(null);
+  // Position tracking for dragging the unpinned selected spatial object card
+  const [selectedSpatialPosition, setSelectedSpatialPosition] = useState<{ x: number; y: number } | null>(null);
+  // Ref for high-performance position tracking during drag/momentum (avoids re-renders)
+  const spatialPositionRef = useRef<{ x: number; y: number } | null>(null);
+  // Ref to the spatial card DOM element for direct transform updates during animation
+  const spatialCardRef = useRef<HTMLDivElement | null>(null);
+  // Pinned spatial objects (buildings, power lines, vegetation) - similar to pinnedAssets but for spatial layers
+  const [pinnedSpatialObjects, setPinnedSpatialObjects] = useState<Array<{
+    object: SpatialBuilding | SpatialPowerLine | SpatialVegetation,
+    position: {x: number, y: number},
+    id: string,
+    collapsed: boolean
+  }>>([]);
+  // Loading state for connected assets when selecting power lines
+  const [loadingConnectedAssets, setLoadingConnectedAssets] = useState(false);
   
   // Clustering cache refs - work for both circuit-based and fallback clustering
   const clusterCacheRef = useRef<AssetCluster[]>([]);
@@ -933,14 +987,34 @@ function App() {
         dragAnimationFrameRef.current = requestAnimationFrame(() => {
           const pending = pendingDragPosition.current;
           if (pending) {
-            // Batch both updates in single render cycle
-            setPinnedAssets(prev => prev.map(p => 
-              p.id === pending.cardId ? { ...p, position: { x: pending.x, y: pending.y } } : p
-            ));
+            // Check if this is a spatial object card or asset card
+            const isSpatialCard = pending.cardId.startsWith('spatial-');
             
-            // Update selected asset position if dragging the selected card
-            if (selectedAsset && pending.cardId === selectedAsset.id) {
-              setSelectedAssetPosition({ x: pending.x, y: pending.y });
+            if (isSpatialCard) {
+              // PERFORMANCE: For unpinned spatial card, use direct DOM manipulation during drag
+              // Only update React state for pinned cards (which need state persistence)
+              const isPinnedSpatial = pinnedSpatialObjects.some(p => p.id === pending.cardId);
+              
+              if (isPinnedSpatial) {
+                setPinnedSpatialObjects(prev => prev.map(p => 
+                  p.id === pending.cardId ? { ...p, position: { x: pending.x, y: pending.y } } : p
+                ));
+              } else if (spatialCardRef.current) {
+                // Direct DOM update for unpinned card - bypasses React re-render
+                spatialCardRef.current.style.transform = `translate3d(${pending.x}px, ${pending.y}px, 0)`;
+                // Store in ref for momentum animation to pick up
+                spatialPositionRef.current = { x: pending.x, y: pending.y };
+              }
+            } else {
+              // Batch both updates in single render cycle
+              setPinnedAssets(prev => prev.map(p => 
+                p.id === pending.cardId ? { ...p, position: { x: pending.x, y: pending.y } } : p
+              ));
+              
+              // Update selected asset position if dragging the selected card
+              if (selectedAsset && pending.cardId === selectedAsset.id) {
+                setSelectedAssetPosition({ x: pending.x, y: pending.y });
+              }
             }
           }
           dragAnimationFrameRef.current = null;
@@ -956,7 +1030,17 @@ function App() {
         dragAnimationFrameRef.current = null;
       }
       
-      // Calculate velocity from position history
+      // For spatial cards: sync ref position to state now that drag is complete
+      const isSpatialCard = draggedCardId.startsWith('spatial-');
+      if (isSpatialCard && spatialPositionRef.current) {
+        // Only sync to state if not a pinned card
+        const isPinnedSpatial = pinnedSpatialObjects.some(p => p.id === draggedCardId);
+        if (!isPinnedSpatial) {
+          setSelectedSpatialPosition(spatialPositionRef.current);
+        }
+      }
+      
+      // Calculate velocity from position history (for momentum animation)
       if (dragPositionHistory.current.length >= 2) {
         const last = dragPositionHistory.current[dragPositionHistory.current.length - 1];
         const first = dragPositionHistory.current[0];
@@ -966,8 +1050,8 @@ function App() {
           const velocityX = (last.x - first.x) / timeDelta;
           const velocityY = (last.y - first.y) / timeDelta;
           
-          // Start momentum animation
-          startMomentumAnimation(draggedCardId, velocityX, velocityY);
+          // Start momentum animation - pass the last known position
+          startMomentumAnimation(draggedCardId, velocityX, velocityY, { x: last.x, y: last.y });
         }
       }
       
@@ -987,15 +1071,20 @@ function App() {
         dragAnimationFrameRef.current = null;
       }
     };
-  }, [draggedCardId, dragOffset, selectedAsset]);
+  }, [draggedCardId, dragOffset, selectedAsset, selectedSpatialObject]);
 
   // Momentum animation after drag release - OPTIMIZED: Batched updates, reduced friction calculations
-  const startMomentumAnimation = (cardId: string, initialVelocityX: number, initialVelocityY: number) => {
+  // Supports both regular asset cards and spatial object cards
+  const startMomentumAnimation = (cardId: string, initialVelocityX: number, initialVelocityY: number, initialPosition?: {x: number, y: number}) => {
     let velocityX = initialVelocityX;
     let velocityY = initialVelocityY;
     const friction = 0.92; // Reduced friction (was 0.85) - smoother, longer glide
     const minVelocity = 0.5; // Lower threshold (was 1.5) - continues longer before stopping
     let lastTimestamp = performance.now();
+    const isSpatialCard = cardId.startsWith('spatial-');
+    
+    // Track current position for spatial cards to avoid stale closure issues
+    let currentSpatialPos = initialPosition || { x: 0, y: 0 };
     
     const animate = (timestamp: number) => {
       // Calculate actual time delta for smooth 60fps animation
@@ -1017,37 +1106,79 @@ function App() {
       const deltaX = (velocityX / 60) * deltaTime;
       const deltaY = (velocityY / 60) * deltaTime;
       
-      // OPTIMIZATION: Single batched update for both pinned assets and selected asset
-      let newPositionForSelected: {x: number, y: number} | null = null;
-      
-      setPinnedAssets(prev => prev.map(p => {
-        if (p.id === cardId) {
-          const newX = Math.max(0, Math.min(p.position.x + deltaX, window.innerWidth - 380));
-          const newY = Math.max(0, Math.min(p.position.y + deltaY, window.innerHeight - 100));
+      if (isSpatialCard) {
+        // Check if this is a pinned spatial card
+        const isPinnedSpatial = pinnedSpatialObjects.some(p => p.id === cardId);
+        
+        if (isPinnedSpatial) {
+          // Pinned cards need state updates to persist position
+          setPinnedSpatialObjects(prev => prev.map(p => {
+            if (p.id === cardId) {
+              const newX = Math.max(0, Math.min(p.position.x + deltaX, window.innerWidth - 360));
+              const newY = Math.max(0, Math.min(p.position.y + deltaY, window.innerHeight - 100));
+              
+              if (newX === 0 || newX === window.innerWidth - 360) velocityX = 0;
+              if (newY === 0 || newY === window.innerHeight - 100) velocityY = 0;
+              
+              return { ...p, position: { x: newX, y: newY } };
+            }
+            return p;
+          }));
+        } else if (initialPosition && spatialCardRef.current) {
+          // PERFORMANCE: Direct DOM manipulation for unpinned spatial card
+          // Avoids React re-renders during animation - only sync state when animation ends
+          const newX = Math.max(0, Math.min(currentSpatialPos.x + deltaX, window.innerWidth - 360));
+          const newY = Math.max(0, Math.min(currentSpatialPos.y + deltaY, window.innerHeight - 100));
           
-          // Stop if hitting boundary
-          if (newX === 0 || newX === window.innerWidth - 380) velocityX = 0;
+          if (newX === 0 || newX === window.innerWidth - 360) velocityX = 0;
           if (newY === 0 || newY === window.innerHeight - 100) velocityY = 0;
           
-          // Cache for selected asset update
-          if (selectedAsset && cardId === selectedAsset.id) {
-            newPositionForSelected = { x: newX, y: newY };
-          }
-          
-          return { ...p, position: { x: newX, y: newY } };
+          // Update tracked position for next frame
+          currentSpatialPos = { x: newX, y: newY };
+          // Direct DOM update - bypasses React re-render cycle
+          spatialCardRef.current.style.transform = `translate3d(${newX}px, ${newY}px, 0)`;
+          spatialPositionRef.current = { x: newX, y: newY };
         }
-        return p;
-      }));
-      
-      // Update selected asset position in same frame if needed
-      if (newPositionForSelected) {
-        setSelectedAssetPosition(newPositionForSelected);
+      } else {
+        // OPTIMIZATION: Single batched update for both pinned assets and selected asset
+        let newPositionForSelected: {x: number, y: number} | null = null;
+        
+        setPinnedAssets(prev => prev.map(p => {
+          if (p.id === cardId) {
+            const newX = Math.max(0, Math.min(p.position.x + deltaX, window.innerWidth - 380));
+            const newY = Math.max(0, Math.min(p.position.y + deltaY, window.innerHeight - 100));
+            
+            // Stop if hitting boundary
+            if (newX === 0 || newX === window.innerWidth - 380) velocityX = 0;
+            if (newY === 0 || newY === window.innerHeight - 100) velocityY = 0;
+            
+            // Cache for selected asset update
+            if (selectedAsset && cardId === selectedAsset.id) {
+              newPositionForSelected = { x: newX, y: newY };
+            }
+            
+            return { ...p, position: { x: newX, y: newY } };
+          }
+          return p;
+        }));
+        
+        // Update selected asset position in same frame if needed
+        if (newPositionForSelected) {
+          setSelectedAssetPosition(newPositionForSelected);
+        }
       }
       
       // Continue or stop momentum
       if (Math.abs(velocityX) > 0.1 || Math.abs(velocityY) > 0.1) {
         momentumAnimationRef.current = requestAnimationFrame(animate);
       } else {
+        // Animation ended - sync ref position to state for spatial cards
+        if (isSpatialCard && spatialPositionRef.current) {
+          const isPinnedSpatial = pinnedSpatialObjects.some(p => p.id === cardId);
+          if (!isPinnedSpatial) {
+            setSelectedSpatialPosition(spatialPositionRef.current);
+          }
+        }
         momentumAnimationRef.current = null;
       }
     };
@@ -1124,6 +1255,24 @@ function App() {
   // Track last loaded zoom level for power lines LOD
   const [powerLinesLoadedZoom, setPowerLinesLoadedZoom] = useState<number | null>(null);
   
+  // ARCHITECTURE: Spatial Layers vs Grid Assets - INDEPENDENT STREAMING SYSTEMS
+  // ===============================================================================
+  // Spatial layers (power lines, vegetation, buildings) use their OWN loading system:
+  // - loadSpatialLayer() handles power lines and vegetation (PostGIS direct queries)
+  // - MVTLayer handles buildings (PostGIS vector tiles, on-demand tile loading)
+  // - These are NOT subject to the circuit-based streaming caps (maxCircuitsAllowed)
+  // 
+  // Grid assets (substations, transformers, poles, meters) use circuit-based streaming:
+  // - Subject to maxCircuitsAllowed limits based on zoom level
+  // - Managed by loadedCircuitsRef and circuitBatches state
+  // - Includes viewport culling and pinned circuit prioritization
+  //
+  // This separation ensures:
+  // 1. Background spatial data doesn't compete with grid asset streaming bandwidth
+  // 2. Building footprints load independently via efficient MVT tiles
+  // 3. Power lines/vegetation load once per LOD level, not per circuit
+  // ===============================================================================
+  
   const loadSpatialLayer = useCallback(async (layerType: 'powerLines' | 'vegetation', zoom?: number) => {
     if (spatialLoading[layerType]) return;
     setSpatialLoading(prev => ({ ...prev, [layerType]: true }));
@@ -1171,6 +1320,26 @@ function App() {
       setSpatialLoading(prev => ({ ...prev, [layerType]: false }));
     }
   }, [spatialLoading]);
+
+  // Engineering: Fetch connected assets for a selected power line
+  const fetchPowerLineConnectedAssets = useCallback(async (lineId: string): Promise<SpatialPowerLine['connected_assets']> => {
+    try {
+      setLoadingConnectedAssets(true);
+      const response = await fetch(`/api/spatial/layers/power-lines/${lineId}/connected-assets?search_radius_m=75`);
+      if (!response.ok) {
+        console.warn(`Failed to fetch connected assets for power line ${lineId}`);
+        return [];
+      }
+      const data = await response.json();
+      console.log(`⚡ Power line ${lineId}: ${data.count} connected assets (${data.transformers} transformers, ${data.poles} poles) in ${data.query_time_ms}ms`);
+      return data.connected_assets || [];
+    } catch (error) {
+      console.error('Failed to fetch power line connected assets:', error);
+      return [];
+    } finally {
+      setLoadingConnectedAssets(false);
+    }
+  }, []);
 
   // Engineering: Load power lines with zoom-based LOD
   useEffect(() => {
@@ -4132,15 +4301,22 @@ function App() {
   // BATCHED RENDERING HELPER: Derive type-specific batch arrays for GPU optimization
   // NO viewport filtering - prevents GPU buffer regeneration on every pan!
   // Each batch maintains stable data references. deck.gl's built-in culling handles visibility.
+  // VALIDATION: Filter out assets with invalid coordinates to prevent deck.gl assertion failures
   const batchesByType = useMemo(() => {
     return circuitBatches.map(batch => {
       // Filter assets by type in single pass (no viewport check - batches are circuit-scoped and small)
+      // IMPORTANT: Also filter out assets with invalid coordinates (null, undefined, NaN)
       const substations: Asset[] = [];
       const transformers: Asset[] = [];
       const poles: Asset[] = [];
       const meters: Asset[] = [];
       
       batch.assets.forEach(a => {
+        // Skip assets with invalid coordinates - prevents deck.gl assertion failures
+        if (!isValidCoordinate(a.longitude, a.latitude)) {
+          return;  // Skip this asset
+        }
+        
         const type = a.type?.toLowerCase();
         switch (type) {
           case 'substation':
@@ -5442,6 +5618,7 @@ function App() {
             };
             setSelectedSpatialObject(building);
             setSpatialClickPosition({ x: info.x, y: info.y });
+            setSelectedSpatialPosition(null); // Clear stored position for new selection
             setSelectedAsset(null);
           }
         },
@@ -5471,22 +5648,42 @@ function App() {
     // Minor lines (minor_line): Cyan with electric glow - distribution feeders
     // NOTE: Green connections on map are TOPOLOGY LINKS (ArcLayer), not power lines
     // Zoom-adaptive widths: thinner at low zooms to avoid overwhelming the map
+    // OPTIMIZED: Uses PathLayer memoization and stable data references
     ...(layersVisible.powerLines && spatialData.powerLines.length > 0 ? (() => {
       // Scale factor: 0.5 at zoom 9, 1.0 at zoom 14+
       const zoomScale = Math.min(1, Math.max(0.4, (currentZoom - 9) / 5));
+      // Get selected power line ID for highlight effect
+      const selectedLineId = selectedSpatialObject?.type === 'power_line' ? selectedSpatialObject.id : null;
+      
       return [
+      // Selection highlight layer - bright glow around selected line
+      ...(selectedLineId ? [
+        new PathLayer({
+          id: 'power-lines-selection-glow',
+          data: spatialData.powerLines.filter((d: any) => (d.id || d.power_line_id) === selectedLineId),
+          getPath: (d: any) => d.coordinates || d.path,
+          getColor: [255, 255, 100, 120],  // Bright yellow glow
+          getWidth: 25 * zoomScale,
+          widthUnits: 'pixels',
+          widthMinPixels: 8,
+          widthMaxPixels: 35,
+          capRounded: true,
+          jointRounded: true,
+          billboard: true
+        })
+      ] : []),
       // Outer glow layer - creates electric halo effect
       new PathLayer({
         id: 'power-lines-outer-glow',
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
         getColor: (d: any) => d.class === 'power_line' 
-          ? [255, 180, 60, 40]    // Warm orange outer glow for transmission
-          : [80, 180, 255, 35],   // Electric blue outer glow for distribution
-        getWidth: (d: any) => (d.class === 'power_line' ? 16 : 10) * zoomScale,
+          ? [255, 180, 60, 45]    // Warm orange outer glow for transmission
+          : [80, 180, 255, 40],   // Electric blue outer glow for distribution
+        getWidth: (d: any) => (d.class === 'power_line' ? 18 : 12) * zoomScale,
         widthUnits: 'pixels',
-        widthMinPixels: 3,
-        widthMaxPixels: 20,
+        widthMinPixels: 4,
+        widthMaxPixels: 24,
         capRounded: true,
         jointRounded: true,
         billboard: true,
@@ -5498,50 +5695,77 @@ function App() {
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
         getColor: (d: any) => d.class === 'power_line' 
-          ? [255, 160, 40, 90]    // Orange inner glow
-          : [100, 200, 255, 80],  // Cyan inner glow
-        getWidth: (d: any) => (d.class === 'power_line' ? 8 : 5) * zoomScale,
+          ? [255, 160, 40, 100]   // Orange inner glow
+          : [100, 200, 255, 90],  // Cyan inner glow
+        getWidth: (d: any) => (d.class === 'power_line' ? 10 : 6) * zoomScale,
         widthUnits: 'pixels',
         widthMinPixels: 2,
-        widthMaxPixels: 12,
+        widthMaxPixels: 14,
         capRounded: true,
         jointRounded: true,
         billboard: true,
         updateTriggers: { getWidth: currentZoom }
       }),
-      // Core line - solid visible line
+      // Core line - solid visible line with improved contrast
       new PathLayer({
         id: 'power-lines-core',
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
-        getColor: (d: any) => d.class === 'power_line'
-          ? [255, 140, 0, 255]    // Deep orange for major (transmission)
-          : [80, 200, 255, 255],  // Cyan for minor (distribution)
-        getWidth: (d: any) => (d.class === 'power_line' ? 2.5 : 1.5) * zoomScale,
+        getColor: (d: any) => {
+          const isSelected = (d.id || d.power_line_id) === selectedLineId;
+          if (isSelected) {
+            return [255, 255, 150, 255];  // Bright yellow when selected
+          }
+          return d.class === 'power_line'
+            ? [255, 140, 0, 255]    // Deep orange for major (transmission)
+            : [80, 200, 255, 255];  // Cyan for minor (distribution)
+        },
+        getWidth: (d: any) => {
+          const isSelected = (d.id || d.power_line_id) === selectedLineId;
+          const baseWidth = d.class === 'power_line' ? 3 : 2;
+          return (isSelected ? baseWidth * 1.5 : baseWidth) * zoomScale;
+        },
         widthUnits: 'pixels',
         widthMinPixels: 1,
-        widthMaxPixels: 5,
+        widthMaxPixels: 6,
         capRounded: true,
         jointRounded: true,
         pickable: true,
         autoHighlight: true,
         highlightColor: [255, 255, 100, 255],
-        updateTriggers: { getWidth: currentZoom },
-        onClick: (info: any) => {
+        updateTriggers: { 
+          getWidth: [currentZoom, selectedLineId],
+          getColor: selectedLineId
+        },
+        onClick: async (info: any) => {
           if (info.object) {
+            const lineId = info.object.id || `line-${info.index}`;
             const powerLine: SpatialPowerLine = {
-              id: info.object.id || `line-${info.index}`,
+              id: lineId,
               type: 'power_line',
               line_name: info.object.class === 'power_line' ? 'Transmission Line' : 'Distribution Line',
               voltage_kv: info.object.class === 'power_line' ? 138 : 12.5,  // Typical voltages
               length_km: info.object.length_m ? info.object.length_m / 1000 : undefined,
               conductor_type: info.object.conductor_type,
               installation_year: info.object.installation_year,
-              coordinates: info.object.coordinates || info.object.path
+              coordinates: info.object.coordinates || info.object.path,
+              connected_assets: []  // Will be loaded async
             };
             setSelectedSpatialObject(powerLine);
             setSpatialClickPosition({ x: info.x, y: info.y });
+            setSelectedSpatialPosition(null); // Clear stored position for new selection
             setSelectedAsset(null);
+            
+            // Engineering: Async fetch connected assets for navigation
+            // Don't await - let the card show immediately while assets load
+            fetchPowerLineConnectedAssets(lineId).then(connectedAssets => {
+              setSelectedSpatialObject(prev => {
+                if (prev && prev.type === 'power_line' && prev.id === lineId) {
+                  return { ...prev, connected_assets: connectedAssets } as SpatialPowerLine;
+                }
+                return prev;
+              });
+            });
           }
         },
         onHover: (info: any) => {
@@ -5604,6 +5828,7 @@ function App() {
             };
             setSelectedSpatialObject(vegetation);
             setSpatialClickPosition({ x: info.x, y: info.y });
+            setSelectedSpatialPosition(null); // Clear stored position for new selection
             setSelectedAsset(null);
           }
         },
@@ -8780,34 +9005,68 @@ function App() {
                   cardLeft = Math.max(10, Math.min(cardLeft, viewportWidth - CARD_WIDTH - 10));
                   cardTop = Math.max(10, Math.min(cardTop, viewportHeight - 150));
                   
+                  // Use stored position if being dragged, otherwise use calculated position
+                  if (selectedSpatialPosition) {
+                    cardLeft = selectedSpatialPosition.x;
+                    cardTop = selectedSpatialPosition.y;
+                  }
+                  
                   const borderColor = selectedSpatialObject.type === 'building' ? '#F97316' :
                                      selectedSpatialObject.type === 'power_line' ? '#FBBF24' : '#22C55E';
+                  
+                  const isDragging = draggedCardId === `spatial-${selectedSpatialObject.id}`;
+                  
+                  const handleSpatialMouseDown = (e: React.MouseEvent) => {
+                    // Only start drag if clicking on the drag handle area (not buttons)
+                    if ((e.target as HTMLElement).closest('.spatial-drag-handle') && 
+                        !(e.target as HTMLElement).closest('button')) {
+                      e.preventDefault();
+                      // Initialize position ref with current card position for direct DOM updates
+                      spatialPositionRef.current = { x: cardLeft, y: cardTop };
+                      setDraggedCardId(`spatial-${selectedSpatialObject.id}`);
+                      setDragOffset({
+                        x: e.clientX - cardLeft,
+                        y: e.clientY - cardTop
+                      });
+                    }
+                  };
                   
                   return (
                     <Fade in timeout={300}>
                       <Paper
+                        ref={spatialCardRef}
                         elevation={16}
+                        onMouseDown={handleSpatialMouseDown}
                         sx={{
                           position: 'absolute',
-                          left: cardLeft,
-                          top: cardTop,
+                          left: 0,
+                          top: 0,
+                          transform: `translate3d(${cardLeft}px, ${cardTop}px, 0)`,
+                          willChange: isDragging ? 'transform' : 'auto',
                           width: CARD_WIDTH,
                           maxHeight: CARD_HEIGHT,
-                          overflow: 'auto',
+                          overflow: 'hidden',
+                          display: 'flex',
+                          flexDirection: 'column',
                           bgcolor: 'rgba(15, 23, 42, 0.95)',
                           backdropFilter: 'blur(20px)',
                           border: `2px solid ${borderColor}`,
                           borderRadius: 2.5,
                           zIndex: 9999,
+                          cursor: isDragging ? 'grabbing' : 'default',
                           boxShadow: `0 12px 48px ${borderColor}40, inset 0 1px 0 rgba(255,255,255,0.05)`
                         }}
                       >
-                        {/* Header */}
-                        <Box sx={{ 
-                          p: 2, 
-                          borderBottom: '1px solid rgba(255,255,255,0.1)',
-                          background: `linear-gradient(135deg, ${borderColor}15 0%, transparent 100%)`
-                        }}>
+                        {/* Header - drag handle area */}
+                        <Box 
+                          className="spatial-drag-handle"
+                          sx={{ 
+                            p: 2, 
+                            borderBottom: '1px solid rgba(255,255,255,0.1)',
+                            background: `linear-gradient(135deg, ${borderColor}15 0%, transparent 100%)`,
+                            cursor: isDragging ? 'grabbing' : 'grab',
+                          }}
+                        >
                           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
                               {selectedSpatialObject.type === 'building' && <Business sx={{ color: borderColor, fontSize: 28 }} />}
@@ -8828,16 +9087,39 @@ function App() {
                                 </Typography>
                               </Box>
                             </Box>
-                            <IconButton 
-                              size="small" 
-                              onClick={() => {
-                                setSelectedSpatialObject(null);
-                                setSpatialClickPosition(null);
-                              }}
-                              sx={{ color: 'rgba(255,255,255,0.5)', '&:hover': { color: 'white' } }}
-                            >
-                              <Close sx={{ fontSize: 18 }} />
-                            </IconButton>
+                            <Box sx={{ display: 'flex', gap: 0.5 }}>
+                              {/* Pin button */}
+                              <Tooltip title="Pin this card">
+                                <IconButton 
+                                  size="small" 
+                                  onClick={() => {
+                                    // Add to pinned spatial objects
+                                    setPinnedSpatialObjects(prev => [...prev, {
+                                      object: selectedSpatialObject,
+                                      position: { x: cardLeft, y: cardTop },
+                                      id: `spatial-${selectedSpatialObject.id}-${Date.now()}`,
+                                      collapsed: false
+                                    }]);
+                                    setSelectedSpatialObject(null);
+                                    setSpatialClickPosition(null);
+                                  }}
+                                  sx={{ color: 'rgba(255,255,255,0.5)', '&:hover': { color: '#FBBF24' } }}
+                                >
+                                  <PushPin sx={{ fontSize: 16 }} />
+                                </IconButton>
+                              </Tooltip>
+                              <IconButton 
+                                size="small" 
+                                onClick={() => {
+                                  setSelectedSpatialObject(null);
+                                  setSpatialClickPosition(null);
+                                  setSelectedSpatialPosition(null);
+                                }}
+                                sx={{ color: 'rgba(255,255,255,0.5)', '&:hover': { color: 'white' } }}
+                              >
+                                <Close sx={{ fontSize: 18 }} />
+                              </IconButton>
+                            </Box>
                           </Box>
                           <Chip 
                             label={selectedSpatialObject.type.toUpperCase().replace('_', ' ')}
@@ -8852,8 +9134,8 @@ function App() {
                           />
                         </Box>
                         
-                        {/* Content */}
-                        <Stack spacing={2} sx={{ p: 2 }}>
+                        {/* Content - scrollable container for nested scrolling */}
+                        <Stack spacing={2} sx={{ p: 2, flex: 1, overflowY: 'auto' }}>
                           {/* Building Info Card */}
                           {selectedSpatialObject.type === 'building' && (() => {
                             const bldg = selectedSpatialObject as SpatialBuilding;
@@ -8889,7 +9171,7 @@ function App() {
                                     <Box sx={{ flex: 1 }}>
                                       <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Height</Typography>
                                       <Typography variant="h6" sx={{ color: '#3b82f6', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
-                                        {bldg.height_meters}m
+                                        {bldg.height_meters.toFixed(1)}m
                                       </Typography>
                                     </Box>
                                   )}
@@ -8925,6 +9207,8 @@ function App() {
                           {/* Power Line Info Card */}
                           {selectedSpatialObject.type === 'power_line' && (() => {
                             const line = selectedSpatialObject as SpatialPowerLine;
+                            const transformers = line.connected_assets?.filter(a => a.type === 'transformer') || [];
+                            const poles = line.connected_assets?.filter(a => a.type === 'pole') || [];
                             return (
                               <>
                                 <Box>
@@ -8983,6 +9267,151 @@ function App() {
                                     </Typography>
                                   </Box>
                                 )}
+                                
+                                {/* Connected Assets Section - Engineering: Navigate from power line to grid assets */}
+                                <Divider sx={{ my: 1, borderColor: 'rgba(255,255,255,0.1)' }} />
+                                <Box>
+                                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+                                    <ElectricalServices sx={{ fontSize: 16, color: '#FBBF24' }} />
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.7)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, fontSize: 10 }}>
+                                      CONNECTED ASSETS
+                                    </Typography>
+                                    {loadingConnectedAssets && (
+                                      <CircularProgress size={12} sx={{ color: '#FBBF24', ml: 'auto' }} />
+                                    )}
+                                  </Stack>
+                                  
+                                  {!loadingConnectedAssets && line.connected_assets && line.connected_assets.length === 0 && (
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.4)', fontStyle: 'italic' }}>
+                                      No grid assets found within 75m of this line
+                                    </Typography>
+                                  )}
+                                  
+                                  {/* Transformers */}
+                                  {transformers.length > 0 && (
+                                    <Box sx={{ mb: 1.5 }}>
+                                      <Typography variant="caption" sx={{ color: '#EC4899', fontWeight: 600, fontSize: 9, display: 'block', mb: 0.5 }}>
+                                        TRANSFORMERS ({transformers.length})
+                                      </Typography>
+                                      <Stack spacing={0.5} sx={{ maxHeight: 150, overflowY: 'auto' }}>
+                                        {transformers.map(asset => (
+                                          <Button
+                                            key={asset.id}
+                                            size="small"
+                                            variant="outlined"
+                                            startIcon={<Assessment sx={{ fontSize: 14 }} />}
+                                            onClick={() => {
+                                              // Navigate to asset - find in loaded assets or fly to location
+                                              const existingAsset = assets.find(a => a.id === asset.id);
+                                              if (existingAsset) {
+                                                setSelectedAsset(existingAsset);
+                                                setSelectedAssets(new Set([existingAsset.id]));
+                                                setClickPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+                                              }
+                                              flyToAsset(asset.longitude, asset.latitude, 17);
+                                              setSelectedSpatialObject(null);
+                                              setSpatialClickPosition(null);
+                                              setSelectedSpatialPosition(null);
+                                            }}
+                                            sx={{
+                                              justifyContent: 'flex-start',
+                                              textTransform: 'none',
+                                              fontSize: 10,
+                                              py: 0.5,
+                                              px: 1,
+                                              borderColor: 'rgba(236, 72, 153, 0.3)',
+                                              color: 'rgba(255,255,255,0.8)',
+                                              '&:hover': { 
+                                                borderColor: '#EC4899', 
+                                                bgcolor: 'rgba(236, 72, 153, 0.1)' 
+                                              }
+                                            }}
+                                          >
+                                            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', flex: 1 }}>
+                                              <Typography variant="caption" sx={{ fontSize: 10, fontWeight: 600 }}>
+                                                {asset.name || asset.id}
+                                              </Typography>
+                                              {asset.distance_m && (
+                                                <Typography variant="caption" sx={{ fontSize: 8, color: 'rgba(255,255,255,0.5)' }}>
+                                                  {asset.distance_m}m away
+                                                </Typography>
+                                              )}
+                                            </Box>
+                                            {asset.health_score !== undefined && (
+                                              <Chip 
+                                                label={`${Math.round(asset.health_score)}%`}
+                                                size="small"
+                                                sx={{ 
+                                                  height: 18, 
+                                                  fontSize: 9,
+                                                  bgcolor: asset.health_score < 60 ? 'rgba(239, 68, 68, 0.2)' : 
+                                                           asset.health_score < 80 ? 'rgba(251, 191, 36, 0.2)' : 'rgba(34, 197, 94, 0.2)',
+                                                  color: asset.health_score < 60 ? '#EF4444' : 
+                                                         asset.health_score < 80 ? '#FBBF24' : '#22C55E'
+                                                }}
+                                              />
+                                            )}
+                                          </Button>
+                                        ))}
+                                      </Stack>
+                                    </Box>
+                                  )}
+                                  
+                                  {/* Poles */}
+                                  {poles.length > 0 && (
+                                    <Box>
+                                      <Typography variant="caption" sx={{ color: '#8880ff', fontWeight: 600, fontSize: 9, display: 'block', mb: 0.5 }}>
+                                        POLES ({poles.length})
+                                      </Typography>
+                                      <Stack spacing={0.5} sx={{ maxHeight: 150, overflowY: 'auto' }}>
+                                        {poles.map(asset => (
+                                          <Button
+                                            key={asset.id}
+                                            size="small"
+                                            variant="outlined"
+                                            startIcon={<Engineering sx={{ fontSize: 14 }} />}
+                                            onClick={() => {
+                                              const existingAsset = assets.find(a => a.id === asset.id);
+                                              if (existingAsset) {
+                                                setSelectedAsset(existingAsset);
+                                                setSelectedAssets(new Set([existingAsset.id]));
+                                                setClickPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+                                              }
+                                              flyToAsset(asset.longitude, asset.latitude, 17);
+                                              setSelectedSpatialObject(null);
+                                              setSpatialClickPosition(null);
+                                              setSelectedSpatialPosition(null);
+                                            }}
+                                            sx={{
+                                              justifyContent: 'flex-start',
+                                              textTransform: 'none',
+                                              fontSize: 10,
+                                              py: 0.5,
+                                              px: 1,
+                                              borderColor: 'rgba(136, 128, 255, 0.3)',
+                                              color: 'rgba(255,255,255,0.8)',
+                                              '&:hover': { 
+                                                borderColor: '#8880ff', 
+                                                bgcolor: 'rgba(136, 128, 255, 0.1)' 
+                                              }
+                                            }}
+                                          >
+                                            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', flex: 1 }}>
+                                              <Typography variant="caption" sx={{ fontSize: 10, fontWeight: 600 }}>
+                                                {asset.name || asset.id}
+                                              </Typography>
+                                              {asset.distance_m && (
+                                                <Typography variant="caption" sx={{ fontSize: 8, color: 'rgba(255,255,255,0.5)' }}>
+                                                  {asset.distance_m}m away
+                                                </Typography>
+                                              )}
+                                            </Box>
+                                          </Button>
+                                        ))}
+                                      </Stack>
+                                    </Box>
+                                  )}
+                                </Box>
                               </>
                             );
                           })()}
@@ -9061,6 +9490,261 @@ function App() {
                     </Fade>
                   );
                 })()}
+
+                {/* Pinned Spatial Object Cards - Draggable like asset cards */}
+                {pinnedSpatialObjects.map((pinned) => {
+                  const handleSpatialMouseDown = (e: React.MouseEvent) => {
+                    if ((e.target as HTMLElement).closest('.spatial-pinned-drag-handle') && !(e.target as HTMLElement).closest('button')) {
+                      e.preventDefault();
+                      setDraggedCardId(pinned.id);
+                      setDragOffset({
+                        x: e.clientX - pinned.position.x,
+                        y: e.clientY - pinned.position.y
+                      });
+                    }
+                  };
+
+                  const isDragging = draggedCardId === pinned.id;
+                  const borderColor = pinned.object.type === 'building' ? '#F97316' :
+                                     pinned.object.type === 'power_line' ? '#FBBF24' : '#22C55E';
+                  const transformX = Math.min(pinned.position.x, window.innerWidth - 360);
+                  const zIndex = isDragging ? 10002 : 10001;
+
+                  return (
+                    <Fade key={pinned.id} in={true}>
+                      <Paper 
+                        onMouseDown={handleSpatialMouseDown}
+                        sx={{ 
+                          position: 'absolute', 
+                          left: 0,
+                          top: 0,
+                          transform: `translate3d(${transformX}px, ${pinned.position.y}px, 0)`,
+                          willChange: isDragging ? 'transform' : undefined,
+                          pointerEvents: 'auto',
+                          p: 2, 
+                          width: 340,
+                          maxHeight: 'calc(100vh - 40px)',
+                          overflowY: 'auto',
+                          overflowX: 'hidden',
+                          bgcolor: alpha('#0F172A', 0.95),
+                          backdropFilter: 'blur(20px)',
+                          zIndex,
+                          border: `2px solid ${borderColor}`,
+                          borderRadius: 2.5,
+                          boxShadow: `0 12px 48px ${borderColor}40`,
+                          cursor: isDragging ? 'grabbing' : 'default',
+                          userSelect: 'text',
+                          contain: 'layout style paint',
+                        }}
+                      >
+                        {/* Header with drag handle */}
+                        <Box 
+                          className="spatial-pinned-drag-handle"
+                          sx={{ 
+                            display: 'flex', 
+                            justifyContent: 'space-between', 
+                            alignItems: 'flex-start', 
+                            mb: 2, 
+                            cursor: 'grab', 
+                            '&:active': { cursor: 'grabbing' } 
+                          }}
+                        >
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                            {pinned.object.type === 'building' && <Business sx={{ color: borderColor, fontSize: 28 }} />}
+                            {pinned.object.type === 'power_line' && <ElectricalServices sx={{ color: borderColor, fontSize: 28 }} />}
+                            {pinned.object.type === 'vegetation' && <Park sx={{ color: borderColor, fontSize: 28 }} />}
+                            <Box>
+                              <Typography variant="h6" sx={{ fontWeight: 700, fontSize: 15, lineHeight: 1.2, color: borderColor }}>
+                                {pinned.object.type === 'building' ? 'Building' :
+                                 pinned.object.type === 'power_line' ? 'Power Line' : 'Vegetation'}
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontFamily: 'monospace', fontSize: 9 }}>
+                                {pinned.object.id}
+                              </Typography>
+                            </Box>
+                          </Box>
+                          <Box sx={{ display: 'flex', gap: 0.5 }}>
+                            <Tooltip title={pinned.collapsed ? "Expand" : "Collapse"}>
+                              <IconButton 
+                                size="small" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPinnedSpatialObjects(prev => prev.map(p => 
+                                    p.id === pinned.id ? { ...p, collapsed: !p.collapsed } : p
+                                  ));
+                                }}
+                              >
+                                {pinned.collapsed ? <ExpandMore sx={{ fontSize: 18 }} /> : <ExpandLess sx={{ fontSize: 18 }} />}
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Pinned - Click to unpin">
+                              <IconButton 
+                                size="small" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPinnedSpatialObjects(prev => prev.filter(p => p.id !== pinned.id));
+                                }}
+                                sx={{ color: '#FBBF24' }}
+                              >
+                                <PushPin sx={{ fontSize: 18 }} />
+                              </IconButton>
+                            </Tooltip>
+                            <IconButton 
+                              size="small" 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPinnedSpatialObjects(prev => prev.filter(p => p.id !== pinned.id));
+                              }}
+                            >
+                              <Close sx={{ fontSize: 18 }} />
+                            </IconButton>
+                          </Box>
+                        </Box>
+
+                        <Chip 
+                          label={pinned.object.type.toUpperCase().replace('_', ' ')} 
+                          size="small" 
+                          sx={{ mb: 2, fontWeight: 700, letterSpacing: 0.5, bgcolor: `${borderColor}20`, color: borderColor }} 
+                        />
+
+                        <Collapse in={!pinned.collapsed}>
+                          <Stack spacing={1.5}>
+                            {/* Power Line pinned card content */}
+                            {pinned.object.type === 'power_line' && (() => {
+                              const line = pinned.object as SpatialPowerLine;
+                              return (
+                                <>
+                                  {line.line_name && (
+                                    <Box>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Line Type</Typography>
+                                      <Typography variant="body2" sx={{ fontWeight: 600 }}>{line.line_name}</Typography>
+                                    </Box>
+                                  )}
+                                  <Box sx={{ display: 'flex', gap: 2 }}>
+                                    {line.voltage_kv && (
+                                      <Box sx={{ flex: 1 }}>
+                                        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Voltage</Typography>
+                                        <Typography variant="h6" sx={{ color: '#FBBF24', fontWeight: 800, fontSize: 18 }}>{line.voltage_kv} kV</Typography>
+                                      </Box>
+                                    )}
+                                    {line.length_km && (
+                                      <Box sx={{ flex: 1 }}>
+                                        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Length</Typography>
+                                        <Typography variant="h6" sx={{ color: '#3b82f6', fontWeight: 800, fontSize: 18 }}>{line.length_km.toFixed(2)} km</Typography>
+                                      </Box>
+                                    )}
+                                  </Box>
+                                  {/* Connected assets navigation */}
+                                  {line.connected_assets && line.connected_assets.length > 0 && (
+                                    <Box sx={{ mt: 1 }}>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', display: 'block', mb: 0.5 }}>
+                                        Connected Assets ({line.connected_assets.length})
+                                      </Typography>
+                                      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                                        {line.connected_assets.slice(0, 6).map(asset => (
+                                          <Chip
+                                            key={asset.id}
+                                            label={asset.type === 'transformer' ? 'T' : 'P'}
+                                            size="small"
+                                            onClick={() => {
+                                              const existingAsset = assets.find(a => a.id === asset.id);
+                                              if (existingAsset) {
+                                                setSelectedAsset(existingAsset);
+                                                setSelectedAssets(new Set([existingAsset.id]));
+                                              }
+                                              flyToAsset(asset.longitude, asset.latitude, 17);
+                                            }}
+                                            sx={{ 
+                                              height: 22, 
+                                              fontSize: 10, 
+                                              cursor: 'pointer',
+                                              bgcolor: asset.type === 'transformer' ? 'rgba(236, 72, 153, 0.2)' : 'rgba(136, 128, 255, 0.2)',
+                                              color: asset.type === 'transformer' ? '#EC4899' : '#8880ff',
+                                              '&:hover': { bgcolor: asset.type === 'transformer' ? 'rgba(236, 72, 153, 0.4)' : 'rgba(136, 128, 255, 0.4)' }
+                                            }}
+                                          />
+                                        ))}
+                                        {line.connected_assets.length > 6 && (
+                                          <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.4)', alignSelf: 'center' }}>
+                                            +{line.connected_assets.length - 6}
+                                          </Typography>
+                                        )}
+                                      </Stack>
+                                    </Box>
+                                  )}
+                                </>
+                              );
+                            })()}
+                            {/* Building pinned card content */}
+                            {pinned.object.type === 'building' && (() => {
+                              const bldg = pinned.object as SpatialBuilding;
+                              return (
+                                <>
+                                  {bldg.building_name && (
+                                    <Box>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Name</Typography>
+                                      <Typography variant="body2" sx={{ fontWeight: 600, color: '#F97316' }}>{bldg.building_name}</Typography>
+                                    </Box>
+                                  )}
+                                  <Box sx={{ display: 'flex', gap: 2 }}>
+                                    {bldg.height_meters && (
+                                      <Box sx={{ flex: 1 }}>
+                                        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Height</Typography>
+                                        <Typography variant="h6" sx={{ color: '#3b82f6', fontWeight: 800, fontSize: 18 }}>{bldg.height_meters.toFixed(1)}m</Typography>
+                                      </Box>
+                                    )}
+                                    {bldg.num_floors && (
+                                      <Box sx={{ flex: 1 }}>
+                                        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Floors</Typography>
+                                        <Typography variant="h6" sx={{ color: '#8b5cf6', fontWeight: 800, fontSize: 18 }}>{bldg.num_floors}</Typography>
+                                      </Box>
+                                    )}
+                                  </Box>
+                                </>
+                              );
+                            })()}
+                            {/* Vegetation pinned card content */}
+                            {pinned.object.type === 'vegetation' && (() => {
+                              const veg = pinned.object as SpatialVegetation;
+                              const risk = veg.risk_score || veg.proximity_risk || 0;
+                              return (
+                                <>
+                                  <Box sx={{ 
+                                    p: 1.5, 
+                                    bgcolor: risk > 0.7 ? 'rgba(239, 68, 68, 0.15)' : risk > 0.4 ? 'rgba(251, 191, 36, 0.15)' : 'rgba(34, 197, 94, 0.15)',
+                                    borderRadius: 1.5
+                                  }}>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Risk</Typography>
+                                    <Typography variant="h5" sx={{ 
+                                      color: risk > 0.7 ? '#EF4444' : risk > 0.4 ? '#FBBF24' : '#22C55E', 
+                                      fontWeight: 800
+                                    }}>
+                                      {(risk * 100).toFixed(0)}%
+                                    </Typography>
+                                  </Box>
+                                  <Box sx={{ display: 'flex', gap: 2 }}>
+                                    {(veg.height_m || veg.canopy_height) && (
+                                      <Box sx={{ flex: 1 }}>
+                                        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Height</Typography>
+                                        <Typography variant="h6" sx={{ color: '#22C55E', fontWeight: 800, fontSize: 18 }}>{veg.height_m || veg.canopy_height}m</Typography>
+                                      </Box>
+                                    )}
+                                    {veg.distance_to_line_m && (
+                                      <Box sx={{ flex: 1 }}>
+                                        <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase' }}>Distance</Typography>
+                                        <Typography variant="h6" sx={{ color: '#FBBF24', fontWeight: 800, fontSize: 18 }}>{veg.distance_to_line_m.toFixed(1)}m</Typography>
+                                      </Box>
+                                    )}
+                                  </Box>
+                                </>
+                              );
+                            })()}
+                          </Stack>
+                        </Collapse>
+                      </Paper>
+                    </Fade>
+                  );
+                })}
 
                 {hoveredAsset && hoverPosition && (
                   <Fade in timeout={150}>
@@ -9408,7 +10092,7 @@ function App() {
                               <Box>
                                 <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Height</Typography>
                                 <Typography variant="body2" sx={{ color: '#3b82f6', fontSize: 11 }}>
-                                  {(hoveredSpatialObject as SpatialBuilding).height_meters}m
+                                  {(hoveredSpatialObject as SpatialBuilding).height_meters!.toFixed(1)}m
                                   {(hoveredSpatialObject as SpatialBuilding).num_floors && ` (${(hoveredSpatialObject as SpatialBuilding).num_floors} floors)`}
                                 </Typography>
                               </Box>

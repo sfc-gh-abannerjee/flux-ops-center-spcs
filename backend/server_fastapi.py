@@ -2975,6 +2975,106 @@ async def get_power_lines_layer(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/spatial/layers/power-lines/{line_id}/connected-assets", tags=["Geospatial Layers"])
+async def get_power_line_connected_assets(
+    line_id: str,
+    search_radius_m: float = Query(50.0, description="Search radius in meters around the power line")
+):
+    """
+    Engineering: Find grid assets connected to a specific power line.
+    
+    Uses PostGIS ST_DWithin to find transformers and poles within the search radius 
+    of the power line geometry. This enables navigation from power lines to the 
+    grid assets they connect.
+    
+    Performance: Uses GIST spatial indexes for sub-50ms queries.
+    """
+    if not postgres_pool:
+        raise HTTPException(status_code=503, detail="Postgres not configured")
+    
+    start = time.time()
+    
+    try:
+        async with postgres_pool.acquire() as conn:
+            # First get the power line geometry
+            line_geom = await conn.fetchval("""
+                SELECT geom FROM power_lines_spatial WHERE power_line_id = $1
+            """, line_id)
+            
+            if not line_geom:
+                return {
+                    "line_id": line_id,
+                    "connected_assets": [],
+                    "count": 0,
+                    "error": "Power line not found"
+                }
+            
+            # Find grid assets near the power line using PostGIS ST_DWithin
+            # Convert meters to degrees (approximate at Houston latitude ~29.7)
+            # 1 degree latitude ≈ 110,540 meters
+            # 1 degree longitude ≈ 96,486 meters (at 29.7° latitude)
+            search_radius_deg = search_radius_m / 110540.0
+            
+            rows = await conn.fetch("""
+                WITH line AS (
+                    SELECT geom FROM power_lines_spatial WHERE power_line_id = $1
+                )
+                SELECT 
+                    ga.asset_id,
+                    ga.asset_name,
+                    ga.asset_type,
+                    ga.latitude,
+                    ga.longitude,
+                    ga.health_score,
+                    ga.load_percent,
+                    ga.circuit_id,
+                    ST_Distance(
+                        ST_Transform(ST_SetSRID(ST_MakePoint(ga.longitude, ga.latitude), 4326), 3857),
+                        ST_Transform(line.geom, 3857)
+                    ) as distance_m
+                FROM grid_assets_cache ga, line
+                WHERE ST_DWithin(
+                    ST_SetSRID(ST_MakePoint(ga.longitude, ga.latitude), 4326),
+                    line.geom,
+                    $2
+                )
+                AND ga.asset_type IN ('transformer', 'pole')
+                ORDER BY distance_m ASC
+                LIMIT 50
+            """, line_id, search_radius_deg)
+            
+            connected_assets = [
+                {
+                    "id": row["asset_id"],
+                    "name": row["asset_name"],
+                    "type": row["asset_type"],
+                    "latitude": float(row["latitude"]),
+                    "longitude": float(row["longitude"]),
+                    "health_score": float(row["health_score"]) if row["health_score"] else None,
+                    "load_percent": float(row["load_percent"]) if row["load_percent"] else None,
+                    "circuit_id": row["circuit_id"],
+                    "distance_m": round(float(row["distance_m"]), 1) if row["distance_m"] else None
+                }
+                for row in rows
+            ]
+            
+            query_time_ms = round((time.time() - start) * 1000, 2)
+            
+            return {
+                "line_id": line_id,
+                "connected_assets": connected_assets,
+                "count": len(connected_assets),
+                "search_radius_m": search_radius_m,
+                "transformers": sum(1 for a in connected_assets if a["type"] == "transformer"),
+                "poles": sum(1 for a in connected_assets if a["type"] == "pole"),
+                "query_time_ms": query_time_ms
+            }
+    
+    except Exception as e:
+        logger.error(f"Power line connected assets query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/spatial/layers/vegetation", tags=["Geospatial Layers"])
 async def get_vegetation_layer(
     min_lon: float = Query(-95.8, description="Viewport min longitude"),
