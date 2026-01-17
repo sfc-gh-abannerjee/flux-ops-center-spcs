@@ -458,6 +458,41 @@ interface SubstationStatus {
   last_updated?: string;
 }
 
+interface SpatialBuilding {
+  id: string;
+  type: 'building';
+  building_type?: string;
+  height_meters?: number;
+  num_floors?: number;
+  footprint_area_sqm?: number;
+  address?: string;
+  centroid?: [number, number];
+}
+
+interface SpatialPowerLine {
+  id: string;
+  type: 'power_line';
+  line_name?: string;
+  voltage_kv?: number;
+  length_km?: number;
+  conductor_type?: string;
+  installation_year?: number;
+  coordinates: number[][];
+}
+
+interface SpatialVegetation {
+  id: string;
+  type: 'vegetation';
+  species?: string;
+  height_m?: number;
+  canopy_height?: number;
+  risk_score?: number;
+  proximity_risk?: number;
+  distance_to_line_m?: number;
+  latitude: number;
+  longitude: number;
+}
+
 interface TopologyLink {
   from_asset_id: string;
   to_asset_id: string;
@@ -626,6 +661,11 @@ function App() {
   const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const [clickPosition, setClickPosition] = useState<{ x: number; y: number } | null>(null);
   const [pinnedAssets, setPinnedAssets] = useState<Array<{asset: Asset, position: {x: number, y: number}, id: string, collapsed: boolean}>>([]);
+  
+  const [hoveredSpatialObject, setHoveredSpatialObject] = useState<SpatialBuilding | SpatialPowerLine | SpatialVegetation | null>(null);
+  const [spatialHoverPosition, setSpatialHoverPosition] = useState<{ x: number; y: number } | null>(null);
+  const [selectedSpatialObject, setSelectedSpatialObject] = useState<SpatialBuilding | SpatialPowerLine | SpatialVegetation | null>(null);
+  const [spatialClickPosition, setSpatialClickPosition] = useState<{ x: number; y: number } | null>(null);
   
   // Clustering cache refs - work for both circuit-based and fallback clustering
   const clusterCacheRef = useRef<AssetCluster[]>([]);
@@ -5251,7 +5291,40 @@ function App() {
         elevationScale: currentZoom > 16 ? 1 : currentZoom > 14 ? 2 : currentZoom > 12 ? 4 : 8,
         pickable: true,
         autoHighlight: true,
-        highlightColor: [255, 200, 0, 200]
+        highlightColor: [255, 200, 0, 200],
+        onClick: (info: any) => {
+          if (info.object) {
+            const building: SpatialBuilding = {
+              id: info.object.properties?.id || `bldg-${info.index}`,
+              type: 'building',
+              building_type: info.object.properties?.building_type,
+              height_meters: info.object.properties?.height_meters,
+              num_floors: info.object.properties?.num_floors,
+              footprint_area_sqm: info.object.properties?.footprint_area_sqm,
+              address: info.object.properties?.address
+            };
+            setSelectedSpatialObject(building);
+            setSpatialClickPosition({ x: info.x, y: info.y });
+            setSelectedAsset(null);
+          }
+        },
+        onHover: (info: any) => {
+          if (info.object) {
+            const building: SpatialBuilding = {
+              id: info.object.properties?.id || `bldg-${info.index}`,
+              type: 'building',
+              building_type: info.object.properties?.building_type,
+              height_meters: info.object.properties?.height_meters,
+              num_floors: info.object.properties?.num_floors,
+              footprint_area_sqm: info.object.properties?.footprint_area_sqm
+            };
+            setHoveredSpatialObject(building);
+            setSpatialHoverPosition({ x: info.x, y: info.y });
+          } else {
+            setHoveredSpatialObject(null);
+            setSpatialHoverPosition(null);
+          }
+        }
       })
     ] : []),
 
@@ -5283,7 +5356,41 @@ function App() {
         jointRounded: true,
         pickable: true,
         autoHighlight: true,
-        highlightColor: [255, 255, 100, 255]
+        highlightColor: [255, 255, 100, 255],
+        onClick: (info: any) => {
+          if (info.object) {
+            const powerLine: SpatialPowerLine = {
+              id: info.object.id || `line-${info.index}`,
+              type: 'power_line',
+              line_name: info.object.line_name,
+              voltage_kv: info.object.voltage_kv,
+              length_km: info.object.length_km,
+              conductor_type: info.object.conductor_type,
+              installation_year: info.object.installation_year,
+              coordinates: info.object.coordinates || info.object.path
+            };
+            setSelectedSpatialObject(powerLine);
+            setSpatialClickPosition({ x: info.x, y: info.y });
+            setSelectedAsset(null);
+          }
+        },
+        onHover: (info: any) => {
+          if (info.object) {
+            const powerLine: SpatialPowerLine = {
+              id: info.object.id || `line-${info.index}`,
+              type: 'power_line',
+              line_name: info.object.line_name,
+              voltage_kv: info.object.voltage_kv,
+              length_km: info.object.length_km,
+              coordinates: info.object.coordinates || info.object.path
+            };
+            setHoveredSpatialObject(powerLine);
+            setSpatialHoverPosition({ x: info.x, y: info.y });
+          } else {
+            setHoveredSpatialObject(null);
+            setSpatialHoverPosition(null);
+          }
+        }
       })
     ] : []),
 
@@ -5307,7 +5414,45 @@ function App() {
         elevationScale: currentZoom > 15 ? 1 : currentZoom > 13 ? 1.5 : 2.5,
         pickable: true,
         autoHighlight: true,
-        highlightColor: [255, 255, 100, 255]
+        highlightColor: [255, 255, 100, 255],
+        onClick: (info: any) => {
+          if (info.object) {
+            const vegetation: SpatialVegetation = {
+              id: info.object.id || `tree-${info.index}`,
+              type: 'vegetation',
+              species: info.object.species,
+              height_m: info.object.height_m,
+              canopy_height: info.object.canopy_height,
+              risk_score: info.object.risk_score,
+              proximity_risk: info.object.proximity_risk,
+              distance_to_line_m: info.object.distance_to_line_m,
+              latitude: info.object.latitude || info.object.lat,
+              longitude: info.object.longitude || info.object.lon
+            };
+            setSelectedSpatialObject(vegetation);
+            setSpatialClickPosition({ x: info.x, y: info.y });
+            setSelectedAsset(null);
+          }
+        },
+        onHover: (info: any) => {
+          if (info.object) {
+            const vegetation: SpatialVegetation = {
+              id: info.object.id || `tree-${info.index}`,
+              type: 'vegetation',
+              species: info.object.species,
+              height_m: info.object.height_m,
+              risk_score: info.object.risk_score,
+              proximity_risk: info.object.proximity_risk,
+              latitude: info.object.latitude || info.object.lat,
+              longitude: info.object.longitude || info.object.lon
+            };
+            setHoveredSpatialObject(vegetation);
+            setSpatialHoverPosition({ x: info.x, y: info.y });
+          } else {
+            setHoveredSpatialObject(null);
+            setSpatialHoverPosition(null);
+          }
+        }
       })
     ] : [])
   ].filter(Boolean), [
@@ -8442,6 +8587,294 @@ function App() {
                   );
                 })()}
 
+                {/* Selected Spatial Object Info Card - Buildings, Power Lines, Vegetation */}
+                {selectedSpatialObject && spatialClickPosition && (() => {
+                  const CARD_WIDTH = 340;
+                  const CARD_HEIGHT = 450;
+                  const MARGIN = 20;
+                  
+                  const viewportWidth = window.innerWidth;
+                  const viewportHeight = window.innerHeight;
+                  const nearRight = spatialClickPosition.x + CARD_WIDTH + MARGIN > viewportWidth;
+                  const nearBottom = spatialClickPosition.y + CARD_HEIGHT + MARGIN > viewportHeight;
+                  
+                  let cardLeft = nearRight ? Math.max(10, spatialClickPosition.x - CARD_WIDTH - MARGIN) : spatialClickPosition.x + MARGIN;
+                  let cardTop = nearBottom ? Math.max(10, spatialClickPosition.y - CARD_HEIGHT - MARGIN) : spatialClickPosition.y + MARGIN;
+                  
+                  cardLeft = Math.max(10, Math.min(cardLeft, viewportWidth - CARD_WIDTH - 10));
+                  cardTop = Math.max(10, Math.min(cardTop, viewportHeight - 150));
+                  
+                  const borderColor = selectedSpatialObject.type === 'building' ? '#F97316' :
+                                     selectedSpatialObject.type === 'power_line' ? '#FBBF24' : '#22C55E';
+                  
+                  return (
+                    <Fade in timeout={300}>
+                      <Paper
+                        elevation={16}
+                        sx={{
+                          position: 'absolute',
+                          left: cardLeft,
+                          top: cardTop,
+                          width: CARD_WIDTH,
+                          maxHeight: CARD_HEIGHT,
+                          overflow: 'auto',
+                          bgcolor: 'rgba(15, 23, 42, 0.95)',
+                          backdropFilter: 'blur(20px)',
+                          border: `2px solid ${borderColor}`,
+                          borderRadius: 2.5,
+                          zIndex: 9999,
+                          boxShadow: `0 12px 48px ${borderColor}40, inset 0 1px 0 rgba(255,255,255,0.05)`
+                        }}
+                      >
+                        {/* Header */}
+                        <Box sx={{ 
+                          p: 2, 
+                          borderBottom: '1px solid rgba(255,255,255,0.1)',
+                          background: `linear-gradient(135deg, ${borderColor}15 0%, transparent 100%)`
+                        }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                              {selectedSpatialObject.type === 'building' && <Business sx={{ color: borderColor, fontSize: 28 }} />}
+                              {selectedSpatialObject.type === 'power_line' && <ElectricalServices sx={{ color: borderColor, fontSize: 28 }} />}
+                              {selectedSpatialObject.type === 'vegetation' && <Park sx={{ color: borderColor, fontSize: 28 }} />}
+                              <Box>
+                                <Typography variant="h6" sx={{ 
+                                  fontWeight: 700, 
+                                  fontSize: 16, 
+                                  color: borderColor,
+                                  lineHeight: 1.2
+                                }}>
+                                  {selectedSpatialObject.type === 'building' ? 'Building Footprint' :
+                                   selectedSpatialObject.type === 'power_line' ? 'Power Line' : 'Vegetation Risk'}
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 10 }}>
+                                  PostGIS Spatial Layer
+                                </Typography>
+                              </Box>
+                            </Box>
+                            <IconButton 
+                              size="small" 
+                              onClick={() => {
+                                setSelectedSpatialObject(null);
+                                setSpatialClickPosition(null);
+                              }}
+                              sx={{ color: 'rgba(255,255,255,0.5)', '&:hover': { color: 'white' } }}
+                            >
+                              <Close sx={{ fontSize: 18 }} />
+                            </IconButton>
+                          </Box>
+                          <Chip 
+                            label={selectedSpatialObject.type.toUpperCase().replace('_', ' ')}
+                            size="small"
+                            sx={{ 
+                              bgcolor: `${borderColor}20`,
+                              color: borderColor,
+                              fontWeight: 700,
+                              fontSize: 10,
+                              height: 22
+                            }}
+                          />
+                        </Box>
+                        
+                        {/* Content */}
+                        <Stack spacing={2} sx={{ p: 2 }}>
+                          {/* Building Info Card */}
+                          {selectedSpatialObject.type === 'building' && (() => {
+                            const bldg = selectedSpatialObject as SpatialBuilding;
+                            return (
+                              <>
+                                <Box>
+                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>ID</Typography>
+                                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
+                                    {bldg.id}
+                                  </Typography>
+                                </Box>
+                                {bldg.building_type && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Building Type</Typography>
+                                    <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 13, textTransform: 'capitalize' }}>
+                                      {bldg.building_type}
+                                    </Typography>
+                                  </Box>
+                                )}
+                                <Box sx={{ display: 'flex', gap: 3 }}>
+                                  {bldg.height_meters && (
+                                    <Box sx={{ flex: 1 }}>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Height</Typography>
+                                      <Typography variant="h6" sx={{ color: '#3b82f6', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
+                                        {bldg.height_meters}m
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                  {bldg.num_floors && (
+                                    <Box sx={{ flex: 1 }}>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Floors</Typography>
+                                      <Typography variant="h6" sx={{ color: '#8b5cf6', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
+                                        {bldg.num_floors}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                </Box>
+                                {bldg.footprint_area_sqm && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Footprint Area</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: 13 }}>
+                                      {bldg.footprint_area_sqm.toLocaleString()} m²
+                                    </Typography>
+                                  </Box>
+                                )}
+                                {bldg.address && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Address</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: 12 }}>
+                                      {bldg.address}
+                                    </Typography>
+                                  </Box>
+                                )}
+                              </>
+                            );
+                          })()}
+
+                          {/* Power Line Info Card */}
+                          {selectedSpatialObject.type === 'power_line' && (() => {
+                            const line = selectedSpatialObject as SpatialPowerLine;
+                            return (
+                              <>
+                                <Box>
+                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>ID</Typography>
+                                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
+                                    {line.id}
+                                  </Typography>
+                                </Box>
+                                {line.line_name && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Line Name</Typography>
+                                    <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 13 }}>
+                                      {line.line_name}
+                                    </Typography>
+                                  </Box>
+                                )}
+                                <Box sx={{ display: 'flex', gap: 3 }}>
+                                  {line.voltage_kv && (
+                                    <Box sx={{ flex: 1 }}>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Voltage</Typography>
+                                      <Typography variant="h6" sx={{ color: '#FBBF24', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
+                                        {line.voltage_kv} kV
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                  {line.length_km && (
+                                    <Box sx={{ flex: 1 }}>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Length</Typography>
+                                      <Typography variant="h6" sx={{ color: '#3b82f6', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
+                                        {line.length_km.toFixed(2)} km
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                </Box>
+                                {line.conductor_type && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Conductor Type</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: 13 }}>
+                                      {line.conductor_type}
+                                    </Typography>
+                                  </Box>
+                                )}
+                                {line.installation_year && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Installation Year</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: 13 }}>
+                                      {line.installation_year}
+                                    </Typography>
+                                  </Box>
+                                )}
+                                {line.coordinates && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Vertices</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>
+                                      {line.coordinates.length} points
+                                    </Typography>
+                                  </Box>
+                                )}
+                              </>
+                            );
+                          })()}
+
+                          {/* Vegetation Info Card */}
+                          {selectedSpatialObject.type === 'vegetation' && (() => {
+                            const veg = selectedSpatialObject as SpatialVegetation;
+                            const risk = veg.risk_score || veg.proximity_risk || 0;
+                            return (
+                              <>
+                                <Box>
+                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>ID</Typography>
+                                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
+                                    {veg.id}
+                                  </Typography>
+                                </Box>
+                                <Box sx={{ 
+                                  p: 2, 
+                                  bgcolor: risk > 0.7 ? 'rgba(239, 68, 68, 0.15)' : risk > 0.4 ? 'rgba(251, 191, 36, 0.15)' : 'rgba(34, 197, 94, 0.15)',
+                                  borderRadius: 2,
+                                  border: `1px solid ${risk > 0.7 ? 'rgba(239, 68, 68, 0.3)' : risk > 0.4 ? 'rgba(251, 191, 36, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`
+                                }}>
+                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Risk Assessment</Typography>
+                                  <Typography variant="h4" sx={{ 
+                                    color: risk > 0.7 ? '#EF4444' : risk > 0.4 ? '#FBBF24' : '#22C55E', 
+                                    fontWeight: 800,
+                                    fontSize: 32,
+                                    lineHeight: 1
+                                  }}>
+                                    {(risk * 100).toFixed(0)}%
+                                  </Typography>
+                                  <Typography variant="caption" sx={{ 
+                                    color: risk > 0.7 ? '#EF4444' : risk > 0.4 ? '#FBBF24' : '#22C55E',
+                                    fontWeight: 600
+                                  }}>
+                                    {risk > 0.7 ? 'HIGH RISK' : risk > 0.4 ? 'MODERATE RISK' : 'LOW RISK'}
+                                  </Typography>
+                                </Box>
+                                <Box sx={{ display: 'flex', gap: 3 }}>
+                                  {(veg.height_m || veg.canopy_height) && (
+                                    <Box sx={{ flex: 1 }}>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Tree Height</Typography>
+                                      <Typography variant="h6" sx={{ color: '#22C55E', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
+                                        {veg.height_m || veg.canopy_height}m
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                  {veg.distance_to_line_m && (
+                                    <Box sx={{ flex: 1 }}>
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Distance to Line</Typography>
+                                      <Typography variant="h6" sx={{ color: '#FBBF24', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
+                                        {veg.distance_to_line_m.toFixed(1)}m
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                </Box>
+                                {veg.species && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Species</Typography>
+                                    <Typography variant="body2" sx={{ fontSize: 13, textTransform: 'capitalize' }}>
+                                      {veg.species}
+                                    </Typography>
+                                  </Box>
+                                )}
+                                <Box>
+                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Coordinates</Typography>
+                                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.6)' }}>
+                                    {veg.latitude?.toFixed(6)}, {veg.longitude?.toFixed(6)}
+                                  </Typography>
+                                </Box>
+                              </>
+                            );
+                          })()}
+                        </Stack>
+                      </Paper>
+                    </Fade>
+                  );
+                })()}
+
                 {hoveredAsset && hoverPosition && (
                   <Fade in timeout={150}>
                     <Paper
@@ -8717,6 +9150,155 @@ function App() {
                                 {hoveredAsset.latitude.toFixed(6)}, {hoveredAsset.longitude.toFixed(6)}
                               </Typography>
                             </Box>
+                          </>
+                        )}
+                      </Stack>
+                    </Paper>
+                  </Fade>
+                )}
+
+                {/* Spatial Object Hover Tooltip - Buildings, Power Lines, Vegetation */}
+                {hoveredSpatialObject && spatialHoverPosition && (
+                  <Fade in timeout={150}>
+                    <Paper
+                      elevation={12}
+                      sx={{
+                        position: 'absolute',
+                        left: spatialHoverPosition.x + 15,
+                        top: spatialHoverPosition.y + 15,
+                        pointerEvents: 'none',
+                        bgcolor: 'rgba(15, 23, 42, 0.6)',
+                        backdropFilter: 'blur(20px)',
+                        border: `2px solid ${
+                          hoveredSpatialObject.type === 'building' ? 'rgba(249, 115, 22, 0.6)' :
+                          hoveredSpatialObject.type === 'power_line' ? 'rgba(251, 191, 36, 0.6)' :
+                          'rgba(34, 197, 94, 0.6)'
+                        }`,
+                        borderRadius: 2,
+                        p: 1.5,
+                        minWidth: 200,
+                        maxWidth: 260,
+                        zIndex: 10000,
+                        boxShadow: `0 8px 32px ${
+                          hoveredSpatialObject.type === 'building' ? 'rgba(249, 115, 22, 0.2)' :
+                          hoveredSpatialObject.type === 'power_line' ? 'rgba(251, 191, 36, 0.2)' :
+                          'rgba(34, 197, 94, 0.2)'
+                        }`
+                      }}
+                    >
+                      <Stack spacing={0.75} divider={<Divider sx={{ borderColor: 'rgba(255,255,255,0.1)' }} />}>
+                        {hoveredSpatialObject.type === 'building' && (
+                          <>
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Layer Type</Typography>
+                              <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, textTransform: 'capitalize', color: '#F97316' }}>
+                                Building Footprint
+                              </Typography>
+                            </Box>
+                            {(hoveredSpatialObject as SpatialBuilding).building_type && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Building Type</Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 12, textTransform: 'capitalize' }}>
+                                  {(hoveredSpatialObject as SpatialBuilding).building_type}
+                                </Typography>
+                              </Box>
+                            )}
+                            {(hoveredSpatialObject as SpatialBuilding).height_meters && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Height</Typography>
+                                <Typography variant="body2" sx={{ color: '#3b82f6', fontSize: 11 }}>
+                                  {(hoveredSpatialObject as SpatialBuilding).height_meters}m
+                                  {(hoveredSpatialObject as SpatialBuilding).num_floors && ` (${(hoveredSpatialObject as SpatialBuilding).num_floors} floors)`}
+                                </Typography>
+                              </Box>
+                            )}
+                            {(hoveredSpatialObject as SpatialBuilding).footprint_area_sqm && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Footprint Area</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 11 }}>
+                                  {(hoveredSpatialObject as SpatialBuilding).footprint_area_sqm?.toLocaleString()} m²
+                                </Typography>
+                              </Box>
+                            )}
+                          </>
+                        )}
+
+                        {hoveredSpatialObject.type === 'power_line' && (
+                          <>
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Layer Type</Typography>
+                              <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, color: '#FBBF24' }}>
+                                Power Line
+                              </Typography>
+                            </Box>
+                            {(hoveredSpatialObject as SpatialPowerLine).line_name && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Line Name</Typography>
+                                <Typography variant="body2" sx={{ fontWeight: 600, fontSize: 12 }}>
+                                  {(hoveredSpatialObject as SpatialPowerLine).line_name}
+                                </Typography>
+                              </Box>
+                            )}
+                            {(hoveredSpatialObject as SpatialPowerLine).voltage_kv && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Voltage</Typography>
+                                <Typography variant="body2" sx={{ color: '#3b82f6', fontWeight: 700, fontSize: 13 }}>
+                                  {(hoveredSpatialObject as SpatialPowerLine).voltage_kv} kV
+                                </Typography>
+                              </Box>
+                            )}
+                            {(hoveredSpatialObject as SpatialPowerLine).length_km && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Length</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 11 }}>
+                                  {(hoveredSpatialObject as SpatialPowerLine).length_km?.toFixed(2)} km
+                                </Typography>
+                              </Box>
+                            )}
+                          </>
+                        )}
+
+                        {hoveredSpatialObject.type === 'vegetation' && (
+                          <>
+                            <Box>
+                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Layer Type</Typography>
+                              <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, color: '#22C55E' }}>
+                                Vegetation Risk
+                              </Typography>
+                            </Box>
+                            {(() => {
+                              const veg = hoveredSpatialObject as SpatialVegetation;
+                              const risk = veg.risk_score || veg.proximity_risk || 0;
+                              return (
+                                <Box>
+                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Risk Score</Typography>
+                                  <Typography variant="h6" sx={{ 
+                                    color: risk > 0.7 ? '#EF4444' : risk > 0.4 ? '#FBBF24' : '#22C55E', 
+                                    fontWeight: 800,
+                                    fontSize: 18,
+                                    lineHeight: 1
+                                  }}>
+                                    {(risk * 100).toFixed(0)}%
+                                  </Typography>
+                                </Box>
+                              );
+                            })()}
+                            {(hoveredSpatialObject as SpatialVegetation).height_m && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Tree Height</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 11 }}>
+                                  {(hoveredSpatialObject as SpatialVegetation).height_m}m
+                                </Typography>
+                              </Box>
+                            )}
+                            {(hoveredSpatialObject as SpatialVegetation).species && (
+                              <Box>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Species</Typography>
+                                <Typography variant="body2" sx={{ fontSize: 11, textTransform: 'capitalize' }}>
+                                  {(hoveredSpatialObject as SpatialVegetation).species}
+                                </Typography>
+                              </Box>
+                            )}
                           </>
                         )}
                       </Stack>
