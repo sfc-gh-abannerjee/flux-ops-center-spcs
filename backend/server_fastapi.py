@@ -3142,51 +3142,80 @@ async def get_building_tiles_mvt(z: int, x: int, y: int):
     Uses ST_AsMVT() for O(1) tile generation with spatial index.
     deck.gl MVTLayer consumes these directly - instant pan/zoom.
     
-    Includes building_name for POI labeling (CVS, Walmart, etc.)
+    OPTIMIZED: Removed centroid calculation for faster tile generation.
+    Uses ST_Simplify for lower zoom levels to reduce polygon complexity.
     """
     if not postgres_pool:
         raise HTTPException(status_code=503, detail="Postgres not configured")
     
     start = time.time()
     
+    # Simplify geometry for lower zoom levels (reduces polygon complexity significantly)
+    # Higher tolerance = more simplification = faster rendering
+    simplify_tolerance = 0 if z >= 16 else (0.0001 if z >= 14 else (0.0005 if z >= 12 else 0.001))
+    
     try:
         async with postgres_pool.acquire() as conn:
-            tile_data = await conn.fetchval("""
-                WITH bounds AS (
-                    SELECT ST_TileEnvelope($1, $2, $3) AS geom
-                ),
-                mvtgeom AS (
-                    SELECT 
-                        ST_AsMVTGeom(
-                            ST_Transform(b.geom, 3857),
-                            bounds.geom,
-                            4096,
-                            256,
-                            true
-                        ) AS geom,
-                        b.building_id,
-                        b.building_name,
-                        b.building_type,
-                        b.height_meters,
-                        b.num_floors,
-                        ST_X(ST_Centroid(b.geom)) as centroid_lon,
-                        ST_Y(ST_Centroid(b.geom)) as centroid_lat
-                    FROM building_footprints b, bounds
-                    WHERE ST_Intersects(
-                        ST_Transform(b.geom, 3857),
-                        bounds.geom
+            # Use simplified geometry for lower zooms, full detail for z >= 16
+            if simplify_tolerance > 0:
+                tile_data = await conn.fetchval("""
+                    WITH bounds AS (
+                        SELECT ST_TileEnvelope($1, $2, $3) AS geom
+                    ),
+                    mvtgeom AS (
+                        SELECT 
+                            ST_AsMVTGeom(
+                                ST_Transform(ST_Simplify(b.geom, $4), 3857),
+                                bounds.geom,
+                                4096,
+                                64,
+                                true
+                            ) AS geom,
+                            b.building_id,
+                            b.building_name,
+                            b.building_type,
+                            b.height_meters,
+                            b.num_floors
+                        FROM building_footprints b, bounds
+                        WHERE b.geom && ST_Transform(bounds.geom, 4326)
                     )
-                )
-                SELECT ST_AsMVT(mvtgeom.*, 'buildings', 4096, 'geom') FROM mvtgeom
-            """, z, x, y)
+                    SELECT ST_AsMVT(mvtgeom.*, 'buildings', 4096, 'geom') FROM mvtgeom
+                """, z, x, y, simplify_tolerance)
+            else:
+                tile_data = await conn.fetchval("""
+                    WITH bounds AS (
+                        SELECT ST_TileEnvelope($1, $2, $3) AS geom
+                    ),
+                    mvtgeom AS (
+                        SELECT 
+                            ST_AsMVTGeom(
+                                ST_Transform(b.geom, 3857),
+                                bounds.geom,
+                                4096,
+                                64,
+                                true
+                            ) AS geom,
+                            b.building_id,
+                            b.building_name,
+                            b.building_type,
+                            b.height_meters,
+                            b.num_floors
+                        FROM building_footprints b, bounds
+                        WHERE b.geom && ST_Transform(bounds.geom, 4326)
+                    )
+                    SELECT ST_AsMVT(mvtgeom.*, 'buildings', 4096, 'geom') FROM mvtgeom
+                """, z, x, y)
             
-            logger.info(f"MVT tile z={z} x={x} y={y} generated in {round((time.time() - start) * 1000, 2)}ms")
+            elapsed_ms = round((time.time() - start) * 1000, 2)
+            if elapsed_ms > 100:
+                logger.warning(f"MVT tile z={z} x={x} y={y} slow: {elapsed_ms}ms")
             
             return Response(
                 content=tile_data or b'',
                 media_type="application/vnd.mapbox-vector-tile",
                 headers={
-                    "Cache-Control": "public, max-age=3600",
+                    # Aggressive caching for tile data
+                    "Cache-Control": "public, max-age=86400, stale-while-revalidate=604800",
                     "Access-Control-Allow-Origin": "*"
                 }
             )

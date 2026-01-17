@@ -1180,6 +1180,10 @@ function App() {
   }, [layersVisible.powerLines, spatialData.powerLines.length, spatialLoading.powerLines, loadSpatialLayer, viewState.zoom]);
 
   // Engineering: Reload power lines when zoom crosses LOD thresholds
+  // OPTIMIZED: Use debounced reload to prevent flickering during zoom animations
+  // Keep old data visible until new data arrives (no clearing)
+  const powerLinesReloadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
   useEffect(() => {
     if (!layersVisible.powerLines || spatialLoading.powerLines || powerLinesLoadedZoom === null) return;
     
@@ -1188,12 +1192,30 @@ function App() {
     const currentLod = getCurrentLod(viewState.zoom);
     const loadedLod = getCurrentLod(powerLinesLoadedZoom);
     
-    // Reload if LOD level changed
+    // Only reload if LOD level changed AND zoom has stabilized
     if (currentLod !== loadedLod) {
-      console.log(`🔄 Power lines LOD change: ${loadedLod} → ${currentLod} (zoom ${powerLinesLoadedZoom.toFixed(1)} → ${viewState.zoom.toFixed(1)})`);
-      setSpatialData(prev => ({ ...prev, powerLines: [] }));
-      loadSpatialLayer('powerLines', viewState.zoom);
+      // Clear any pending reload
+      if (powerLinesReloadTimeoutRef.current) {
+        clearTimeout(powerLinesReloadTimeoutRef.current);
+      }
+      
+      // Debounce the reload - wait 300ms for zoom to stabilize
+      powerLinesReloadTimeoutRef.current = setTimeout(() => {
+        // Re-check LOD after debounce (zoom may have changed back)
+        const finalLod = getCurrentLod(viewState.zoom);
+        if (finalLod !== loadedLod && !spatialLoading.powerLines) {
+          console.log(`🔄 Power lines LOD change: ${loadedLod} → ${finalLod} (zoom ${powerLinesLoadedZoom.toFixed(1)} → ${viewState.zoom.toFixed(1)})`);
+          // DON'T clear old data - let it remain visible during load
+          loadSpatialLayer('powerLines', viewState.zoom);
+        }
+      }, 300);
     }
+    
+    return () => {
+      if (powerLinesReloadTimeoutRef.current) {
+        clearTimeout(powerLinesReloadTimeoutRef.current);
+      }
+    };
   }, [viewState.zoom, powerLinesLoadedZoom, layersVisible.powerLines, spatialLoading.powerLines, loadSpatialLayer]);
 
   useEffect(() => {
@@ -5359,12 +5381,27 @@ function App() {
 
     // Engineering: Building Footprints via PostGIS Vector Tiles (MVT)
     // 2.7M building polygons rendered instantly via spatial-indexed tile generation
+    // OPTIMIZED: Added refinementStrategy, loadOptions, and reduced tile buffer for better performance
     ...(layersVisible.buildingFootprints ? [
       new MVTLayer({
         id: 'building-footprints-mvt',
         data: '/api/spatial/tiles/buildings/{z}/{x}/{y}.mvt',
         minZoom: 0,
         maxZoom: 24,
+        // Performance: Use 'best-available' to show lower-res tiles while loading higher-res
+        refinementStrategy: 'best-available',
+        // Performance: Binary mode for faster parsing (default but explicit)
+        binary: true,
+        // Performance: Limit tile requests and use caching
+        maxRequests: 6,
+        loadOptions: {
+          mvt: {
+            // Reduce coordinate precision for faster parsing
+            coordinates: 'wgs84',
+            // Use workers for parsing
+            worker: true
+          }
+        },
         getFillColor: (f: any) => {
           const type = f.properties?.building_type;
           if (type === 'commercial') return [70, 130, 180, 180];
