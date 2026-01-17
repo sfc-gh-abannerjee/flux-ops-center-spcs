@@ -64,49 +64,8 @@ import { LAYOUT } from './layoutConstants';
 import { logger } from './utils/logger';
 import { VegaEmbed } from 'react-vega';
 import { Highlight, themes } from 'prism-react-renderer';
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  thinking?: string;
-  table?: TableData;
-  chart?: {
-    tool_use_id?: string;
-    spec: any; // Vega-Lite specification object
-  };
-  sqlQuery?: string;
-  manualCitations?: Citation[];
-  timestamp: Date;
-  status?: 'streaming' | 'complete' | 'error';
-  requestId?: string;
-  feedback?: 'positive' | 'negative' | null;
-  feedbackMessage?: string;
-}
-
-interface TableData {
-  columns: string[];
-  rows: any[][];
-}
-
-interface Citation {
-  title: string;
-  source: string;
-}
-
-interface ChatDrawerProps {
-  open: boolean;
-  onClose: () => void;
-  fabPosition: { x: number; y: number };
-  agentEndpoint?: string;
-}
-
-const SUGGESTED_PROMPTS = [
-  "Compare summer load patterns 2023 vs 2024 vs 2025",
-  "Show energy burden changes vs 2024 baseline by income classification",
-  "Which transformers show increasing stress over the past 3 years?",
-  "Find transformer oil sampling procedures for high-voltage equipment"
-];
+import type { Message, TableData, Citation, ChatDrawerProps, LayoutMode } from './chat/types';
+import { SUGGESTED_PROMPTS, useSessionStorage } from './chat';
 
 export default function ChatDrawer({ 
   open, 
@@ -120,12 +79,23 @@ export default function ChatDrawer({
   const [threadId, setThreadId] = useState<number | null>(null);
   const [lastMessageId, setLastMessageId] = useState<number | null>(null);
   const [showWelcome, setShowWelcome] = useState(true);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [savedSessions, setSavedSessions] = useState<Array<{id: string, name: string, timestamp: string, messageCount: number}>>([]);
   const [showSessionList, setShowSessionList] = useState(false);
   
+  // Use extracted session storage hook
+  const {
+    currentSessionId,
+    setCurrentSessionId,
+    savedSessions,
+    isLoadingSession,
+    createNewSession,
+    loadSession: loadSessionFromStorage,
+    saveSession,
+    deleteSession: deleteSessionFromStorage,
+    initializeSessions
+  } = useSessionStorage();
+  
   // Layout modes: 'floating' | 'expanded' | 'docked-left' | 'docked-right' | 'docked-bottom'
-  const [layoutMode, setLayoutMode] = useState<'floating' | 'expanded' | 'docked-left' | 'docked-right' | 'docked-bottom'>('floating');
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>('floating');
   const [dockedCollapsed, setDockedCollapsed] = useState(false);
   
   // Smart scroll - only auto-scroll when user is near bottom
@@ -135,7 +105,6 @@ export default function ChatDrawer({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const paperRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
-  const isLoadingSession = useRef(false);
   
   const isDraggingRef = useRef(false);
   const originPosition = useRef({ x: 0, y: 0 });
@@ -145,182 +114,66 @@ export default function ChatDrawer({
   const velocityHistory = useRef<Array<{ x: number; y: number; time: number }>>([]);
   const momentumAnimationRef = useRef<number | null>(null);
 
-  const SESSIONS_INDEX_KEY = 'grid_intelligence_sessions_index';
-  const SESSION_PREFIX = 'grid_intelligence_session_';
-
-  const loadSessionsIndex = () => {
-    try {
-      const index = localStorage.getItem(SESSIONS_INDEX_KEY);
-      return index ? JSON.parse(index) : [];
-    } catch {
-      return [];
-    }
-  };
-
-  const saveSessionsIndex = (sessions: typeof savedSessions) => {
-    localStorage.setItem(SESSIONS_INDEX_KEY, JSON.stringify(sessions));
-    setSavedSessions(sessions);
-  };
-
-  const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-  const createInitialSession = () => {
-    const newId = generateSessionId();
-    const newSession = {
-      id: newId,
-      name: 'New Chat',
-      timestamp: new Date().toISOString(),
-      messageCount: 0
-    };
-    const sessions = [newSession];
-    saveSessionsIndex(sessions);
-    setCurrentSessionId(newId);
-    logger.log('🆕 Created initial session:', newId);
-    return newId;
-  };
-
-  useEffect(() => {
-    const sessions = loadSessionsIndex();
-    setSavedSessions(sessions);
-    
-    if (sessions.length > 0) {
-      const mostRecent = sessions[0];
-      loadSession(mostRecent.id);
-    } else {
-      createInitialSession();
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isLoadingSession.current) return;
-    if (!currentSessionId) return;
-    
-    try {
-      const sessionData = {
-        messages: messages.map(m => ({
-          ...m,
-          timestamp: m.timestamp.toISOString()
-        })),
-        threadId,
-        lastMessageId
-      };
-      localStorage.setItem(SESSION_PREFIX + currentSessionId, JSON.stringify(sessionData));
-      
-      const sessions = loadSessionsIndex();
-      const sessionIdx = sessions.findIndex((s: any) => s.id === currentSessionId);
-      if (sessionIdx >= 0) {
-        sessions[sessionIdx].messageCount = messages.length;
-        sessions[sessionIdx].timestamp = new Date().toISOString();
-        if (messages.length > 0 && sessions[sessionIdx].name === 'New Chat') {
-          const firstMsg = messages[0]?.content || '';
-          sessions[sessionIdx].name = firstMsg.substring(0, 40) + (firstMsg.length > 40 ? '...' : '');
-        }
-        saveSessionsIndex(sessions);
-      }
-    } catch (e) {
-      logger.warn('Failed to save session:', e);
-    }
-  }, [messages, threadId, lastMessageId, currentSessionId]);
-
+  // Session management wrapper functions
   const loadSession = (sessionId: string) => {
-    isLoadingSession.current = true;
-    try {
-      const data = localStorage.getItem(SESSION_PREFIX + sessionId);
-      logger.log('📂 Loading session:', sessionId, 'raw data length:', data?.length ?? 0);
-      if (data) {
-        const session = JSON.parse(data);
-        const restoredMessages = session.messages?.map((m: any) => ({
-          ...m,
-          timestamp: new Date(m.timestamp)
-        })) || [];
-        setMessages(restoredMessages);
-        setThreadId(session.threadId || null);
-        setLastMessageId(session.lastMessageId || null);
-        setCurrentSessionId(sessionId);
-        setShowWelcome(restoredMessages.length === 0);
-        logger.log('📂 Loaded session:', sessionId, restoredMessages.length, 'messages', 'table in first msg:', !!restoredMessages[1]?.table);
-      } else {
-        logger.log('⚠️ No data found for session:', sessionId, '- creating empty session state');
-        setMessages([]);
-        setThreadId(null);
-        setLastMessageId(null);
-        setCurrentSessionId(sessionId);
-        setShowWelcome(true);
-      }
-    } catch (e) {
-      logger.warn('Failed to load session:', e);
+    const sessionData = loadSessionFromStorage(sessionId);
+    if (sessionData) {
+      setMessages(sessionData.messages.map(m => ({
+        ...m,
+        timestamp: new Date(m.timestamp)
+      })));
+      setThreadId(sessionData.threadId);
+      setLastMessageId(sessionData.lastMessageId);
+      setShowWelcome(sessionData.messages.length === 0);
+    } else {
       setMessages([]);
-      setCurrentSessionId(sessionId);
+      setThreadId(null);
+      setLastMessageId(null);
       setShowWelcome(true);
     }
-    setShowSessionList(false);
-    setTimeout(() => { isLoadingSession.current = false; }, 100);
-  };
-
-  const startNewSession = () => {
-    isLoadingSession.current = true;
-    
-    if (currentSessionId && messages.length > 0) {
-      try {
-        const sessionData = {
-          messages: messages.map(m => ({
-            ...m,
-            timestamp: m.timestamp.toISOString()
-          })),
-          threadId,
-          lastMessageId
-        };
-        localStorage.setItem(SESSION_PREFIX + currentSessionId, JSON.stringify(sessionData));
-        
-        const sessions = loadSessionsIndex();
-        const sessionIdx = sessions.findIndex((s: any) => s.id === currentSessionId);
-        if (sessionIdx >= 0) {
-          sessions[sessionIdx].messageCount = messages.length;
-          const firstMsg = messages[0]?.content || '';
-          sessions[sessionIdx].name = firstMsg.substring(0, 40) + (firstMsg.length > 40 ? '...' : '') || 'Chat';
-          sessions[sessionIdx].timestamp = new Date().toISOString();
-          saveSessionsIndex(sessions);
-        }
-        logger.log('💾 Saved current session before creating new one');
-      } catch (e) {
-        logger.warn('Failed to save current session:', e);
-      }
-    }
-
-    const newId = generateSessionId();
-    const sessions = loadSessionsIndex();
-    const newSession = {
-      id: newId,
-      name: 'New Chat',
-      timestamp: new Date().toISOString(),
-      messageCount: 0
-    };
-    
-    const updatedSessions = [newSession, ...sessions];
-    saveSessionsIndex(updatedSessions);
-    
-    setMessages([]);
-    setThreadId(null);
-    setLastMessageId(null);
-    setCurrentSessionId(newId);
-    setShowWelcome(true);
-    setShowSessionList(false);
-    logger.log('🆕 Started new session:', newId);
-    setTimeout(() => { isLoadingSession.current = false; }, 100);
   };
 
   const deleteSession = (sessionId: string) => {
-    localStorage.removeItem(SESSION_PREFIX + sessionId);
-    const sessions = loadSessionsIndex().filter((s: any) => s.id !== sessionId);
-    saveSessionsIndex(sessions);
-    
-    if (sessionId === currentSessionId) {
-      if (sessions.length > 0) {
-        loadSession(sessions[0].id);
-      } else {
-        startNewSession();
-      }
+    const newSessionId = deleteSessionFromStorage(sessionId);
+    if (newSessionId) {
+      loadSession(newSessionId);
     }
+  };
+
+  // Initialize sessions on mount
+  useEffect(() => {
+    const { initialSessionId, sessionData } = initializeSessions();
+    if (sessionData) {
+      setMessages(sessionData.messages.map(m => ({
+        ...m,
+        timestamp: new Date(m.timestamp)
+      })));
+      setThreadId(sessionData.threadId);
+      setLastMessageId(sessionData.lastMessageId);
+      setShowWelcome(sessionData.messages.length === 0);
+    }
+  }, []);
+
+  // Auto-save session when messages change
+  useEffect(() => {
+    if (currentSessionId && !isLoadingSession.current) {
+      saveSession(currentSessionId, messages, threadId, lastMessageId);
+    }
+  }, [messages, threadId, lastMessageId, currentSessionId, saveSession]);
+
+  const startNewSession = () => {
+    // Save current session before creating new one
+    if (currentSessionId && messages.length > 0) {
+      saveSession(currentSessionId, messages, threadId, lastMessageId);
+    }
+    
+    const newId = createNewSession();
+    setMessages([]);
+    setThreadId(null);
+    setLastMessageId(null);
+    setShowWelcome(true);
+    setShowSessionList(false);
+    logger.log('🆕 Started new session:', newId);
   };
 
   // Smart scroll: only scroll to bottom if user hasn't scrolled up
