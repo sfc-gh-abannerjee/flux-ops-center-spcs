@@ -5935,8 +5935,9 @@ function App() {
         <AppBar position="static" sx={{ bgcolor: '#000000', borderBottom: 'none' }}>
           <Toolbar sx={{ justifyContent: 'space-between' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              {/* Performance: Use 64px optimized logo (10KB vs 1.4MB) */}
               <img 
-                src="/flux-logo.png" 
+                src="/flux-logo-64.png" 
                 alt="Flux" 
                 className={`flux-logo ${isSlowingDown ? 'slowing-down' : isSpinning ? 'loading' : ''}`}
               />
