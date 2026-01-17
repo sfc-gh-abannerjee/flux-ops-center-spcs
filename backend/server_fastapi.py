@@ -3141,6 +3141,8 @@ async def get_building_tiles_mvt(z: int, x: int, y: int):
     Engineering: Generate Mapbox Vector Tiles (MVT) from PostGIS.
     Uses ST_AsMVT() for O(1) tile generation with spatial index.
     deck.gl MVTLayer consumes these directly - instant pan/zoom.
+    
+    Includes building_name for POI labeling (CVS, Walmart, etc.)
     """
     if not postgres_pool:
         raise HTTPException(status_code=503, detail="Postgres not configured")
@@ -3163,9 +3165,12 @@ async def get_building_tiles_mvt(z: int, x: int, y: int):
                             true
                         ) AS geom,
                         b.building_id,
+                        b.building_name,
                         b.building_type,
                         b.height_meters,
-                        b.num_floors
+                        b.num_floors,
+                        ST_X(ST_Centroid(b.geom)) as centroid_lon,
+                        ST_Y(ST_Centroid(b.geom)) as centroid_lat
                     FROM building_footprints b, bounds
                     WHERE ST_Intersects(
                         ST_Transform(b.geom, 3857),
@@ -3188,6 +3193,69 @@ async def get_building_tiles_mvt(z: int, x: int, y: int):
     
     except Exception as e:
         logger.error(f"MVT tile generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/spatial/layers/building-labels", tags=["Geospatial Layers"])
+async def get_building_labels(
+    min_lon: float = Query(-95.8, description="Viewport min longitude"),
+    max_lon: float = Query(-94.9, description="Viewport max longitude"),
+    min_lat: float = Query(29.4, description="Viewport min latitude"),
+    max_lat: float = Query(30.2, description="Viewport max latitude"),
+    limit: int = Query(200, description="Max labels to return")
+):
+    """
+    Engineering: Return named buildings (POIs) for label rendering.
+    
+    Returns buildings with real names (CVS, Walmart, etc.) for TextLayer display.
+    Only returns buildings within viewport that have non-generic names.
+    """
+    if not postgres_pool:
+        raise HTTPException(status_code=503, detail="Postgres not configured")
+    
+    start = time.time()
+    
+    try:
+        async with postgres_pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    building_id,
+                    building_name,
+                    building_type,
+                    height_meters,
+                    ST_X(ST_Centroid(geom)) as longitude,
+                    ST_Y(ST_Centroid(geom)) as latitude
+                FROM building_footprints
+                WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+                AND building_name IS NOT NULL
+                AND building_name != ''
+                AND building_name NOT IN ('Unnamed', 'unnamed', 'Unknown', 'unknown', 'Yes', 'yes')
+                ORDER BY height_meters DESC NULLS LAST
+                LIMIT $5
+            """, min_lon, min_lat, max_lon, max_lat, limit)
+            
+            labels = [
+                {
+                    "id": row["building_id"],
+                    "name": row["building_name"],
+                    "type": row["building_type"],
+                    "height": float(row["height_meters"]) if row["height_meters"] else 5,
+                    "position": [float(row["longitude"]), float(row["latitude"])]
+                }
+                for row in rows
+            ]
+            
+            query_time_ms = round((time.time() - start) * 1000, 2)
+            
+            return {
+                "type": "building-labels",
+                "features": labels,
+                "count": len(labels),
+                "query_time_ms": query_time_ms
+            }
+    
+    except Exception as e:
+        logger.error(f"Building labels query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

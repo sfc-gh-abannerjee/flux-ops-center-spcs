@@ -1117,8 +1117,9 @@ function App() {
   const [spatialData, setSpatialData] = useState<{
     powerLines: any[];
     vegetation: any[];
-  }>({ powerLines: [], vegetation: [] });
-  const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false });
+    buildingLabels: any[];
+  }>({ powerLines: [], vegetation: [], buildingLabels: [] });
+  const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false, buildingLabels: false });
 
   // Track last loaded zoom level for power lines LOD
   const [powerLinesLoadedZoom, setPowerLinesLoadedZoom] = useState<number | null>(null);
@@ -1200,6 +1201,70 @@ function App() {
       loadSpatialLayer('vegetation');
     }
   }, [layersVisible.vegetation, spatialData.vegetation.length, spatialLoading.vegetation, loadSpatialLayer]);
+
+  // Engineering: Load building labels when building footprints are enabled at sufficient zoom
+  // Only show labels at zoom >= 14 to avoid clutter
+  const buildingLabelsLastLoadRef = useRef<{zoom: number; lat: number; lon: number} | null>(null);
+  
+  useEffect(() => {
+    const loadBuildingLabels = async () => {
+      if (!layersVisible.buildingFootprints) return;
+      if (viewState.zoom < 14) {
+        // Clear labels when zoomed out
+        if (spatialData.buildingLabels.length > 0) {
+          setSpatialData(prev => ({ ...prev, buildingLabels: [] }));
+        }
+        return;
+      }
+      if (spatialLoading.buildingLabels) return;
+      
+      // Check if we need to reload (significant viewport change)
+      const lastLoad = buildingLabelsLastLoadRef.current;
+      if (lastLoad) {
+        const zoomDiff = Math.abs(viewState.zoom - lastLoad.zoom);
+        const latDiff = Math.abs(viewState.latitude - lastLoad.lat);
+        const lonDiff = Math.abs(viewState.longitude - lastLoad.lon);
+        // Skip if minor change
+        if (zoomDiff < 0.5 && latDiff < 0.005 && lonDiff < 0.005) return;
+      }
+      
+      setSpatialLoading(prev => ({ ...prev, buildingLabels: true }));
+      
+      try {
+        // Calculate viewport bounds
+        const degPerPixel = 360 / (256 * Math.pow(2, viewState.zoom));
+        const width = (typeof window !== 'undefined' ? window.innerWidth : 1920) * degPerPixel;
+        const height = (typeof window !== 'undefined' ? window.innerHeight : 1080) * degPerPixel;
+        const buffer = 1.2; // 20% buffer
+        
+        const min_lon = viewState.longitude - (width / 2) * buffer;
+        const max_lon = viewState.longitude + (width / 2) * buffer;
+        const min_lat = viewState.latitude - (height / 2) * buffer;
+        const max_lat = viewState.latitude + (height / 2) * buffer;
+        
+        const response = await fetch(
+          `/api/spatial/layers/building-labels?min_lon=${min_lon}&max_lon=${max_lon}&min_lat=${min_lat}&max_lat=${max_lat}&limit=150`
+        );
+        
+        if (response.ok) {
+          const data = await response.json();
+          setSpatialData(prev => ({ ...prev, buildingLabels: data.features || [] }));
+          buildingLabelsLastLoadRef.current = {
+            zoom: viewState.zoom,
+            lat: viewState.latitude,
+            lon: viewState.longitude
+          };
+          console.log(`✅ Loaded ${(data.features || []).length} building labels in ${data.query_time_ms}ms`);
+        }
+      } catch (error) {
+        console.error('Failed to load building labels:', error);
+      } finally {
+        setSpatialLoading(prev => ({ ...prev, buildingLabels: false }));
+      }
+    };
+    
+    loadBuildingLabels();
+  }, [layersVisible.buildingFootprints, viewState.zoom, viewState.latitude, viewState.longitude, spatialLoading.buildingLabels, spatialData.buildingLabels.length]);
 
   // Helper: Format time ago (depends on currentTime to trigger re-calculation)
   const getTimeAgo = useCallback((date: Date) => {
@@ -5377,8 +5442,16 @@ function App() {
         filled: true,
         extruded: layersVisible.enable3D,
         wireframe: false,
-        getElevation: (f: any) => (f.properties?.height_meters || 8) * (f.properties?.num_floors || 1),
-        elevationScale: currentZoom > 16 ? 1 : currentZoom > 14 ? 2 : currentZoom > 12 ? 4 : 8,
+        // Fix: Realistic building heights - use height_meters directly without floor multiplication
+        // Most buildings have reasonable height_meters values (avg 5.3m, max 305m for skyscrapers)
+        getElevation: (f: any) => {
+          const height = f.properties?.height_meters || 5;
+          // Cap very tall buildings at reasonable rendering height for visual clarity
+          return Math.min(height, 350);
+        },
+        // Fix: Reduced elevation scale - buildings were appearing too tall
+        // Scale of 1 at all zooms for accurate real-world proportions
+        elevationScale: 1,
         pickable: true,
         autoHighlight: true,
         highlightColor: [255, 200, 0, 200],
@@ -5418,41 +5491,83 @@ function App() {
       })
     ] : []),
 
+    // Engineering: Building Labels (POI names like CVS, Walmart, etc.)
+    // Only show at zoom >= 14 to avoid clutter
+    ...(layersVisible.buildingFootprints && spatialData.buildingLabels.length > 0 && currentZoom >= 14 ? [
+      new TextLayer({
+        id: 'building-labels',
+        data: spatialData.buildingLabels,
+        getPosition: (d: any) => d.position,
+        getText: (d: any) => d.name,
+        getSize: 12,
+        getColor: [255, 255, 255, 230],
+        getBackgroundColor: [30, 30, 40, 180],
+        backgroundPadding: [4, 2, 4, 2],
+        getTextAnchor: 'middle',
+        getAlignmentBaseline: 'center',
+        fontFamily: 'Inter, Arial, sans-serif',
+        fontWeight: 'bold',
+        outlineWidth: 2,
+        outlineColor: [0, 0, 0, 200],
+        billboard: true,
+        sizeUnits: 'pixels',
+        sizeMinPixels: 10,
+        sizeMaxPixels: 16,
+        // Slight elevation to float above buildings
+        getPixelOffset: [0, -15],
+        pickable: false
+      })
+    ] : []),
+
     // Engineering: Power Lines from PostGIS with LOD + class-based styling
-    // Major lines (power_line): Orange, thicker - high voltage transmission
-    // Minor lines (minor_line): Cyan/Light Blue, thinner - distribution feeders
+    // Major lines (power_line): Orange with warm glow - high voltage transmission
+    // Minor lines (minor_line): Cyan with electric glow - distribution feeders
     // NOTE: Green connections on map are TOPOLOGY LINKS (ArcLayer), not power lines
     ...(layersVisible.powerLines && spatialData.powerLines.length > 0 ? [
+      // Outer glow layer - creates electric halo effect
       new PathLayer({
-        id: 'power-lines-glow',
+        id: 'power-lines-outer-glow',
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
-        // Class-based glow color: orange for major, cyan for minor (distinct from green topology)
         getColor: (d: any) => d.class === 'power_line' 
-          ? [255, 160, 40, 100]   // Orange glow for major transmission
-          : [100, 220, 255, 80],  // Cyan glow for minor distribution
-        // Class-based width: wider glow for major lines
-        getWidth: (d: any) => d.class === 'power_line' ? 14 : 8,
+          ? [255, 180, 60, 40]    // Warm orange outer glow for transmission
+          : [80, 180, 255, 35],   // Electric blue outer glow for distribution
+        getWidth: (d: any) => d.class === 'power_line' ? 18 : 12,
         widthUnits: 'pixels',
-        widthMinPixels: 6,
-        widthMaxPixels: 24,
+        widthMinPixels: 8,
+        widthMaxPixels: 30,
         capRounded: true,
         jointRounded: true,
         billboard: true
       }),
+      // Inner glow layer - intensified glow near line
+      new PathLayer({
+        id: 'power-lines-inner-glow',
+        data: spatialData.powerLines,
+        getPath: (d: any) => d.coordinates || d.path,
+        getColor: (d: any) => d.class === 'power_line' 
+          ? [255, 160, 40, 90]    // Orange inner glow
+          : [100, 200, 255, 80],  // Cyan inner glow
+        getWidth: (d: any) => d.class === 'power_line' ? 10 : 7,
+        widthUnits: 'pixels',
+        widthMinPixels: 4,
+        widthMaxPixels: 16,
+        capRounded: true,
+        jointRounded: true,
+        billboard: true
+      }),
+      // Core line - solid visible line
       new PathLayer({
         id: 'power-lines-core',
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
-        // Class-based core color: distinct orange vs cyan (not green to avoid confusion with topology)
         getColor: (d: any) => d.class === 'power_line'
           ? [255, 140, 0, 255]    // Deep orange for major (transmission)
-          : [80, 200, 255, 255],  // Cyan for minor (distribution) - distinct from green topology
-        // Class-based width: major lines more prominent
-        getWidth: (d: any) => d.class === 'power_line' ? 4 : 2,
+          : [80, 200, 255, 255],  // Cyan for minor (distribution)
+        getWidth: (d: any) => d.class === 'power_line' ? 3 : 2,
         widthUnits: 'pixels',
-        widthMinPixels: 2,
-        widthMaxPixels: 8,
+        widthMinPixels: 1.5,
+        widthMaxPixels: 6,
         capRounded: true,
         jointRounded: true,
         pickable: true,
@@ -6386,12 +6501,15 @@ function App() {
                     };
                     
                     // Throttle viewport updates to avoid performance violations
-                    // Update immediately for responsive feel, but throttle heavy operations
+                    // Use queueMicrotask to defer setState outside of DeckGL's render cycle
+                    // This prevents "Cannot update a component while rendering another component" warning
                     pendingViewState.current = normalizedViewState;
                     
                     if (!viewportUpdateTimer.current) {
-                      // Update immediately on first change
-                      setViewState(normalizedViewState);
+                      // Defer state update to next microtask to avoid React render warning
+                      queueMicrotask(() => {
+                        setViewState(normalizedViewState);
+                      });
                       
                       // Throttle subsequent updates during continuous interaction
                       viewportUpdateTimer.current = setTimeout(() => {
