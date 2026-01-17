@@ -1,6 +1,6 @@
 # Flux Operations Center - SPCS Architecture Overview
 
-**Last Updated:** January 5, 2026  
+**Last Updated:** January 12, 2026  
 **Status:** ✅ Deployed and Operational  
 **Endpoint:** https://bqbm57vg-sfsehol-si-ae-enablement-retail-hmjrfl.snowflakecomputing.app
 
@@ -23,13 +23,15 @@
 - 6-tab navigation: Operations Dashboard, AMI Analytics, Outage Management, Asset Health, Field Operations, AI Assistant
 - Real-time KPI dashboard: SAIDI, SAIFI, Active Outages, Total Load, Field Crews
 - Interactive drill-down: Click asset → details panel, hover → tooltip
+- **ChatDrawer.tsx**: AI assistant with Cortex Agent integration, 5 layout modes, smart scroll, feedback system
 
 ### Backend Stack
-- Flask API with Gunicorn production server (4 workers, 120s timeout)
+- FastAPI + Gunicorn production server (4 workers, 120s timeout)
 - PostgreSQL connection (Snowflake Postgres managed service, PostgreSQL 17.7)
 - Snowflake connector for historical analytics queries
+- Cortex Agent proxy for AI assistant (SSE streaming + feedback)
 - Connection pooling: 20 Postgres connections per container
-- REST endpoints: `/api/postgres/*` (real-time), `/api/snowflake/*` (analytics), `/api/topology/*` (GIS)
+- REST endpoints: `/api/postgres/*` (real-time), `/api/snowflake/*` (analytics), `/api/topology/*` (GIS), `/api/agent/*` (AI)
 
 ### Data Architecture
 - **Real-time Path:** Snowflake Postgres → Flask API → React Dashboard (<20ms queries)
@@ -651,9 +653,84 @@ Flux Ops Dashboard (live updates)
 
 ---
 
+## Grid Intelligence Assistant (AI Chat)
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  GRID INTELLIGENCE ASSISTANT - Cortex Agent Integration                  │
+└──────────────────────────────────────────────────────────────────────────┘
+
+  User Input (Natural Language)
+       │
+       ▼
+  ┌─────────────────────────────────────┐
+  │  ChatDrawer.tsx (React)             │
+  │  ├─ Multi-session persistence       │
+  │  ├─ SSE stream parsing              │
+  │  ├─ Smart scroll (anti-hijack)      │
+  │  ├─ Layout modes (5 options)        │
+  │  └─ Feedback UI (thumbs up/down)    │
+  └──────────────────┬──────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────┐
+  │  FastAPI Backend (server_fastapi.py)│
+  │  ├─ POST /api/agent/stream          │
+  │  │   └─ SSE proxy to Cortex Agent   │
+  │  └─ POST /api/agent/feedback        │
+  │       └─ Feedback submission API    │
+  └──────────────────┬──────────────────┘
+                     │
+                     ▼
+  ┌─────────────────────────────────────┐
+  │  Snowflake Cortex Agent             │
+  │  SNOWFLAKE_INTELLIGENCE.AGENTS      │
+  │  .CENTERPOINT_ENERGY_AGENT          │
+  │  ├─ :run endpoint (SSE streaming)   │
+  │  └─ :feedback endpoint              │
+  └─────────────────────────────────────┘
+```
+
+### Layout Modes
+
+| Mode | CSS Position | Dimensions | Use Case |
+|------|--------------|------------|----------|
+| `floating` | Fixed, bottom-right | 480×600px | Default popup |
+| `expanded` | Fixed, 20px margins | Near-fullscreen | Full analysis |
+| `docked-left` | Fixed, left edge | 400px × 100vh | Side-by-side with map |
+| `docked-right` | Fixed, right edge | 400px × 100vh | Side-by-side with map |
+| `docked-bottom` | Fixed, bottom edge | 100vw × 320px | Horizontal layout |
+
+### SSE Event Types
+
+| Event | Data | Purpose |
+|-------|------|---------|
+| `text` | `{ text }` | Streaming response text |
+| `tool_use` | `{ name, tool_use_id, input }` | Tool invocation |
+| `tool_result` | `{ tool_use_id, results }` | SQL results, charts |
+| `request_id` | `{ request_id }` | From X-Snowflake-Request-ID header |
+| `response` | `{ thread_id, message_id }` | Stream completion |
+| `error` | `{ error }` | Error handling |
+
+### Feedback API
+
+```json
+POST /api/agent/feedback
+{
+  "request_id": "uuid-from-header",
+  "positive": true,
+  "feedback_message": "Optional text for negative feedback",
+  "thread_id": 12345
+}
+```
+
+---
+
 ## Contact & Support
 
 **Project:** Flux Operations Center (Grid 360 Competitive Replacement)  
 **Customer:** Grid Operations  
 **Status:** Production-ready, deployed to SPCS  
-**Last Updated:** January 5, 2026
+**Last Updated:** January 12, 2026

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import DeckGL from '@deck.gl/react';
 import { ScatterplotLayer, ArcLayer, ColumnLayer, PolygonLayer, BitmapLayer, PathLayer, TextLayer, IconLayer } from '@deck.gl/layers';
 import { HeatmapLayer, GridLayer } from '@deck.gl/aggregation-layers';
+import { MVTLayer } from '@deck.gl/geo-layers';
 import { DataFilterExtension } from '@deck.gl/extensions';
 import { FlyToInterpolator, COORDINATE_SYSTEM, WebMercatorViewport } from '@deck.gl/core';
 import { Map as MapGL } from 'react-map-gl/maplibre';
@@ -16,7 +17,7 @@ import {
   Speed, Memory, NetworkCheck, FilterList, Close, Refresh, ExpandMore, ExpandLess,
   MyLocation, ZoomIn, GridOn, BarChart, PieChart, PushPin, FavoriteOutlined, ElectricMeter,
   Whatshot, WbSunny, Thermostat, Opacity, SkipPrevious, FastRewind, PlayArrow, Pause, 
-  FastForward, SkipNext, Layers, Power, Hub
+  FastForward, SkipNext, Layers, Power, Hub, Park, Business, ElectricalServices
 } from '@mui/icons-material';
 import ChatDrawer from './ChatDrawer';
 import DraggableFab from './DraggableFab';
@@ -1011,9 +1012,54 @@ function App() {
     connections: true,
     heatmap: false,
     weather: false,
-    enable3D: true
+    enable3D: true,
+    buildingFootprints: false,
+    powerLines: false,
+    vegetation: false
   });
   const [layersPanelExpanded, setLayersPanelExpanded] = useState(true);
+  const [spatialPanelExpanded, setSpatialPanelExpanded] = useState(true);
+  
+  const [spatialData, setSpatialData] = useState<{
+    powerLines: any[];
+    vegetation: any[];
+  }>({ powerLines: [], vegetation: [] });
+  const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false });
+
+  const loadSpatialLayer = useCallback(async (layerType: 'powerLines' | 'vegetation') => {
+    if (spatialLoading[layerType]) return;
+    setSpatialLoading(prev => ({ ...prev, [layerType]: true }));
+    
+    try {
+      const endpoints: Record<string, string> = {
+        powerLines: '/api/spatial/layers/power-lines',
+        vegetation: '/api/spatial/layers/vegetation'
+      };
+      
+      const response = await fetch(endpoints[layerType]);
+      if (!response.ok) throw new Error(`Failed to load ${layerType}`);
+      const data = await response.json();
+      
+      setSpatialData(prev => ({ ...prev, [layerType]: data.features || data }));
+      console.log(`✅ Loaded ${layerType}: ${(data.features || data).length} features`);
+    } catch (error) {
+      console.error(`Failed to load ${layerType}:`, error);
+    } finally {
+      setSpatialLoading(prev => ({ ...prev, [layerType]: false }));
+    }
+  }, [spatialLoading]);
+
+  useEffect(() => {
+    if (layersVisible.powerLines && spatialData.powerLines.length === 0 && !spatialLoading.powerLines) {
+      loadSpatialLayer('powerLines');
+    }
+  }, [layersVisible.powerLines, spatialData.powerLines.length, spatialLoading.powerLines, loadSpatialLayer]);
+
+  useEffect(() => {
+    if (layersVisible.vegetation && spatialData.vegetation.length === 0 && !spatialLoading.vegetation) {
+      loadSpatialLayer('vegetation');
+    }
+  }, [layersVisible.vegetation, spatialData.vegetation.length, spatialLoading.vegetation, loadSpatialLayer]);
 
   // Helper: Format time ago (depends on currentTime to trigger re-calculation)
   const getTimeAgo = useCallback((date: Date) => {
@@ -4428,6 +4474,7 @@ function App() {
           pickable: true,
           extruded: true,
           diskResolution: 4,  // Low-poly square shape (4-sided) for rectangular appearance
+          flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           getPosition: (d: Asset) => [d.longitude, d.latitude, 0],
           getElevation: (d: Asset) => {
@@ -4521,6 +4568,7 @@ function App() {
           extruded: true,
           pickable: false,
           diskResolution: 4,  // Match base shape (square-like)
+          flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           getPosition: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
@@ -4665,6 +4713,7 @@ function App() {
           pickable: true,
           extruded: true,
           diskResolution: 6,  // Reduced from 8 for GPU performance (30k poles)
+          flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           getPosition: (d: Asset) => [d.longitude, d.latitude, 0],
           getElevation: (d: Asset) => {
@@ -4737,6 +4786,7 @@ function App() {
           pickable: false,
           extruded: true,
           diskResolution: 6,  // Match base shape
+          flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           getPosition: (d: Asset) => [
             d.longitude,
@@ -5174,7 +5224,92 @@ function App() {
           }
         })
       ];
-    })() : [])
+    })() : []),
+
+    // Engineering: Building Footprints via PostGIS Vector Tiles (MVT)
+    // 2.7M building polygons rendered instantly via spatial-indexed tile generation
+    ...(layersVisible.buildingFootprints ? [
+      new MVTLayer({
+        id: 'building-footprints-mvt',
+        data: '/api/spatial/tiles/buildings/{z}/{x}/{y}.mvt',
+        minZoom: 0,
+        maxZoom: 24,
+        getFillColor: (f: any) => {
+          const type = f.properties?.building_type;
+          if (type === 'commercial') return [70, 130, 180, 180];
+          if (type === 'industrial') return [180, 120, 60, 180];
+          if (type === 'residential') return [100, 160, 100, 160];
+          return [140, 140, 150, 160];
+        },
+        getLineColor: [60, 60, 60, 200],
+        lineWidthMinPixels: 1,
+        stroked: true,
+        filled: true,
+        extruded: layersVisible.enable3D,
+        wireframe: false,
+        getElevation: (f: any) => (f.properties?.height_meters || 8) * (f.properties?.num_floors || 1),
+        elevationScale: currentZoom > 16 ? 1 : currentZoom > 14 ? 2 : currentZoom > 12 ? 4 : 8,
+        pickable: true,
+        autoHighlight: true,
+        highlightColor: [255, 200, 0, 200]
+      })
+    ] : []),
+
+    // Engineering: Power Lines from PostGIS (PathLayer with glow effect)
+    ...(layersVisible.powerLines && spatialData.powerLines.length > 0 ? [
+      new PathLayer({
+        id: 'power-lines-glow',
+        data: spatialData.powerLines,
+        getPath: (d: any) => d.coordinates || d.path,
+        getColor: [255, 180, 60, 80],
+        getWidth: 12,
+        widthUnits: 'pixels',
+        widthMinPixels: 8,
+        widthMaxPixels: 20,
+        capRounded: true,
+        jointRounded: true,
+        billboard: true
+      }),
+      new PathLayer({
+        id: 'power-lines-core',
+        data: spatialData.powerLines,
+        getPath: (d: any) => d.coordinates || d.path,
+        getColor: [255, 180, 60, 255],
+        getWidth: 3,
+        widthUnits: 'pixels',
+        widthMinPixels: 2,
+        widthMaxPixels: 6,
+        capRounded: true,
+        jointRounded: true,
+        pickable: true,
+        autoHighlight: true,
+        highlightColor: [255, 255, 100, 255]
+      })
+    ] : []),
+
+    // Engineering: Vegetation Risk from PostGIS (3D tree columns)
+    ...(layersVisible.vegetation && spatialData.vegetation.length > 0 ? [
+      new ColumnLayer({
+        id: 'vegetation-risk-3d',
+        data: spatialData.vegetation,
+        diskResolution: 6,
+        flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
+        radius: currentZoom > 15 ? 4 : currentZoom > 13 ? 6 : 8,
+        extruded: layersVisible.enable3D,
+        getPosition: (d: any) => [d.longitude || d.lon, d.latitude || d.lat],
+        getFillColor: (d: any) => {
+          const risk = d.risk_score || d.proximity_risk || 0.5;
+          if (risk > 0.7) return [220, 38, 38, 200];
+          if (risk > 0.4) return [234, 179, 8, 200];
+          return [34, 197, 94, 180];
+        },
+        getElevation: (d: any) => (d.height_m || d.canopy_height || 12) * (currentZoom > 15 ? 1 : currentZoom > 13 ? 1.5 : 2),
+        elevationScale: currentZoom > 15 ? 1 : currentZoom > 13 ? 1.5 : 2.5,
+        pickable: true,
+        autoHighlight: true,
+        highlightColor: [255, 255, 100, 255]
+      })
+    ] : [])
   ].filter(Boolean), [
     layersVisible,
     useClusteredView,
@@ -5187,7 +5322,7 @@ function App() {
     viewportFilteredFeeders,
     selectedAsset,
     selectedAssets,
-    animationFrame,  // Triggers re-render when animation updates (incremented in useEffect)
+    animationFrame,
     throttledZoom,
     assetScaleAnimation,
     towerScaleAnimation,
@@ -5195,7 +5330,8 @@ function App() {
     heightScale,
     heatmapData,
     connectedAssets,
-    assetConnectionCounts
+    assetConnectionCounts,
+    spatialData
   ]);
 
   // Removed expensive console.log for performance
@@ -5808,6 +5944,106 @@ function App() {
                           </Stack>
                         </Box>
                       )}
+                        </Stack>
+                      </Collapse>
+                    </Stack>
+                  </Paper>
+
+                  {/* PostGIS Spatial Layers Panel */}
+                  <Paper 
+                    sx={{ 
+                      bgcolor: 'rgba(15, 23, 42, 0.92)',
+                      backdropFilter: 'blur(12px)',
+                      border: '1px solid rgba(249, 115, 22, 0.3)',
+                      boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
+                      borderRadius: 1.5,
+                      p: 1.5,
+                      mt: 1
+                    }}
+                  >
+                    <Stack spacing={1}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <Hub sx={{ fontSize: 16, color: '#F97316' }} />
+                          <Typography variant="caption" sx={{ fontWeight: 600, color: '#F97316' }}>
+                            POSTGIS LAYERS
+                          </Typography>
+                        </Box>
+                        <IconButton 
+                          size="small" 
+                          onClick={() => setSpatialPanelExpanded(!spatialPanelExpanded)}
+                          sx={{ p: 0.25, color: 'text.secondary' }}
+                        >
+                          {spatialPanelExpanded ? <ExpandLess sx={{ fontSize: 16 }} /> : <ExpandMore sx={{ fontSize: 16 }} />}
+                        </IconButton>
+                      </Box>
+                      
+                      <Collapse in={spatialPanelExpanded}>
+                        <Stack spacing={0.5}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                            <IconButton 
+                              size="small"
+                              onClick={() => setLayersVisible({...layersVisible, buildingFootprints: !layersVisible.buildingFootprints})}
+                              sx={{ 
+                                color: layersVisible.buildingFootprints ? '#F97316' : 'rgba(255,255,255,0.3)',
+                                '&:hover': { bgcolor: 'rgba(249, 115, 22, 0.1)' }
+                              }}
+                            >
+                              <Business sx={{ fontSize: 18 }} />
+                            </IconButton>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="caption" sx={{ color: layersVisible.buildingFootprints ? '#F97316' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                                Buildings (MVT)
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                                2.67M footprints
+                              </Typography>
+                            </Box>
+                          </Box>
+
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                            <IconButton 
+                              size="small"
+                              onClick={() => setLayersVisible({...layersVisible, powerLines: !layersVisible.powerLines})}
+                              disabled={spatialLoading.powerLines}
+                              sx={{ 
+                                color: layersVisible.powerLines ? '#FBBF24' : 'rgba(255,255,255,0.3)',
+                                '&:hover': { bgcolor: 'rgba(251, 191, 36, 0.1)' }
+                              }}
+                            >
+                              <ElectricalServices sx={{ fontSize: 18 }} />
+                            </IconButton>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="caption" sx={{ color: layersVisible.powerLines ? '#FBBF24' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                                Power Lines
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                                {spatialLoading.powerLines ? 'Loading...' : `${spatialData.powerLines.length.toLocaleString()} segments`}
+                              </Typography>
+                            </Box>
+                          </Box>
+
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                            <IconButton 
+                              size="small"
+                              onClick={() => setLayersVisible({...layersVisible, vegetation: !layersVisible.vegetation})}
+                              disabled={spatialLoading.vegetation}
+                              sx={{ 
+                                color: layersVisible.vegetation ? '#22C55E' : 'rgba(255,255,255,0.3)',
+                                '&:hover': { bgcolor: 'rgba(34, 197, 94, 0.1)' }
+                              }}
+                            >
+                              <Park sx={{ fontSize: 18 }} />
+                            </IconButton>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="caption" sx={{ color: layersVisible.vegetation ? '#22C55E' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                                Vegetation Risk
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                                {spatialLoading.vegetation ? 'Loading...' : `${spatialData.vegetation.length.toLocaleString()} risk points`}
+                              </Typography>
+                            </Box>
+                          </Box>
                         </Stack>
                       </Collapse>
                     </Stack>

@@ -1,10 +1,12 @@
 # Grid Operations Grid Operations Platform
 ## Comprehensive Architecture & Deployment Guide
 
-**Version:** 1.0  
-**Date:** January 10, 2026  
+**Version:** 1.1  
+**Date:** January 12, 2026  
 **Author:** Abhinav Bannerjee (Senior Solution Engineer - Enterprise Acquisition, Snowflake)  
 **Status:** Production-Ready Architecture Specification
+
+> **⚠️ NOTE:** The authoritative architecture documentation is now consolidated in `/Users/abannerjee/Documents/cpe_poc/PROJECT_STATUS.md` under the section "🗺️ Flux Operations Center - Comprehensive Architecture". This file contains detailed deployment guides and strategic context but the main architecture section should be referenced from PROJECT_STATUS.md.
 
 ---
 
@@ -741,7 +743,7 @@ psql -c "SELECT COUNT(*) FROM grid_assets_cache;"
 | Schemas | PRODUCTION, APPLICATIONS, FLUX_OPS_CENTER |
 | Warehouse | SI_DEMO_WH |
 | Region | AWS_US_WEST_2 |
-| SPCS Endpoint | https://bqbm57vg-sfsehol-si-ae-enablement-retail-hmjrfl.snowflakecomputing.app |
+| SPCS Endpoint | https://f6bm57vg-sfsehol-si-ae-enablement-retail-hmjrfl.snowflakecomputing.app |
 | Postgres Host | <your_postgres_host> |
 
 ## Appendix B: Document Version History

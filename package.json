@@ -4,14 +4,17 @@
   "description": "Snowflake Flux Operations Center - Grid 360 Replacement (Pure SPCS)",
   "private": true,
   "dependencies": {
-    "@deck.gl/core": "^8.9.36",
-    "@deck.gl/layers": "^8.9.35",
-    "@deck.gl/react": "^8.9.35",
+    "@deck.gl/aggregation-layers": "^9.2.6",
+    "@deck.gl/core": "^9.2.6",
+    "@deck.gl/extensions": "^9.2.6",
+    "@deck.gl/geo-layers": "^9.2.6",
+    "@deck.gl/layers": "^9.2.6",
+    "@deck.gl/react": "^9.2.6",
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.14.19",
     "@mui/material": "^5.14.20",
-    "deck.gl": "^8.9.35",
+    "deck.gl": "^9.2.6",
     "mapbox-gl": "^3.17.0",
     "maplibre-gl": "^3.6.2",
     "pg": "^8.11.3",
@@ -24,7 +27,8 @@
     "react-vega": "^8.0.0",
     "snowflake-sdk": "^1.9.1",
     "vega": "^6.2.0",
-    "vega-lite": "^6.4.1"
+    "vega-embed": "^7.1.0",
+    "vega-lite": "^6.4.2"
   },
   "devDependencies": {
     "@types/node": "^20.10.5",

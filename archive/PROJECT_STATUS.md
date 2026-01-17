@@ -1354,6 +1354,85 @@ See `FLUX_ARCHITECTURE_Jan8.md` Part 5 for complete OpenFlow SPCS analysis, cost
 
 ---
 
-**Document Version:** 5.0  
-**Last Updated:** January 10, 2026 (Added OpenFlow SPCS analysis)  
+## January 12, 2026 - Grid Intelligence Assistant UX Enhancements
+
+### Cortex Agent Integration Complete
+
+**Endpoint:** `SNOWFLAKE_INTELLIGENCE.AGENTS.CENTERPOINT_ENERGY_AGENT`
+
+The Grid Intelligence Assistant (AI chat drawer) now fully integrates with Snowflake Cortex Agent via the REST API:
+
+#### Backend Implementation (`server_fastapi.py`)
+- **Agent Streaming:** `POST /api/agent/stream` - SSE streaming endpoint proxying to Cortex Agent `:run` API
+- **Feedback API:** `POST /api/agent/feedback` - Feedback submission to Cortex Agent `:feedback` API
+- **Request ID Capture:** Extracts `X-Snowflake-Request-ID` from response headers for feedback association
+- **Auth Modes:** 
+  - Local dev: `PROGRAMMATIC_ACCESS_TOKEN` from `~/.snowflake/config.toml`
+  - SPCS: OAuth token from `/snowflake/session/token`
+
+#### Frontend Implementation (`ChatDrawer.tsx`)
+
+**Feedback System:**
+- Thumbs up/down buttons appear after response completes
+- Negative feedback opens modal for optional text input
+- Success confirmation chip with "Thanks!" message
+- Request ID reference shown in feedback dialog
+- Payload: `{ request_id, positive, feedback_message?, thread_id? }`
+
+**Session Persistence:**
+- Multi-session support with localStorage
+- Thread/message ID continuity for conversation context
+- Session list with delete/switch functionality
+
+### Chat Drawer UX Fixes (January 12, 2026)
+
+#### 1. Smart Scroll (Anti-Hijacking)
+**Problem:** During streaming responses, auto-scroll fought users trying to read earlier content.
+
+**Solution:**
+- Track scroll position; disable auto-scroll when user is >100px from bottom
+- Re-enable when user scrolls within 50px of bottom
+- "New messages" floating pill button to jump to bottom
+- Reset scroll state when user sends new message
+
+#### 2. Layout Modes
+Added 5 layout modes accessible via header controls:
+
+| Mode | Description | Dimensions |
+|------|-------------|------------|
+| `floating` | Original draggable popup | 480×600px |
+| `expanded` | Near-fullscreen | 20px margins all sides |
+| `docked-left` | Left sidebar | 400px wide, full height |
+| `docked-right` | Right sidebar | 400px wide, full height |
+| `docked-bottom` | Bottom panel | 320px tall, full width |
+
+#### 3. Docking with Collapse
+- Docked panels can collapse offscreen via pin/unpin button
+- Edge toggle arrows appear when collapsed for re-expansion
+- Smooth slide animations (0.3s ease)
+
+#### 4. New Header Controls
+| Icon | Function |
+|------|----------|
+| `OpenInFull` | Toggle expanded/floating mode |
+| `ViewSidebar` | Cycle through dock positions |
+| `PushPin` | Collapse/expand docked panel |
+
+### Table Data Persistence Fix
+
+**Problem:** Tables disappeared at end of streaming responses.
+
+**Root Cause:** The `response` event handler was updating with `{ ...currentMessage }` which could overwrite merged table data.
+
+**Fix:** 
+1. Changed `response` event to only pass `{ status: 'complete' }`
+2. Added explicit `requestId` preservation in `updateLastMessage` merge logic:
+```typescript
+requestId: updates.requestId ?? existing.requestId
+```
+
+---
+
+**Document Version:** 6.0  
+**Last Updated:** January 12, 2026 (Added ChatDrawer UX improvements, Cortex Agent feedback)  
 **Next Review:** After Daniel's feedback on Kafka approach
