@@ -56,24 +56,47 @@ const HOUSTON_LAT = 29.7604;
 const METERS_TO_DEG_LON = 1 / 111320 / Math.cos(HOUSTON_LAT * Math.PI / 180);
 const METERS_TO_DEG_LAT = 1 / 110540;
 
-function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: number): number[][] {
+// Generate street-aligned rotation from position (deterministic pseudo-random)
+// Houston grid is roughly 45° rotated, with some variation
+function getStreetRotation(lon: number, lat: number): number {
+  const hash = Math.sin(lon * 12345.6789) * Math.cos(lat * 98765.4321);
+  const baseAngle = Math.PI / 4; // 45° base for Houston grid
+  const variation = (hash - Math.floor(hash)) * Math.PI / 6; // ±30° variation
+  return baseAngle + variation;
+}
+
+function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation?: number): number[][] {
   const halfLon = (sizeMeters * METERS_TO_DEG_LON) / 2;
   const halfLat = (sizeMeters * METERS_TO_DEG_LAT) / 2;
+  const angle = rotation ?? getStreetRotation(centerLon, centerLat);
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  
+  // Rotated square corners
+  const corners = [
+    [-halfLon, -halfLat],
+    [halfLon, -halfLat],
+    [halfLon, halfLat],
+    [-halfLon, halfLat]
+  ];
+  
   return [
-    [centerLon - halfLon, centerLat - halfLat],
-    [centerLon + halfLon, centerLat - halfLat],
-    [centerLon + halfLon, centerLat + halfLat],
-    [centerLon - halfLon, centerLat + halfLat],
-    [centerLon - halfLon, centerLat - halfLat]
+    ...corners.map(([dx, dy]) => [
+      centerLon + dx * cos - dy * sin,
+      centerLat + dx * sin + dy * cos
+    ]),
+    [centerLon + corners[0][0] * cos - corners[0][1] * sin, 
+     centerLat + corners[0][0] * sin + corners[0][1] * cos]
   ];
 }
 
-function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: number, sides: number): number[][] {
+function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: number, sides: number, rotation?: number): number[][] {
   const radiusLon = (sizeMeters * METERS_TO_DEG_LON) / 2;
   const radiusLat = (sizeMeters * METERS_TO_DEG_LAT) / 2;
+  const baseRotation = rotation ?? getStreetRotation(centerLon, centerLat);
   const vertices: number[][] = [];
   for (let i = 0; i < sides; i++) {
-    const angle = (Math.PI * 2 / sides) * i - Math.PI / 2;
+    const angle = (Math.PI * 2 / sides) * i + baseRotation;
     vertices.push([
       centerLon + radiusLon * Math.cos(angle),
       centerLat + radiusLat * Math.sin(angle)
