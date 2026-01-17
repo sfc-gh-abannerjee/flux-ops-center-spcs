@@ -24,6 +24,27 @@ import ChatDrawer from './ChatDrawer';
 import DraggableFab from './DraggableFab';
 import { LAYOUT } from './layoutConstants';
 import { logger } from './utils/logger';
+import type { 
+  Asset,
+  SubstationStatus,
+  WeatherData, 
+  ServiceArea, 
+  FeederConnection, 
+  AssetRow, 
+  TopologyRow, 
+  TopologyLink,
+  MetroSubstationRow,
+  ViewState,
+  DeckPickInfo,
+  HexagonTileData,
+  AggregateTower,
+  SpatialDataState,
+  SpatialPowerLine,
+  SpatialVegetation,
+  SubstationAggregate,
+  GeoJSONFeature,
+  InitialDataResponse
+} from './types';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const theme = createTheme({
@@ -605,7 +626,7 @@ interface KPICardProps {
   icon: React.ReactNode;
   color: string;
   trend?: number;
-  sx?: any;
+  sx?: React.CSSProperties | Record<string, unknown>;
 }
 
 function KPICard({ title, value, subtitle, icon, color, trend, sx }: KPICardProps) {
@@ -728,9 +749,9 @@ function App() {
   const pinnedAssetIdsRef = useRef<Set<string>>(new Set()); // Track connected asset IDs that must be loaded
   const lastSelectionTimeRef = useRef<number>(0); // Track when asset was last selected (to prevent culling during loading)
   // REMOVED: Old topology state - now derived from topologyBatches (see line 561)
-  const [metroTopologyData, setMetroTopologyData] = useState<any[]>([]);
-  const [feederTopologyData, setFeederTopologyData] = useState<any[]>([]);
-  const [serviceAreas, setServiceAreas] = useState<any[]>([]);
+  const [metroTopologyData, setMetroTopologyData] = useState<MetroSubstationRow[]>([]);
+  const [feederTopologyData, setFeederTopologyData] = useState<FeederConnection[]>([]);
+  const [serviceAreas, setServiceAreas] = useState<ServiceArea[]>([]);
   const [substationStatusMap, setSubstationStatusMap] = useState<Map<string, SubstationStatus>>(new Map());
   const [gridKpis, setGridKpis] = useState<{
     TOTAL_CUSTOMERS?: number;
@@ -744,7 +765,7 @@ function App() {
     cacheHits: number;
     timing?: Record<string, number>;
   } | null>(null);
-  const [weather, setWeather] = useState<any[]>([]);
+  const [weather, setWeather] = useState<WeatherData[]>([]);
   const [weatherTimelineIndex, setWeatherTimelineIndex] = useState(0);
   const [isWeatherPlaying, setIsWeatherPlaying] = useState(false);
   const [weatherSpeed, setWeatherSpeed] = useState(1);
@@ -796,7 +817,7 @@ function App() {
   const [viewState, setViewState] = useState(INITIAL_VIEW_STATE);
   const isProgrammaticTransition = useRef(false);
   const viewportUpdateTimer = useRef<NodeJS.Timeout | null>(null);
-  const pendingViewState = useRef<any>(null);
+  const pendingViewState = useRef<ViewState | null>(null);
   const [expandedSections, setExpandedSections] = useState({
     infrastructure: true,
     health: true,
@@ -931,10 +952,10 @@ function App() {
         }
         const substations = await response.json();
         const statusMap = new Map<string, SubstationStatus>(
-          substations.map((sub: any) => [sub.substation_id, sub as SubstationStatus])
+          substations.map((sub: SubstationStatus) => [sub.substation_id, sub])
         );
         setSubstationStatusMap(statusMap);
-        logger.log(`✅ Postgres: Fetched real-time status for ${substations.length} substations (${substations.filter((s: any) => s.status === 'critical').length} critical, ${substations.filter((s: any) => s.status === 'warning').length} warning)`);
+        logger.log(`✅ Postgres: Fetched real-time status for ${substations.length} substations (${substations.filter((s: SubstationStatus) => s.status === 'critical').length} critical, ${substations.filter((s: SubstationStatus) => s.status === 'warning').length} warning)`);
         return; // Success - exit retry loop
       } catch (error) {
         const isLastAttempt = attempt === maxRetries;
@@ -1189,8 +1210,8 @@ function App() {
   
   // Helper: Get paginated items for large lists (performance optimization)
   // CRITICAL: Start with only 20 items for better performance, load more on demand
-  const getPaginatedItems = (items: any[] | undefined, cardId: string, category: string, defaultPageSize = 20) => {
-    if (!items || items.length === 0) return { visibleItems: [], hasMore: false, totalCount: 0 };
+  const getPaginatedItems = <T,>(items: T[] | undefined, cardId: string, category: string, defaultPageSize = 20) => {
+    if (!items || items.length === 0) return { visibleItems: [] as T[], hasMore: false, totalCount: 0 };
     
     const currentPageSize = listPageSize[cardId]?.[category as keyof typeof listPageSize[typeof cardId]] || defaultPageSize;
     const visibleItems = items.slice(0, currentPageSize);
@@ -1248,8 +1269,8 @@ function App() {
   const [spatialPanelExpanded, setSpatialPanelExpanded] = useState(true);
   
   const [spatialData, setSpatialData] = useState<{
-    powerLines: any[];
-    vegetation: any[];
+    powerLines: SpatialPowerLine[];
+    vegetation: SpatialVegetation[];
   }>({ powerLines: [], vegetation: [] });
   const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false });
 
@@ -1302,7 +1323,7 @@ function App() {
       // Engineering: Debug power lines data for visualization troubleshooting
       if (layerType === 'powerLines') {
         const features = data.features || data;
-        const classes = features.reduce((acc: Record<string, number>, f: any) => {
+        const classes = features.reduce((acc: Record<string, number>, f: SpatialPowerLine) => {
           const cls = f.class || 'unknown';
           acc[cls] = (acc[cls] || 0) + 1;
           return acc;
@@ -1482,7 +1503,7 @@ function App() {
           if (!substationsLoadedRef.current && metroData.length > 0) {
             substationsLoadedRef.current = true;
             logger.log(`   📍 Adding ${metroData.length} substations...`);
-            const substations: Asset[] = metroData.map((row: any) => {
+            const substations: Asset[] = metroData.map((row: MetroSubstationRow) => {
               const status = substationStatusMap.get(row.SUBSTATION_ID);
               return {
                 id: row.SUBSTATION_ID,
@@ -1531,7 +1552,7 @@ function App() {
             return r.json();
           });
           
-          const mappedTopology = topologyData.map((row: any) => ({
+          const mappedTopology = topologyData.map((row: AssetRow) => ({
             from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
             connection_type: 'Distribution',
             from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
@@ -1551,7 +1572,7 @@ function App() {
           const minLat = viewState.latitude - (viewHeight / 2) * buffer;
           const maxLat = viewState.latitude + (viewHeight / 2) * buffer;
           
-          const inViewport = mappedTopology.filter((link: any) =>
+          const inViewport = mappedTopology.filter((link: TopologyLink) =>
             (link.from_longitude >= minLng && link.from_longitude <= maxLng &&
              link.from_latitude >= minLat && link.from_latitude <= maxLat) ||
             (link.to_longitude >= minLng && link.to_longitude <= maxLng &&
@@ -1629,7 +1650,7 @@ function App() {
               return r.json();
             });
             
-            const mappedAssets: Asset[] = assetsData.map((row: any) => ({
+            const mappedAssets: Asset[] = assetsData.map((row: AssetRow) => ({
               id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
               latitude: row.LATITUDE, longitude: row.LONGITUDE,
               load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
@@ -1668,7 +1689,7 @@ function App() {
             })
           ]);
           
-          const mappedAssets: Asset[] = assetsData.map((row: any) => ({
+          const mappedAssets: Asset[] = assetsData.map((row: AssetRow) => ({
             id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
             latitude: row.LATITUDE, longitude: row.LONGITUDE,
             load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
@@ -1681,7 +1702,7 @@ function App() {
           // Substations are loaded separately in the dedicated block above (line 965)
           // Don't add them here to prevent duplicates
           
-          const mappedTopology = topologyData.map((row: any) => ({
+          const mappedTopology = topologyData.map((row: AssetRow) => ({
             from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
             connection_type: 'Distribution',
             from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
@@ -1977,7 +1998,7 @@ function App() {
         const data = await response.json();
         
         // Transform to Asset format
-        const newAssets: Asset[] = data.map((row: any) => ({
+        const newAssets: Asset[] = data.map((row: AssetRow) => ({
           id: row.ASSET_ID,
           name: row.ASSET_NAME || row.ASSET_ID,
           type: row.ASSET_TYPE,
@@ -2799,7 +2820,7 @@ function App() {
                   const response = await fetch(url, { signal: controller.signal });
                   clearTimeout(timeoutId);
                   return response;
-                } catch (err: any) {
+                } catch (err: unknown) {
                   if (attempt < maxRetries && (err.name === 'AbortError' || err.message?.includes('timeout'))) {
                     logger.log(`   ⚠️ Batch ${idx + 1} attempt ${attempt + 1} failed, retrying...`);
                     await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // Backoff: 1s, 2s
@@ -2835,11 +2856,11 @@ function App() {
             
             const beforeFilterCount = assetsData.length;
             const newAssets: Asset[] = assetsData
-              .filter((row: any) => 
+              .filter((row: AssetRow) => 
                 row.LONGITUDE >= minLng && row.LONGITUDE <= maxLng &&
                 row.LATITUDE >= minLat && row.LATITUDE <= maxLat
               )
-              .map((row: any) => ({
+              .map((row: AssetRow) => ({
                 id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
                 latitude: row.LATITUDE, longitude: row.LONGITUDE,
                 load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
@@ -2861,8 +2882,8 @@ function App() {
             
             const beforeTopologyCount = topologyData.length;
             const newTopology: TopologyLink[] = topologyData
-              .filter((row: any) => assetIds.has(row.FROM_ASSET_ID) && assetIds.has(row.TO_ASSET_ID))
-              .map((row: any) => ({
+              .filter((row: TopologyRow) => assetIds.has(row.FROM_ASSET_ID) && assetIds.has(row.TO_ASSET_ID))
+              .map((row: TopologyRow) => ({
                 from_asset_id: row.FROM_ASSET_ID,
                 to_asset_id: row.TO_ASSET_ID,
                 connection_type: 'Distribution',
@@ -3155,10 +3176,11 @@ function App() {
   };
 
   // Smooth zoom on double-click
-  const handleDoubleClick = (info: any) => {
+  const handleDoubleClick = (info: DeckPickInfo) => {
     // Determine zoom direction based on modifier keys
     // Shift + double-click = zoom out, otherwise zoom in
-    const zoomOut = info.srcEvent?.shiftKey;
+    const srcEvent = (info as DeckPickInfo & { srcEvent?: { shiftKey?: boolean } }).srcEvent;
+    const zoomOut = srcEvent?.shiftKey;
     const zoomDelta = zoomOut ? -1.5 : 1.5;
     const newZoom = Math.max(5, Math.min(15, currentZoom + zoomDelta));
     
@@ -3179,7 +3201,7 @@ function App() {
 
   // ENGINEERING ENHANCEMENT: Priority-based glow system
   // Communicates operational urgency through color, intensity, pulse speed
-  const getGlowProperties = useCallback((asset: any) => {
+  const getGlowProperties = useCallback((asset: Asset) => {
     const health = asset.health_score ?? asset.AVG_HEALTH_SCORE ?? asset.WORST_CIRCUIT_HEALTH ?? 75;
     
     // CRITICAL FIX: Use worst-case load from Postgres (shows RED if ANY circuit critical)
@@ -3232,10 +3254,10 @@ function App() {
     if (dataFetchedRef.current) return;
     dataFetchedRef.current = true;
     
-    const processData = (data: any) => {
+    const processData = (data: InitialDataResponse) => {
       // LOD OPTIMIZATION: Assets may not be loaded initially (lazy loaded by zoom)
       if (data.assets) {
-        const mappedAssets: Asset[] = data.assets.map((row: any) => ({
+        const mappedAssets: Asset[] = data.assets.map((row: AssetRow) => ({
           id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
           latitude: row.LATITUDE, longitude: row.LONGITUDE,
           load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
@@ -3247,7 +3269,7 @@ function App() {
         // Add substations from metro topology data if available (deduplicate)
         // Enrich with real-time status data
         const substations: Asset[] = data.metro ? data.metro
-          .map((row: any) => {
+          .map((row: MetroSubstationRow) => {
             const status = substationStatusMap.get(row.SUBSTATION_ID);
             return {
               id: row.SUBSTATION_ID,
@@ -3277,7 +3299,7 @@ function App() {
       if (data.feeders) setFeederTopologyData(data.feeders);
       if (data.serviceAreas) setServiceAreas(data.serviceAreas);
       if (data.topology) {
-        setTopology(data.topology.map((row: any) => ({
+        setTopology(data.topology.map((row: AssetRow) => ({
           from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
           connection_type: 'Distribution',
           from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
@@ -3323,7 +3345,7 @@ function App() {
           // Load substations from metro data immediately
           if (!substationsLoadedRef.current && initialData.metro.length > 0) {
             substationsLoadedRef.current = true;
-            const substations: Asset[] = initialData.metro.map((row: any) => ({
+            const substations: Asset[] = initialData.metro.map((row: AssetRow) => ({
               id: row.SUBSTATION_ID,
               name: row.SUBSTATION_NAME || row.SUBSTATION_ID,
               type: 'substation' as const,
@@ -3781,7 +3803,7 @@ function App() {
       maxDistanceKm = 50;
     }
     
-    const filtered = feederTopologyData.filter((d: any) => {
+    const filtered = feederTopologyData.filter((d: FeederConnection) => {
       const distance = d.DISTANCE_KM || 0;
       const voltage = d.VOLTAGE_LEVEL || '';
       
@@ -3804,7 +3826,7 @@ function App() {
     });
     
     // Geographic diversity: sample from grid regions instead of pure priority sort
-    const regionBuckets = new Map<string, any[]>();
+    const regionBuckets = new Map<string, FeederConnection[]>();
     filtered.forEach(d => {
       const regionKey = `${Math.floor(d.FROM_LON * 20)}_${Math.floor(d.FROM_LAT * 20)}`;
       if (!regionBuckets.has(regionKey)) regionBuckets.set(regionKey, []);
@@ -3812,7 +3834,7 @@ function App() {
     });
     
     // Sample proportionally from each region
-    const result: any[] = [];
+    const result: FeederConnection[] = [];
     const regionsArray = Array.from(regionBuckets.values());
     const perRegionLimit = Math.ceil(maxConnections / Math.max(1, regionsArray.length));
     
@@ -4039,7 +4061,7 @@ function App() {
 
   const flattenedClusterData = useMemo(() => {
     logger.time('🔍 flattenedClusterData calculation');
-    const aggregateTowers: any[] = [];
+    const aggregateTowers: AggregateTower[] = [];
     
     // ALWAYS aggregate circuits by substation - circuits are for O(1) assignment, not visual display
     // Each tower represents ONE substation with all its circuits aggregated
@@ -4047,7 +4069,7 @@ function App() {
     
     if (serviceAreas.length > 0) {
       // Aggregate circuits by substation
-      const substationAggregates = new Map<string, any>();
+      const substationAggregates = new Map<string, SubstationAggregate>();
       
       unifiedClusters.forEach(cell => {
         // Get substation ID from circuit's district ID or first substation
@@ -4243,8 +4265,8 @@ function App() {
     }
 
     // Count cells by operational status
-    const criticalCells = flattenedClusterData.aggregateTowers.filter((c: any) => c.asset.worstStatus === 'critical').length;
-    const warningCells = flattenedClusterData.aggregateTowers.filter((c: any) => c.asset.worstStatus === 'warning').length;
+    const criticalCells = flattenedClusterData.aggregateTowers.filter((c: AggregateTower) => c.asset.worstStatus === 'critical').length;
+    const warningCells = flattenedClusterData.aggregateTowers.filter((c: AggregateTower) => c.asset.worstStatus === 'warning').length;
     const healthyCells = totalCells - criticalCells - warningCells;
 
     // #METRIC 1: Operational Margin - % of grid NOT under stress
@@ -4252,8 +4274,8 @@ function App() {
     const operationalMargin = ((healthyCells / totalCells) * 100);
 
     // Calculate system-wide averages from grid cells
-    const avgHealth = flattenedClusterData.aggregateTowers.reduce((sum: number, c: any) => sum + c.asset.avgHealth, 0) / totalCells;
-    const avgLoad = flattenedClusterData.aggregateTowers.reduce((sum: number, c: any) => sum + c.asset.avgLoad, 0) / totalCells;
+    const avgHealth = flattenedClusterData.aggregateTowers.reduce((sum: number, c: AggregateTower) => sum + c.asset.avgHealth, 0) / totalCells;
+    const avgLoad = flattenedClusterData.aggregateTowers.reduce((sum: number, c: AggregateTower) => sum + c.asset.avgLoad, 0) / totalCells;
     const avgLoadHeadroom = 100 - avgLoad;
 
     // #METRIC 2: Stress-Aware Reliability - Weighted combination acknowledging degradation
@@ -4380,8 +4402,8 @@ function App() {
     ...(layersVisible.heatmap ? [new HeatmapLayer({
       id: 'usage-heatmap',
       data: heatmapData,
-      getPosition: (d: any) => d.position,
-      getWeight: (d: any) => d.weight,
+      getPosition: (d: { position: [number, number] }) => d.position,
+      getWeight: (d: { weight: number }) => d.weight,
       radiusPixels: 25,
       intensity: 1.5,
       threshold: 0.02,
@@ -4398,12 +4420,12 @@ function App() {
     // ZOOM-ADAPTIVE NETWORK TOPOLOGY: Three-tier hierarchical visualization
     // Metro view (<9): Service area polygons | Neighborhood (9-11.5): Distribution feeders | Street (>11.5): Full network
     ...(layersVisible.connections ? (() => {
-      const layers: any[] = [];
+      const layers: unknown[] = [];
       
       // METRO VIEW (Zoom < 9): Grid cell hexagonal tiles matching tower operational status
       if (throttledZoom < 9) {
         // Create hexagon tiles directly under each grid cell tower
-        const hexagonTileData = flattenedClusterData.aggregateTowers.map((tower: any) => ({
+        const hexagonTileData = flattenedClusterData.aggregateTowers.map((tower: AggregateTower) => ({
           position: tower.position,
           operationalStatus: tower.asset.worstStatus,
           avgLoad: tower.asset.avgLoad,
@@ -4419,7 +4441,7 @@ function App() {
           filled: true,
           wireframe: false,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPolygon: (d: any) => {
+          getPolygon: (d: HexagonTileData) => {
             const metersToDegreesLon = 1 / 111320 / Math.cos(29.7604 * Math.PI / 180);
             const metersToDegreesLat = 1 / 110540;
             const radiusMeters = 750; // 750m service radius - reduced by 50%
@@ -4437,13 +4459,13 @@ function App() {
             vertices.push(vertices[0]);
             return vertices;
           },
-          getFillColor: (d: any) => {
+          getFillColor: (d: HexagonTileData) => {
             // Match grid cell operational color logic
             if (d.operationalStatus === 'critical') return [239, 68, 68, 120];   // Red
             if (d.operationalStatus === 'warning') return [251, 191, 36, 120];   // Yellow
             return [34, 197, 94, 120];                                           // Green
           },
-          getLineColor: (d: any) => {
+          getLineColor: (d: HexagonTileData) => {
             // Darker outline for clarity
             if (d.operationalStatus === 'critical') return [185, 28, 28, 200];
             if (d.operationalStatus === 'warning') return [217, 119, 6, 200];
@@ -4457,7 +4479,7 @@ function App() {
             getFillColor: flattenedClusterData,
             getLineColor: flattenedClusterData
           },
-          onClick: (info: any) => {
+          onClick: (info: DeckPickInfo) => {
             // if (info.object) {
             //   logger.log('Grid cell operational status:', {
             //     cellId: info.object.cellId,
@@ -4480,9 +4502,9 @@ function App() {
           widthMinPixels: 1,
           widthMaxPixels: 5,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getSourcePosition: (d: any) => [d.FROM_LON, d.FROM_LAT],
-          getTargetPosition: (d: any) => [d.TO_LON, d.TO_LAT],
-          getSourceColor: (d: any) => {
+          getSourcePosition: (d: FeederConnection) => [d.FROM_LON, d.FROM_LAT],
+          getTargetPosition: (d: FeederConnection) => [d.TO_LON, d.TO_LAT],
+          getSourceColor: (d: FeederConnection) => {
             const load = d.LOAD_UTILIZATION_PCT || 0;
             if (load > 90) return [255, 50, 50, 240];
             if (load > 80) return [255, 100, 0, 220];
@@ -4490,7 +4512,7 @@ function App() {
             if (load > 60) return [255, 215, 0, 180];
             return [0, 255, 150, 160];
           },
-          getTargetColor: (d: any) => {
+          getTargetColor: (d: FeederConnection) => {
             const load = d.LOAD_UTILIZATION_PCT || 0;
             const alpha = 0.5;
             if (load > 90) return [255, 50, 50, 240 * alpha];
@@ -4499,7 +4521,7 @@ function App() {
             if (load > 60) return [255, 215, 0, 180 * alpha];
             return [0, 255, 150, 160 * alpha];
           },
-          getWidth: (d: any) => {
+          getWidth: (d: FeederConnection) => {
             const load = d.LOAD_UTILIZATION_PCT || 0;
             const kva = d.RATED_KVA || 0;
             if (load > 90 || kva > 750) return 4;
@@ -4507,7 +4529,7 @@ function App() {
             if (load > 70 || kva > 350) return 2.5;
             return 2;
           },
-          getHeight: (d: any) => {
+          getHeight: (d: FeederConnection) => {
             const dx = d.TO_LON - d.FROM_LON;
             const dy = d.TO_LAT - d.FROM_LAT;
             const distance = Math.sqrt(dx * dx + dy * dy);
@@ -4523,7 +4545,7 @@ function App() {
             getWidth: [throttledZoom],
             getHeight: [throttledZoom]
           },
-          onClick: (info: any) => {
+          onClick: (info: DeckPickInfo) => {
             if (info.object) {
               // logger.log('Distribution feeder:', info.object);
             }
@@ -4612,8 +4634,8 @@ function App() {
         extruded: true,
         wireframe: true,
         coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-        getPolygon: (d: any) => getHexagonPolygon(d.position[0], d.position[1], d.radius),
-        getElevation: (d: any) => {
+        getPolygon: (d: HexagonTileData) => getHexagonPolygon(d.position[0], d.position[1], d.radius),
+        getElevation: (d: HexagonTileData) => {
           const staggeredScale = getStaggerDelay(
             d.position[0], 
             d.position[1], 
@@ -4627,7 +4649,7 @@ function App() {
             : 1;
           return d.elevation * heightScale * staggeredScale * zoomFade;
         },
-        getFillColor: (d: any) => {
+        getFillColor: (d: HexagonTileData) => {
           const staggeredScale = getStaggerDelay(
             d.position[0], 
             d.position[1], 
@@ -4641,7 +4663,7 @@ function App() {
             : 1;
           return [...d.color.slice(0, 3), d.color[3] * staggeredScale * zoomFade];
         },
-        getLineColor: (d: any) => {
+        getLineColor: (d: HexagonTileData) => {
           const staggeredScale = getStaggerDelay(
             d.position[0], 
             d.position[1], 
@@ -4673,7 +4695,7 @@ function App() {
           getElevation: [flattenedClusterData.aggregateTowers, towerScaleAnimation, throttledZoom, heightScale],
           getLineColor: [towerScaleAnimation, throttledZoom]
         },
-        onClick: (info: any) => {
+        onClick: (info: DeckPickInfo) => {
           if (info.object?.asset) {
             setSelectedAsset(info.object.asset);
             setSelectedAssetPosition(null); // Clear stored position for new selection
@@ -4733,7 +4755,7 @@ function App() {
             getFillColor: assetScaleAnimation,
           getLineColor: assetScaleAnimation
         },
-        onClick: (info: any) => {
+        onClick: (info: DeckPickInfo) => {
           if (info.object) {
             if (info.srcEvent?.shiftKey) {
               setSelectedAssets(prev => {
@@ -4755,7 +4777,7 @@ function App() {
             }
           }
         },
-        onHover: (info: any) => {
+        onHover: (info: DeckPickInfo) => {
           if (info.object && info.object.id !== selectedAsset?.id) {
             setHoveredAsset(info.object);
             setHoverPosition({ x: info.x, y: info.y });
@@ -4884,7 +4906,7 @@ function App() {
             getFillColor: [assetScaleAnimation],
             getLineColor: [assetScaleAnimation]
           },
-          onClick: (info: any) => {
+          onClick: (info: DeckPickInfo) => {
             if (info.object) {
               if (info.srcEvent?.shiftKey) {
                 setSelectedAssets(prev => {
@@ -4904,7 +4926,7 @@ function App() {
               }
             }
           },
-          onHover: (info: any) => {
+          onHover: (info: DeckPickInfo) => {
             if (info.object && info.object.id !== selectedAsset?.id) {
               setHoveredAsset(info.object);
               setHoverPosition({ x: info.x, y: info.y });
@@ -5087,7 +5109,7 @@ function App() {
             getFillColor: [assetScaleAnimation],
             getLineColor: [assetScaleAnimation]
           },
-          onClick: (info: any) => {
+          onClick: (info: DeckPickInfo) => {
           if (info.object) {
             if (info.srcEvent?.shiftKey) {
               setSelectedAssets(prev => {
@@ -5109,7 +5131,7 @@ function App() {
             }
           }
         },
-        onHover: (info: any) => {
+        onHover: (info: DeckPickInfo) => {
           if (info.object && info.object.id !== selectedAsset?.id) {
             setHoveredAsset(info.object);
             setHoverPosition({ x: info.x, y: info.y });
@@ -5243,7 +5265,7 @@ function App() {
           getFillColor: [assetScaleAnimation],
           getLineColor: [assetScaleAnimation]
         },
-        onClick: (info: any) => {
+        onClick: (info: DeckPickInfo) => {
           if (info.object) {
             if (info.srcEvent?.shiftKey) {
               setSelectedAssets(prev => {
@@ -5265,7 +5287,7 @@ function App() {
             }
           }
         },
-        onHover: (info: any) => {
+        onHover: (info: DeckPickInfo) => {
           if (info.object && info.object.id !== selectedAsset?.id) {
             setHoveredAsset(info.object);
             setHoverPosition({ x: info.x, y: info.y });
@@ -5287,7 +5309,7 @@ function App() {
       const impactScale = 1.0 + (Math.min(selectedAsset.impactScore || 0, maxImpact) / maxImpact);
       
       // Calculate category-specific health colors
-      const getHealthColor = (assets: any[], type: string) => {
+      const getHealthColor = (assets: Asset[], type: string) => {
         if (!assets || assets.length === 0) return [100, 100, 100]; // Gray for missing
         
         // Filter for valid health scores only
@@ -5323,7 +5345,7 @@ function App() {
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           radiusMinPixels: (100 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 18 * glow.pulseAmplitude) * glow.glowScale * impactScale * (selectedAsset.substationCount > 0 ? 1.0 : 0.5),
           radiusMaxPixels: 250,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...substationColor, 30 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 12 * glow.pulseAmplitude],
           updateTriggers: {
             radiusMinPixels: animationFrame,
@@ -5341,7 +5363,7 @@ function App() {
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           radiusMinPixels: (65 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 12 * glow.pulseAmplitude) * glow.glowScale * impactScale * (selectedAsset.transformerCount > 0 ? 1.0 : 0.5),
           radiusMaxPixels: 150,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...transformerColor, 60 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 25 * glow.pulseAmplitude],
           updateTriggers: {
             radiusMinPixels: animationFrame,
@@ -5360,7 +5382,7 @@ function App() {
           radiusMinPixels: (35 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.04)) * 8 * glow.pulseAmplitude) * glow.glowScale * impactScale * (selectedAsset.poleCount > 0 ? 1.0 : 0.5),
           radiusMaxPixels: 90,
           lineWidthMinPixels: 2 * glow.strokeIntensity,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...poleColor, 80 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.04)) * 30 * glow.pulseAmplitude],
           getLineColor: [...poleColor.map(c => Math.min(255, c + 50)), 180 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.04)) * 75 * glow.strokeIntensity],
           updateTriggers: {
@@ -5387,7 +5409,7 @@ function App() {
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           radiusMinPixels: (35 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 8 * glow.pulseAmplitude) * glow.glowScale,
           radiusMaxPixels: 90,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...glow.baseColor, 30 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 12 * glow.pulseAmplitude],
           updateTriggers: {
             radiusMinPixels: animationFrame,
@@ -5406,7 +5428,7 @@ function App() {
           radiusMinPixels: (18 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 5 * glow.pulseAmplitude) * glow.glowScale,
           radiusMaxPixels: 50,
           lineWidthMinPixels: 2 * glow.strokeIntensity,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 80 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 25 * glow.pulseAmplitude],
           getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 160 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 60 * glow.strokeIntensity],
           updateTriggers: {
@@ -5433,7 +5455,7 @@ function App() {
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           radiusMinPixels: (28 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 6 * glow.pulseAmplitude) * glow.glowScale,
           radiusMaxPixels: 70,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...glow.baseColor, 35 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 15 * glow.pulseAmplitude],
           updateTriggers: {
             radiusMinPixels: animationFrame,
@@ -5452,7 +5474,7 @@ function App() {
           radiusMinPixels: (14 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 4 * glow.pulseAmplitude) * glow.glowScale,
           radiusMaxPixels: 40,
           lineWidthMinPixels: 2 * glow.strokeIntensity,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 90 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 30 * glow.pulseAmplitude],
           getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 170 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 65 * glow.strokeIntensity],
         updateTriggers: {
@@ -5479,7 +5501,7 @@ function App() {
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           radiusMinPixels: (22 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 5 * glow.pulseAmplitude) * glow.glowScale,
           radiusMaxPixels: 55,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...glow.baseColor, 40 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 18 * glow.pulseAmplitude],
           updateTriggers: {
             radiusMinPixels: animationFrame,
@@ -5498,7 +5520,7 @@ function App() {
           radiusMinPixels: (10 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 3 * glow.pulseAmplitude) * glow.glowScale,
           radiusMaxPixels: 30,
           lineWidthMinPixels: 2 * glow.strokeIntensity,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 100 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 35 * glow.pulseAmplitude],
           getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 180 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 70 * glow.strokeIntensity],
           updateTriggers: {
@@ -5525,7 +5547,7 @@ function App() {
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
           radiusMinPixels: (18 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 4 * glow.pulseAmplitude) * glow.glowScale,
           radiusMaxPixels: 45,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...glow.baseColor, 45 + Math.sin(animationTimeRef.current * glow.pulseSpeed) * 20 * glow.pulseAmplitude],
           updateTriggers: {
             radiusMinPixels: animationFrame,
@@ -5544,7 +5566,7 @@ function App() {
           radiusMinPixels: (8 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 2 * glow.pulseAmplitude) * glow.glowScale,
           radiusMaxPixels: 25,
           lineWidthMinPixels: 2 * glow.strokeIntensity,
-          getPosition: (d: any) => d.position,
+          getPosition: (d: { position: [number, number] }) => d.position,
           getFillColor: [...glow.baseColor.map(c => Math.min(255, c + 20)), 110 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 40 * glow.pulseAmplitude],
           getLineColor: [...glow.baseColor.map(c => Math.min(255, c + 35)), 190 + Math.sin(animationTimeRef.current * (glow.pulseSpeed + 0.02)) * 65 * glow.strokeIntensity],
           updateTriggers: {
@@ -5579,7 +5601,7 @@ function App() {
             worker: true
           }
         },
-        getFillColor: (f: any) => {
+        getFillColor: (f: GeoJSONFeature) => {
           const type = f.properties?.building_type;
           if (type === 'commercial') return [70, 130, 180, 180];
           if (type === 'industrial') return [180, 120, 60, 180];
@@ -5594,7 +5616,7 @@ function App() {
         wireframe: false,
         // Fix: Realistic building heights - use height_meters directly without floor multiplication
         // Most buildings have reasonable height_meters values (avg 5.3m, max 305m for skyscrapers)
-        getElevation: (f: any) => {
+        getElevation: (f: GeoJSONFeature) => {
           const height = f.properties?.height_meters || 5;
           // Cap very tall buildings at reasonable rendering height for visual clarity
           return Math.min(height, 350);
@@ -5605,7 +5627,7 @@ function App() {
         pickable: true,
         autoHighlight: true,
         highlightColor: [255, 200, 0, 200],
-        onClick: (info: any) => {
+        onClick: (info: DeckPickInfo) => {
           if (info.object) {
             const building: SpatialBuilding = {
               id: info.object.properties?.building_id || `bldg-${info.index}`,
@@ -5623,7 +5645,7 @@ function App() {
             setSelectedAsset(null);
           }
         },
-        onHover: (info: any) => {
+        onHover: (info: DeckPickInfo) => {
           if (info.object) {
             const building: SpatialBuilding = {
               id: info.object.properties?.building_id || `bldg-${info.index}`,
@@ -5661,8 +5683,8 @@ function App() {
       ...(selectedLineId ? [
         new PathLayer({
           id: 'power-lines-selection-glow',
-          data: spatialData.powerLines.filter((d: any) => (d.id || d.power_line_id) === selectedLineId),
-          getPath: (d: any) => d.coordinates || d.path,
+          data: spatialData.powerLines.filter((d: SpatialPowerLine) => (d.id || d.power_line_id) === selectedLineId),
+          getPath: (d: SpatialPowerLine) => d.coordinates || d.path,
           getColor: [255, 255, 100, 120],  // Bright yellow glow
           getWidth: 25 * zoomScale,
           widthUnits: 'pixels',
@@ -5677,11 +5699,11 @@ function App() {
       new PathLayer({
         id: 'power-lines-outer-glow',
         data: spatialData.powerLines,
-        getPath: (d: any) => d.coordinates || d.path,
-        getColor: (d: any) => d.class === 'power_line' 
+        getPath: (d: SpatialPowerLine) => d.coordinates || d.path,
+        getColor: (d: SpatialPowerLine) => d.class === 'power_line' 
           ? [255, 180, 60, 45]    // Warm orange outer glow for transmission
           : [80, 180, 255, 40],   // Electric blue outer glow for distribution
-        getWidth: (d: any) => (d.class === 'power_line' ? 18 : 12) * zoomScale,
+        getWidth: (d: SpatialPowerLine) => (d.class === 'power_line' ? 18 : 12) * zoomScale,
         widthUnits: 'pixels',
         widthMinPixels: 4,
         widthMaxPixels: 24,
@@ -5694,11 +5716,11 @@ function App() {
       new PathLayer({
         id: 'power-lines-inner-glow',
         data: spatialData.powerLines,
-        getPath: (d: any) => d.coordinates || d.path,
-        getColor: (d: any) => d.class === 'power_line' 
+        getPath: (d: SpatialPowerLine) => d.coordinates || d.path,
+        getColor: (d: SpatialPowerLine) => d.class === 'power_line' 
           ? [255, 160, 40, 100]   // Orange inner glow
           : [100, 200, 255, 90],  // Cyan inner glow
-        getWidth: (d: any) => (d.class === 'power_line' ? 10 : 6) * zoomScale,
+        getWidth: (d: SpatialPowerLine) => (d.class === 'power_line' ? 10 : 6) * zoomScale,
         widthUnits: 'pixels',
         widthMinPixels: 2,
         widthMaxPixels: 14,
@@ -5711,8 +5733,8 @@ function App() {
       new PathLayer({
         id: 'power-lines-core',
         data: spatialData.powerLines,
-        getPath: (d: any) => d.coordinates || d.path,
-        getColor: (d: any) => {
+        getPath: (d: SpatialPowerLine) => d.coordinates || d.path,
+        getColor: (d: SpatialPowerLine) => {
           const isSelected = (d.id || d.power_line_id) === selectedLineId;
           if (isSelected) {
             return [255, 255, 150, 255];  // Bright yellow when selected
@@ -5721,7 +5743,7 @@ function App() {
             ? [255, 140, 0, 255]    // Deep orange for major (transmission)
             : [80, 200, 255, 255];  // Cyan for minor (distribution)
         },
-        getWidth: (d: any) => {
+        getWidth: (d: FeederConnection) => {
           const isSelected = (d.id || d.power_line_id) === selectedLineId;
           const baseWidth = d.class === 'power_line' ? 3 : 2;
           return (isSelected ? baseWidth * 1.5 : baseWidth) * zoomScale;
@@ -5738,7 +5760,7 @@ function App() {
           getWidth: [currentZoom, selectedLineId],
           getColor: selectedLineId
         },
-        onClick: async (info: any) => {
+        onClick: async (info: DeckPickInfo<SpatialPowerLine>) => {
           if (info.object) {
             const lineId = info.object.id || `line-${info.index}`;
             const powerLine: SpatialPowerLine = {
@@ -5769,7 +5791,7 @@ function App() {
             });
           }
         },
-        onHover: (info: any) => {
+        onHover: (info: DeckPickInfo) => {
           if (info.object) {
             const powerLine: SpatialPowerLine = {
               id: info.object.id || `line-${info.index}`,
@@ -5798,22 +5820,22 @@ function App() {
         extruded: layersVisible.enable3D,
         wireframe: true,
         coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-        getPolygon: (d: any) => {
+        getPolygon: (d: HexagonTileData) => {
           const radius = currentZoom > 15 ? 8 : currentZoom > 13 ? 12 : 16;
           return getOctagonPolygon(d.longitude || d.lon, d.latitude || d.lat, radius);
         },
-        getFillColor: (d: any) => {
+        getFillColor: (d: HexagonTileData) => {
           const risk = d.risk_score || d.proximity_risk || 0.5;
           if (risk > 0.7) return [220, 38, 38, 200];
           if (risk > 0.4) return [234, 179, 8, 200];
           return [34, 197, 94, 180];
         },
-        getElevation: (d: any) => (d.height_m || d.canopy_height || 12) * (currentZoom > 15 ? 1 : currentZoom > 13 ? 1.5 : 2),
+        getElevation: (d: SpatialVegetation) => (d.height_m || d.canopy_height || 12) * (currentZoom > 15 ? 1 : currentZoom > 13 ? 1.5 : 2),
         elevationScale: currentZoom > 15 ? 1 : currentZoom > 13 ? 1.5 : 2.5,
         pickable: true,
         autoHighlight: true,
         highlightColor: [255, 255, 100, 255],
-        onClick: (info: any) => {
+        onClick: (info: DeckPickInfo) => {
           if (info.object) {
             const vegetation: SpatialVegetation = {
               id: info.object.id || `tree-${info.index}`,
@@ -5833,7 +5855,7 @@ function App() {
             setSelectedAsset(null);
           }
         },
-        onHover: (info: any) => {
+        onHover: (info: DeckPickInfo) => {
           if (info.object) {
             const vegetation: SpatialVegetation = {
               id: info.object.id || `tree-${info.index}`,
@@ -6667,7 +6689,7 @@ function App() {
                     scrollZoomSpeed: 0.01,
                     touchZoomSpeed: 0.01
                   }}
-                  onViewStateChange={({viewState}: {viewState: any}) => {
+                  onViewStateChange={({viewState}: {viewState: ViewState}) => {
                     // Normalize longitude to prevent wrapping issues
                     let normalizedLongitude = viewState.longitude;
                     if (normalizedLongitude !== undefined) {
@@ -8034,7 +8056,7 @@ function App() {
                                     
                                     <Collapse in={expandedAssetCategories['active_card']?.substations}>
                                       <Stack spacing={0.5} mt={1} sx={{ maxHeight: 200, overflowY: 'auto' }}>
-                                        {selectedAsset.substations?.map((asset: any) => (
+                                        {selectedAsset.substations?.map((asset: Asset) => (
                                           <Paper 
                                             key={asset.id}
                                             sx={{ 
@@ -8106,7 +8128,7 @@ function App() {
                                     
                                     <Collapse in={expandedAssetCategories['active_card']?.transformers}>
                                       <Stack spacing={0.5} mt={1} sx={{ maxHeight: 200, overflowY: 'auto' }}>
-                                        {selectedAsset.transformers?.map((asset: any) => (
+                                        {selectedAsset.transformers?.map((asset: Asset) => (
                                           <Paper 
                                             key={asset.id}
                                             sx={{ 
@@ -8178,7 +8200,7 @@ function App() {
                                     
                                     <Collapse in={expandedAssetCategories['active_card']?.poles}>
                                       <Stack spacing={0.5} mt={1} sx={{ maxHeight: 200, overflowY: 'auto' }}>
-                                        {selectedAsset.poles?.map((asset: any) => (
+                                        {selectedAsset.poles?.map((asset: Asset) => (
                                           <Paper 
                                             key={asset.id}
                                             sx={{ 
@@ -8250,7 +8272,7 @@ function App() {
                                     
                                     <Collapse in={expandedAssetCategories['active_card']?.meters}>
                                       <Stack spacing={0.5} mt={1} sx={{ maxHeight: 200, overflowY: 'auto' }}>
-                                        {selectedAsset.meters?.map((asset: any) => (
+                                        {selectedAsset.meters?.map((asset: Asset) => (
                                           <Paper 
                                             key={asset.id}
                                             sx={{ 
@@ -8833,7 +8855,7 @@ function App() {
                                         Substations ({groupedAssets.substation.length})
                                       </Typography>
                                       <Stack spacing={0.5} sx={{ maxHeight: 120, overflowY: 'auto' }}>
-                                        {groupedAssets.substation.map((asset: any) => (
+                                        {groupedAssets.substation.map((asset: Asset) => (
                                           <Paper 
                                             key={asset.id}
                                             sx={{ 
@@ -8870,7 +8892,7 @@ function App() {
                                         Transformers ({groupedAssets.transformer.length})
                                       </Typography>
                                       <Stack spacing={0.5} sx={{ maxHeight: 120, overflowY: 'auto' }}>
-                                        {groupedAssets.transformer.map((asset: any) => (
+                                        {groupedAssets.transformer.map((asset: Asset) => (
                                           <Paper 
                                             key={asset.id}
                                             sx={{ 
@@ -8907,7 +8929,7 @@ function App() {
                                         Poles ({groupedAssets.pole.length})
                                       </Typography>
                                       <Stack spacing={0.5} sx={{ maxHeight: 120, overflowY: 'auto' }}>
-                                        {groupedAssets.pole.map((asset: any) => (
+                                        {groupedAssets.pole.map((asset: Asset) => (
                                           <Paper 
                                             key={asset.id}
                                             sx={{ 
@@ -8944,7 +8966,7 @@ function App() {
                                         Meters ({groupedAssets.meter.length})
                                       </Typography>
                                       <Stack spacing={0.5} sx={{ maxHeight: 120, overflowY: 'auto' }}>
-                                        {groupedAssets.meter.map((asset: any) => (
+                                        {groupedAssets.meter.map((asset: Asset) => (
                                           <Paper 
                                             key={asset.id}
                                             sx={{ 

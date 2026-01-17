@@ -173,6 +173,241 @@ export interface PinnedSpatialObject {
 }
 
 // ============================================================================
+// API Response Types (for mapping raw data to typed objects)
+// ============================================================================
+
+/** Raw asset row from API response */
+export interface AssetRow {
+  ASSET_ID: string;
+  ASSET_NAME: string;
+  ASSET_TYPE: string;
+  LATITUDE: number;
+  LONGITUDE: number;
+  HEALTH_SCORE?: number;
+  LOAD_PERCENT?: number;
+  USAGE_KWH?: number;
+  VOLTAGE?: string;
+  STATUS?: string;
+  LAST_MAINTENANCE?: string;
+  COMMISSIONED_DATE?: string;
+  POLE_HEIGHT_FT?: number;
+  CIRCUIT_ID?: string;
+  CAPACITY_KVA?: number;
+  CUSTOMER_COUNT?: number;
+  AVG_USAGE?: number;
+  CUSTOMER_SEGMENT?: string;
+  PARENT_TRANSFORMER_ID?: string;
+  ROTATION_RAD?: number;
+}
+
+/** Raw topology row from API response */
+export interface TopologyRow {
+  FROM_ASSET_ID: string;
+  TO_ASSET_ID: string;
+  CONNECTION_TYPE: string;
+  FROM_LAT: number;
+  FROM_LON: number;
+  TO_LAT: number;
+  TO_LON: number;
+}
+
+/** Raw substation row from metro API */
+export interface MetroSubstationRow {
+  SUBSTATION_ID: string;
+  SUBSTATION_NAME: string;
+  LATITUDE: number;
+  LONGITUDE: number;
+  CAPACITY_MW?: number;
+  STATUS?: string;
+  HEALTH_SCORE?: number;
+  LOAD_PERCENT?: number;
+}
+
+// ============================================================================
+// Weather & Service Area Types
+// ============================================================================
+
+export interface WeatherData {
+  hour: number;
+  timestamp?: string;
+  temperature?: number;
+  humidity?: number;
+  wind_speed?: number;
+  precipitation?: number;
+  conditions?: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+export interface ServiceArea {
+  CIRCUIT_ID: string;
+  SUBSTATION_ID: string;
+  CIRCUIT_NAME?: string;
+  CUSTOMER_COUNT?: number;
+  TOTAL_LOAD_KW?: number;
+  STATUS?: string;
+  CENTROID_LAT?: number;
+  CENTROID_LON?: number;
+}
+
+// ============================================================================
+// Feeder Topology Types
+// ============================================================================
+
+export interface FeederConnection {
+  FROM_SUBSTATION_ID: string;
+  TO_SUBSTATION_ID: string;
+  FROM_LAT: number;
+  FROM_LON: number;
+  TO_LAT: number;
+  TO_LON: number;
+  FEEDER_TYPE?: string;
+  CAPACITY_MW?: number;
+  LOAD_UTILIZATION_PCT?: number;
+  RATED_KVA?: number;
+}
+
+// ============================================================================
+// deck.gl Layer Data Types
+// ============================================================================
+
+/** Data for hexagon/cluster visualization */
+export interface HexagonTileData {
+  position: [number, number];
+  radius: number;
+  operationalStatus?: 'healthy' | 'warning' | 'critical';
+  avgLoad?: number;
+  asset: {
+    id: string;
+    avgHealth: number;
+    avgLoad: number;
+    worstStatus: 'healthy' | 'warning' | 'critical';
+    count: number;
+    byType: {
+      substation: number;
+      transformer: number;
+      pole: number;
+      meter: number;
+    };
+  };
+}
+
+/** Data for heatmap points */
+export interface HeatmapPoint {
+  position: [number, number];
+  weight: number;
+}
+
+/** Aggregate tower data for clustering visualization */
+export interface AggregateTower {
+  position: [number, number];
+  radius: number;
+  asset: {
+    id: string;
+    avgHealth: number;
+    avgLoad: number;
+    worstStatus: 'healthy' | 'warning' | 'critical';
+    count: number;
+    byType: {
+      substation: number;
+      transformer: number;
+      pole: number;
+      meter: number;
+    };
+  };
+}
+
+// ============================================================================
+// deck.gl Event Types
+// ============================================================================
+
+/** Pick info from deck.gl layer interaction */
+export interface DeckPickInfo<T = unknown> {
+  object?: T;
+  x: number;
+  y: number;
+  coordinate?: [number, number];
+  layer?: { id: string };
+  index?: number;
+}
+
+// ============================================================================
+// View State Types
+// ============================================================================
+
+export interface ViewState {
+  longitude: number;
+  latitude: number;
+  zoom: number;
+  pitch?: number;
+  bearing?: number;
+  transitionDuration?: number;
+  transitionInterpolator?: unknown;
+}
+
+// ============================================================================
+// Substation Aggregation Types (for clustering)
+// ============================================================================
+
+export interface SubstationAggregate {
+  substation: Asset;
+  circuits: AssetCluster[];
+  allAssets: Asset[];
+  transformers: Asset[];
+  poles: Asset[];
+  meters: Asset[];
+}
+
+// ============================================================================
+// API Data Response Types
+// ============================================================================
+
+export interface InitialDataResponse {
+  assets?: AssetRow[];
+  topology?: TopologyRow[];
+  metro?: MetroSubstationRow[];
+  service_areas?: ServiceArea[];
+  feeders?: FeederConnection[];
+  weather?: WeatherData[];
+  kpis?: {
+    TOTAL_CUSTOMERS?: number;
+    ACTIVE_OUTAGES?: number;
+    TOTAL_LOAD_MW?: number;
+    CREWS_ACTIVE?: number;
+    AVG_RESTORATION_MINUTES?: number;
+  };
+  timing?: Record<string, number>;
+  cache_hits?: number;
+}
+
+// ============================================================================
+// GeoJSON Types
+// ============================================================================
+
+export interface GeoJSONFeature {
+  type: 'Feature';
+  geometry: {
+    type: string;
+    coordinates: number[] | number[][] | number[][][];
+  };
+  properties?: {
+    building_type?: string;
+    height_meters?: number;
+    [key: string]: unknown;
+  };
+}
+
+// ============================================================================
+// Spatial Data State
+// ============================================================================
+
+export interface SpatialDataState {
+  buildings: SpatialBuilding[];
+  powerLines: SpatialPowerLine[];
+  vegetation: SpatialVegetation[];
+}
+
+// ============================================================================
 // Color Constants
 // ============================================================================
 
