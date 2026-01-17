@@ -31,5 +31,40 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: ['@deck.gl/core', '@deck.gl/layers', '@deck.gl/react']
+  },
+  build: {
+    // Performance: Manual chunk splitting for optimal loading
+    // Separates vendor code from application code for better caching
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Core React - rarely changes, cached long-term
+          'vendor-react': ['react', 'react-dom'],
+          // Mapping libraries - large but stable
+          'vendor-maplibre': ['maplibre-gl'],
+          // deck.gl ecosystem - core visualization engine
+          'vendor-deckgl': [
+            '@deck.gl/core',
+            '@deck.gl/layers',
+            '@deck.gl/react',
+            '@deck.gl/geo-layers',
+            '@deck.gl/aggregation-layers',
+            '@deck.gl/mesh-layers'
+          ],
+          // Loaders - only needed for specific data formats
+          'vendor-loaders': [
+            '@loaders.gl/core',
+            '@loaders.gl/mvt',
+            '@loaders.gl/gltf'
+          ],
+          // Charting - lazy loaded with ChatDrawer
+          'vendor-charts': ['vega', 'vega-lite', 'vega-embed', 'react-vega'],
+          // Markdown rendering - lazy loaded with ChatDrawer
+          'vendor-markdown': ['react-markdown']
+        }
+      }
+    },
+    // Increase warning limit since we're deliberately chunking
+    chunkSizeWarningLimit: 800
   }
 });
