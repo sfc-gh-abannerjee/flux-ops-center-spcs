@@ -5433,7 +5433,11 @@ function App() {
     // Major lines (power_line): Orange with warm glow - high voltage transmission
     // Minor lines (minor_line): Cyan with electric glow - distribution feeders
     // NOTE: Green connections on map are TOPOLOGY LINKS (ArcLayer), not power lines
-    ...(layersVisible.powerLines && spatialData.powerLines.length > 0 ? [
+    // Zoom-adaptive widths: thinner at low zooms to avoid overwhelming the map
+    ...(layersVisible.powerLines && spatialData.powerLines.length > 0 ? (() => {
+      // Scale factor: 0.5 at zoom 9, 1.0 at zoom 14+
+      const zoomScale = Math.min(1, Math.max(0.4, (currentZoom - 9) / 5));
+      return [
       // Outer glow layer - creates electric halo effect
       new PathLayer({
         id: 'power-lines-outer-glow',
@@ -5442,13 +5446,14 @@ function App() {
         getColor: (d: any) => d.class === 'power_line' 
           ? [255, 180, 60, 40]    // Warm orange outer glow for transmission
           : [80, 180, 255, 35],   // Electric blue outer glow for distribution
-        getWidth: (d: any) => d.class === 'power_line' ? 18 : 12,
+        getWidth: (d: any) => (d.class === 'power_line' ? 16 : 10) * zoomScale,
         widthUnits: 'pixels',
-        widthMinPixels: 8,
-        widthMaxPixels: 30,
+        widthMinPixels: 3,
+        widthMaxPixels: 20,
         capRounded: true,
         jointRounded: true,
-        billboard: true
+        billboard: true,
+        updateTriggers: { getWidth: currentZoom }
       }),
       // Inner glow layer - intensified glow near line
       new PathLayer({
@@ -5458,13 +5463,14 @@ function App() {
         getColor: (d: any) => d.class === 'power_line' 
           ? [255, 160, 40, 90]    // Orange inner glow
           : [100, 200, 255, 80],  // Cyan inner glow
-        getWidth: (d: any) => d.class === 'power_line' ? 10 : 7,
+        getWidth: (d: any) => (d.class === 'power_line' ? 8 : 5) * zoomScale,
         widthUnits: 'pixels',
-        widthMinPixels: 4,
-        widthMaxPixels: 16,
+        widthMinPixels: 2,
+        widthMaxPixels: 12,
         capRounded: true,
         jointRounded: true,
-        billboard: true
+        billboard: true,
+        updateTriggers: { getWidth: currentZoom }
       }),
       // Core line - solid visible line
       new PathLayer({
@@ -5474,15 +5480,16 @@ function App() {
         getColor: (d: any) => d.class === 'power_line'
           ? [255, 140, 0, 255]    // Deep orange for major (transmission)
           : [80, 200, 255, 255],  // Cyan for minor (distribution)
-        getWidth: (d: any) => d.class === 'power_line' ? 3 : 2,
+        getWidth: (d: any) => (d.class === 'power_line' ? 2.5 : 1.5) * zoomScale,
         widthUnits: 'pixels',
-        widthMinPixels: 1.5,
-        widthMaxPixels: 6,
+        widthMinPixels: 1,
+        widthMaxPixels: 5,
         capRounded: true,
         jointRounded: true,
         pickable: true,
         autoHighlight: true,
         highlightColor: [255, 255, 100, 255],
+        updateTriggers: { getWidth: currentZoom },
         onClick: (info: any) => {
           if (info.object) {
             const powerLine: SpatialPowerLine = {
@@ -5518,7 +5525,7 @@ function App() {
           }
         }
       })
-    ] : []),
+    ]; })() : []),
 
     // Engineering: Vegetation Risk from PostGIS (3D tree columns)
     // deck.gl v9: Using PolygonLayer instead of ColumnLayer
