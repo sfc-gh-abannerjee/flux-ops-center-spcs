@@ -1147,6 +1147,23 @@ function App() {
       
       const lodInfo = data.lod_level ? ` (LOD: ${data.lod_level}, ${data.total_vertices?.toLocaleString() || '?'} vertices)` : '';
       console.log(`✅ Loaded ${layerType}: ${(data.features || data).length} features${lodInfo} in ${data.query_time_ms}ms`);
+      
+      // Engineering: Debug power lines data for visualization troubleshooting
+      if (layerType === 'powerLines') {
+        const features = data.features || data;
+        const classes = features.reduce((acc: Record<string, number>, f: any) => {
+          const cls = f.class || 'unknown';
+          acc[cls] = (acc[cls] || 0) + 1;
+          return acc;
+        }, {});
+        console.log(`   📊 Power line classes: ${Object.entries(classes).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+        // Verify path data structure
+        const sample = features[0];
+        if (sample) {
+          const path = sample.coordinates || sample.path;
+          console.log(`   📍 Sample path format: ${Array.isArray(path) ? `Array[${path.length}], first coord: [${path[0]}]` : typeof path}`);
+        }
+      }
     } catch (error) {
       console.error(`Failed to load ${layerType}:`, error);
     } finally {
@@ -1157,9 +1174,9 @@ function App() {
   // Engineering: Load power lines with zoom-based LOD
   useEffect(() => {
     if (layersVisible.powerLines && spatialData.powerLines.length === 0 && !spatialLoading.powerLines) {
-      loadSpatialLayer('powerLines', currentZoom);
+      loadSpatialLayer('powerLines', viewState.zoom);
     }
-  }, [layersVisible.powerLines, spatialData.powerLines.length, spatialLoading.powerLines, loadSpatialLayer, currentZoom]);
+  }, [layersVisible.powerLines, spatialData.powerLines.length, spatialLoading.powerLines, loadSpatialLayer, viewState.zoom]);
 
   // Engineering: Reload power lines when zoom crosses LOD thresholds
   useEffect(() => {
@@ -1167,16 +1184,16 @@ function App() {
     
     // Determine current and loaded LOD levels
     const getCurrentLod = (z: number) => z < 12 ? 'overview' : z < 15 ? 'mid' : 'full';
-    const currentLod = getCurrentLod(currentZoom);
+    const currentLod = getCurrentLod(viewState.zoom);
     const loadedLod = getCurrentLod(powerLinesLoadedZoom);
     
     // Reload if LOD level changed
     if (currentLod !== loadedLod) {
-      console.log(`🔄 Power lines LOD change: ${loadedLod} → ${currentLod} (zoom ${powerLinesLoadedZoom.toFixed(1)} → ${currentZoom.toFixed(1)})`);
+      console.log(`🔄 Power lines LOD change: ${loadedLod} → ${currentLod} (zoom ${powerLinesLoadedZoom.toFixed(1)} → ${viewState.zoom.toFixed(1)})`);
       setSpatialData(prev => ({ ...prev, powerLines: [] }));
-      loadSpatialLayer('powerLines', currentZoom);
+      loadSpatialLayer('powerLines', viewState.zoom);
     }
-  }, [currentZoom, powerLinesLoadedZoom, layersVisible.powerLines, spatialLoading.powerLines, loadSpatialLayer]);
+  }, [viewState.zoom, powerLinesLoadedZoom, layersVisible.powerLines, spatialLoading.powerLines, loadSpatialLayer]);
 
   useEffect(() => {
     if (layersVisible.vegetation && spatialData.vegetation.length === 0 && !spatialLoading.vegetation) {
@@ -5390,17 +5407,18 @@ function App() {
     ] : []),
 
     // Engineering: Power Lines from PostGIS with LOD + class-based styling
-    // Major lines (power_line): Orange, thicker
-    // Minor lines (minor_line): Yellow, thinner
+    // Major lines (power_line): Orange, thicker - high voltage transmission
+    // Minor lines (minor_line): Cyan/Light Blue, thinner - distribution feeders
+    // NOTE: Green connections on map are TOPOLOGY LINKS (ArcLayer), not power lines
     ...(layersVisible.powerLines && spatialData.powerLines.length > 0 ? [
       new PathLayer({
         id: 'power-lines-glow',
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
-        // Class-based glow color: brighter for major lines
+        // Class-based glow color: orange for major, cyan for minor (distinct from green topology)
         getColor: (d: any) => d.class === 'power_line' 
-          ? [255, 160, 40, 100]   // Orange glow for major
-          : [255, 200, 100, 60],  // Softer yellow for minor
+          ? [255, 160, 40, 100]   // Orange glow for major transmission
+          : [100, 220, 255, 80],  // Cyan glow for minor distribution
         // Class-based width: wider glow for major lines
         getWidth: (d: any) => d.class === 'power_line' ? 14 : 8,
         widthUnits: 'pixels',
@@ -5414,10 +5432,10 @@ function App() {
         id: 'power-lines-core',
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
-        // Class-based core color: distinct orange vs yellow
+        // Class-based core color: distinct orange vs cyan (not green to avoid confusion with topology)
         getColor: (d: any) => d.class === 'power_line'
           ? [255, 140, 0, 255]    // Deep orange for major (transmission)
-          : [255, 200, 80, 220],  // Yellow for minor (distribution)
+          : [80, 200, 255, 255],  // Cyan for minor (distribution) - distinct from green topology
         // Class-based width: major lines more prominent
         getWidth: (d: any) => d.class === 'power_line' ? 4 : 2,
         widthUnits: 'pixels',
