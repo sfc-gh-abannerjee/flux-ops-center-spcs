@@ -61,6 +61,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import FormattedMarkdown from './FormattedMarkdown';
 import { LAYOUT } from './layoutConstants';
+import { logger } from './utils/logger';
 import { VegaEmbed } from 'react-vega';
 import { Highlight, themes } from 'prism-react-renderer';
 
@@ -174,7 +175,7 @@ export default function ChatDrawer({
     const sessions = [newSession];
     saveSessionsIndex(sessions);
     setCurrentSessionId(newId);
-    console.log('🆕 Created initial session:', newId);
+    logger.log('🆕 Created initial session:', newId);
     return newId;
   };
 
@@ -217,7 +218,7 @@ export default function ChatDrawer({
         saveSessionsIndex(sessions);
       }
     } catch (e) {
-      console.warn('Failed to save session:', e);
+      logger.warn('Failed to save session:', e);
     }
   }, [messages, threadId, lastMessageId, currentSessionId]);
 
@@ -225,7 +226,7 @@ export default function ChatDrawer({
     isLoadingSession.current = true;
     try {
       const data = localStorage.getItem(SESSION_PREFIX + sessionId);
-      console.log('📂 Loading session:', sessionId, 'raw data length:', data?.length ?? 0);
+      logger.log('📂 Loading session:', sessionId, 'raw data length:', data?.length ?? 0);
       if (data) {
         const session = JSON.parse(data);
         const restoredMessages = session.messages?.map((m: any) => ({
@@ -237,9 +238,9 @@ export default function ChatDrawer({
         setLastMessageId(session.lastMessageId || null);
         setCurrentSessionId(sessionId);
         setShowWelcome(restoredMessages.length === 0);
-        console.log('📂 Loaded session:', sessionId, restoredMessages.length, 'messages', 'table in first msg:', !!restoredMessages[1]?.table);
+        logger.log('📂 Loaded session:', sessionId, restoredMessages.length, 'messages', 'table in first msg:', !!restoredMessages[1]?.table);
       } else {
-        console.log('⚠️ No data found for session:', sessionId, '- creating empty session state');
+        logger.log('⚠️ No data found for session:', sessionId, '- creating empty session state');
         setMessages([]);
         setThreadId(null);
         setLastMessageId(null);
@@ -247,7 +248,7 @@ export default function ChatDrawer({
         setShowWelcome(true);
       }
     } catch (e) {
-      console.warn('Failed to load session:', e);
+      logger.warn('Failed to load session:', e);
       setMessages([]);
       setCurrentSessionId(sessionId);
       setShowWelcome(true);
@@ -280,9 +281,9 @@ export default function ChatDrawer({
           sessions[sessionIdx].timestamp = new Date().toISOString();
           saveSessionsIndex(sessions);
         }
-        console.log('💾 Saved current session before creating new one');
+        logger.log('💾 Saved current session before creating new one');
       } catch (e) {
-        console.warn('Failed to save current session:', e);
+        logger.warn('Failed to save current session:', e);
       }
     }
 
@@ -304,7 +305,7 @@ export default function ChatDrawer({
     setCurrentSessionId(newId);
     setShowWelcome(true);
     setShowSessionList(false);
-    console.log('🆕 Started new session:', newId);
+    logger.log('🆕 Started new session:', newId);
     setTimeout(() => { isLoadingSession.current = false; }, 100);
   };
 
@@ -420,7 +421,7 @@ export default function ChatDrawer({
       // Create thread if this is the first message
       let currentThreadId = threadId;
       if (currentThreadId === null) {
-        console.log('🧵 Creating new thread for conversation...');
+        logger.log('🧵 Creating new thread for conversation...');
         try {
           const threadResponse = await fetch(
             import.meta.env.DEV ? 'http://localhost:3001/api/agent/threads/create' : '/api/agent/threads/create',
@@ -431,19 +432,19 @@ export default function ChatDrawer({
           
           if (threadResponse.ok) {
             const { thread_id } = await threadResponse.json();
-            console.log(`✅ Thread created: ${thread_id}`);
+            logger.log(`✅ Thread created: ${thread_id}`);
             currentThreadId = thread_id;
             setThreadId(thread_id);
           } else {
-            console.warn('⚠️ Thread creation failed, continuing without explicit thread');
+            logger.warn('⚠️ Thread creation failed, continuing without explicit thread');
           }
         } catch (threadError) {
-          console.warn('⚠️ Thread creation failed:', threadError);
+          logger.warn('⚠️ Thread creation failed:', threadError);
         }
       }
 
       // Log thread context for debugging
-      console.log('🚀 Sending agent request:', {
+      logger.log('🚀 Sending agent request:', {
         thread_id: currentThreadId,
         parent_message_id: lastMessageId || 0,
         has_thread: currentThreadId !== null,
@@ -451,9 +452,9 @@ export default function ChatDrawer({
         query: queryText.substring(0, 60) + '...'
       });
       
-      console.log(`📊 Current state BEFORE request: threadId=${threadId}, lastMessageId=${lastMessageId}, currentThreadId=${currentThreadId}`);
+      logger.log(`📊 Current state BEFORE request: threadId=${threadId}, lastMessageId=${lastMessageId}, currentThreadId=${currentThreadId}`);
       
-      console.log(`🔗 Fetching from: ${agentEndpoint}`);
+      logger.log(`🔗 Fetching from: ${agentEndpoint}`);
       const response = await fetch(agentEndpoint, {
         method: 'POST',
         headers: {
@@ -467,17 +468,17 @@ export default function ChatDrawer({
         })
       });
 
-      console.log(`📡 Response status: ${response.status}, headers:`, Object.fromEntries(response.headers.entries()));
+      logger.log(`📡 Response status: ${response.status}, headers:`, Object.fromEntries(response.headers.entries()));
 
       if (!response.ok) {
         const errorBody = await response.text();
-        console.error('❌ Agent API error:', errorBody);
+        logger.error('❌ Agent API error:', errorBody);
         throw new Error(`Agent API returned status ${response.status}`);
       }
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
-      console.log('📖 Got reader, starting stream...');
+      logger.log('📖 Got reader, starting stream...');
 
       const decoder = new TextDecoder();
       let buffer = '';
@@ -487,13 +488,13 @@ export default function ChatDrawer({
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
-          console.log(`✅ Stream complete. Total chunks: ${chunkCount}`);
+          logger.log(`✅ Stream complete. Total chunks: ${chunkCount}`);
           break;
         }
 
         chunkCount++;
         const decoded = decoder.decode(value, { stream: true });
-        console.log(`📦 Chunk ${chunkCount}:`, decoded.substring(0, 200));
+        logger.log(`📦 Chunk ${chunkCount}:`, decoded.substring(0, 200));
         buffer += decoded;
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -519,26 +520,26 @@ export default function ChatDrawer({
                   data = JSON.parse(currentEvent.data);
                 } catch (parseError) {
                   // Log parse errors for debugging but continue
-                  console.warn('Skipping invalid SSE JSON:', currentEvent.data.substring(0, 100));
+                  logger.warn('Skipping invalid SSE JSON:', currentEvent.data.substring(0, 100));
                   currentEvent = {};
                   continue;
                 }
 
                 switch (currentEvent.event) {
                   case 'response.text.delta':
-                    console.log('📝 Text delta:', data.text?.substring(0, 50));
+                    logger.log('📝 Text delta:', data.text?.substring(0, 50));
                     currentMessage.content += data.text || '';
                     setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
                     break;
 
                   case 'response.thinking.delta':
-                    console.log('🤔 Thinking delta:', data.text?.substring(0, 50));
+                    logger.log('🤔 Thinking delta:', data.text?.substring(0, 50));
                     currentMessage.thinking = (currentMessage.thinking || '') + (data.text || '');
                     setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
                     break;
 
                   case 'response.table':
-                    console.log('📋 Table event received:', JSON.stringify(data).substring(0, 500));
+                    logger.log('📋 Table event received:', JSON.stringify(data).substring(0, 500));
                     currentMessage.table = {
                       columns: data.columns || [],
                       rows: data.rows || []
@@ -556,23 +557,23 @@ export default function ChatDrawer({
                         tool_use_id: data.tool_use_id,
                         spec: chartSpec
                       };
-                      console.log('📊 Chart received:', {
+                      logger.log('📊 Chart received:', {
                         tool_use_id: data.tool_use_id,
                         hasSpec: !!chartSpec,
                         specPreview: JSON.stringify(chartSpec).substring(0, 100)
                       });
                       setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
                     } catch (e) {
-                      console.error('❌ Failed to parse chart_spec:', e, data);
+                      logger.error('❌ Failed to parse chart_spec:', e, data);
                     }
                     break;
 
                   case 'response.tool_result':
-                    console.log('🔧 Tool result received:', JSON.stringify(data).substring(0, 500));
+                    logger.log('🔧 Tool result received:', JSON.stringify(data).substring(0, 500));
                     if (data.content) {
                       const toolContent = Array.isArray(data.content) ? data.content : [data.content];
                       for (const item of toolContent) {
-                        console.log('  📦 Tool content item:', item.type, JSON.stringify(item).substring(0, 300));
+                        logger.log('  📦 Tool content item:', item.type, JSON.stringify(item).substring(0, 300));
                         
                         if (item.type === 'json' && item.json) {
                           const jsonData = item.json;
@@ -580,7 +581,7 @@ export default function ChatDrawer({
                           // Extract SQL from json.sql (Cortex Analyst format)
                           if (jsonData.sql) {
                             currentMessage.sqlQuery = jsonData.sql;
-                            console.log('  ✅ Found SQL in json.sql');
+                            logger.log('  ✅ Found SQL in json.sql');
                           }
                           
                           // Extract table data from result_set (Cortex Analyst SQL execution results)
@@ -594,7 +595,7 @@ export default function ChatDrawer({
                             
                             if (columns.length > 0) {
                               currentMessage.table = { columns, rows };
-                              console.log('  ✅ Found table in result_set:', columns.length, 'columns,', rows.length, 'rows');
+                              logger.log('  ✅ Found table in result_set:', columns.length, 'columns,', rows.length, 'rows');
                             }
                           }
                           
@@ -604,7 +605,7 @@ export default function ChatDrawer({
                             const columns = Object.keys(firstRow);
                             const rows = jsonData.results.map((r: any) => columns.map(c => r[c]));
                             currentMessage.table = { columns, rows };
-                            console.log('  ✅ Found table in json.results:', columns.length, 'columns,', rows.length, 'rows');
+                            logger.log('  ✅ Found table in json.results:', columns.length, 'columns,', rows.length, 'rows');
                           }
                           
                           // Fallback: Check for data array (alternative format)
@@ -614,7 +615,7 @@ export default function ChatDrawer({
                               const columns = Object.keys(firstRow);
                               const rows = jsonData.data.map((r: any) => columns.map(c => r[c]));
                               currentMessage.table = { columns, rows };
-                              console.log('  ✅ Found table in json.data (object format):', columns.length, 'columns,', rows.length, 'rows');
+                              logger.log('  ✅ Found table in json.data (object format):', columns.length, 'columns,', rows.length, 'rows');
                             }
                           }
                         }
@@ -622,7 +623,7 @@ export default function ChatDrawer({
                         // Also check for SQL directly on item (legacy format)
                         if (item.type === 'text' && item.sql) {
                           currentMessage.sqlQuery = item.sql;
-                          console.log('  ✅ Found SQL in item.sql');
+                          logger.log('  ✅ Found SQL in item.sql');
                         }
                         
                         setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
@@ -633,7 +634,7 @@ export default function ChatDrawer({
                   case 'request_id':
                     if (data.request_id) {
                       currentMessage.requestId = data.request_id;
-                      console.log(`📝 Captured request_id from header: ${data.request_id}`);
+                      logger.log(`📝 Captured request_id from header: ${data.request_id}`);
                       setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
                     }
                     break;
@@ -647,28 +648,28 @@ export default function ChatDrawer({
                     
                   case 'metadata':
                     // CRITICAL: Capture message IDs and request_id for thread continuity and feedback
-                    console.log(`📋 Metadata event:`, data);
+                    logger.log(`📋 Metadata event:`, data);
                     
                     const metadata = data.metadata || data;
                     
                     // Capture request_id from metadata (per Cortex Agent API)
                     if (data.request_id) {
                       currentMessage.requestId = data.request_id;
-                      console.log(`📝 Captured request_id from metadata: ${data.request_id}`);
+                      logger.log(`📝 Captured request_id from metadata: ${data.request_id}`);
                     }
                     
                     if (metadata.role === 'user' && metadata.message_id) {
-                      console.log(`👤 User message ID: ${metadata.message_id}`);
+                      logger.log(`👤 User message ID: ${metadata.message_id}`);
                     }
                     
                     if (metadata.role === 'assistant' && metadata.message_id) {
-                      console.log(`🤖 Assistant message ID: ${metadata.message_id} - Setting as parent for next turn`);
+                      logger.log(`🤖 Assistant message ID: ${metadata.message_id} - Setting as parent for next turn`);
                       setLastMessageId(metadata.message_id);
                     }
                     
                     // Note: metadata event doesn't contain thread_id per Snowflake docs
                     if (metadata.thread_id) {
-                      console.log(`⚠️ Unexpected thread_id in metadata: ${metadata.thread_id}`);
+                      logger.log(`⚠️ Unexpected thread_id in metadata: ${metadata.thread_id}`);
                       if (!threadId) {
                         setThreadId(metadata.thread_id);
                       }
@@ -678,7 +679,7 @@ export default function ChatDrawer({
                   default:
                     // Log unknown events for debugging
                     if (currentEvent.event && !currentEvent.event.startsWith('response.status')) {
-                      console.log(`❓ Unknown event type: ${currentEvent.event}`, JSON.stringify(data).substring(0, 200));
+                      logger.log(`❓ Unknown event type: ${currentEvent.event}`, JSON.stringify(data).substring(0, 200));
                     }
                 }
               } catch (e) {
@@ -691,7 +692,7 @@ export default function ChatDrawer({
         }
       }
     } catch (error) {
-      console.error('Agent streaming error:', error);
+      logger.error('Agent streaming error:', error);
       currentMessage.status = 'error';
       currentMessage.content = `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
       setMessages(prev => updateLastMessage(prev, { ...currentMessage }));
@@ -723,17 +724,17 @@ export default function ChatDrawer({
       });
 
       if (response.ok) {
-        console.log(`✅ Feedback submitted: ${positive ? 'positive' : 'negative'} for request ${requestId}${feedbackMessage ? ' with message' : ''}`);
+        logger.log(`✅ Feedback submitted: ${positive ? 'positive' : 'negative'} for request ${requestId}${feedbackMessage ? ' with message' : ''}`);
         setMessages(prev => prev.map(m => 
           m.requestId === requestId ? { ...m, feedback: positive ? 'positive' : 'negative', feedbackMessage } : m
         ));
         return true;
       } else {
-        console.error(`❌ Feedback submission failed: ${response.status}`);
+        logger.error(`❌ Feedback submission failed: ${response.status}`);
         return false;
       }
     } catch (error) {
-      console.error('❌ Feedback submission error:', error);
+      logger.error('❌ Feedback submission error:', error);
       return false;
     }
   };
@@ -1603,7 +1604,7 @@ function MessageBubble({ message, onFeedback }: { message: Message; onFeedback?:
         setTimeout(() => setTableCopied(false), 2000);
       }
     } catch (e) {
-      console.error('Failed to copy:', e);
+      logger.error('Failed to copy:', e);
     }
   };
 

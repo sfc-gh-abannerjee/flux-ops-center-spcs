@@ -1120,11 +1120,11 @@ async def get_assets(
                         'CUSTOMER_SEGMENT': None
                     })
                 
-                print(f"Postgres: {len(assets)} assets")
+                logger.info(f"Postgres: {len(assets)} assets")
                 return assets
                 
         except Exception as e:
-            print(f"Postgres failed, falling back to Snowflake: {e}")
+            logger.info(f"Postgres failed, falling back to Snowflake: {e}")
     
     return await get_assets_from_snowflake(circuits, asset_ids, limit)
 
@@ -1289,10 +1289,10 @@ async def get_assets_from_snowflake(
 
     try:
         assets = await run_snowflake_query(_fetch_assets)
-        print(f"Snowflake (optimized): {len(assets)} assets")
+        logger.info(f"Snowflake (optimized): {len(assets)} assets")
         return assets
     except Exception as e:
-        print(f"Snowflake query failed: {e}")
+        logger.info(f"Snowflake query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1327,11 +1327,11 @@ async def get_topology(
                         'TO_LON': float(row['to_longitude']) if row['to_longitude'] else None
                     })
                 
-                print(f"Postgres: {len(topology):,} topology connections")
+                logger.info(f"Postgres: {len(topology):,} topology connections")
                 return topology
                 
         except Exception as e:
-            print(f"Postgres topology error: {e}")
+            logger.info(f"Postgres topology error: {e}")
     
     def _fetch_topology():
         conn = get_snowflake_connection()
@@ -1369,11 +1369,11 @@ async def get_topology(
 
     try:
         topology = await run_snowflake_query(_fetch_topology)
-        print(f"Snowflake fallback: {len(topology):,} topology connections")
+        logger.info(f"Snowflake fallback: {len(topology):,} topology connections")
         return topology
     
     except Exception as e:
-        print(f"Topology error: {e}")
+        logger.info(f"Topology error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1418,10 +1418,10 @@ async def get_metro_topology(request: Request, bypass_cache: bool = Query(False)
     try:
         results = await run_snowflake_query(_fetch_metro)
         await response_cache.set(cache_key, results, ttl=CACHE_TTL_METRO)
-        print(f"Fetched {len(results)} metro topology substations (cached for {CACHE_TTL_METRO}s)")
+        logger.info(f"Fetched {len(results)} metro topology substations (cached for {CACHE_TTL_METRO}s)")
         return results
     except Exception as e:
-        print(f"Error fetching metro topology: {e}")
+        logger.info(f"Error fetching metro topology: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1470,10 +1470,10 @@ async def get_feeder_topology(request: Request, bypass_cache: bool = Query(False
     try:
         results = await run_snowflake_query(_fetch_feeders, timeout=120)
         await response_cache.set(cache_key, results, ttl=CACHE_TTL_FEEDERS)
-        print(f"Fetched {len(results)} feeder topology connections (cached for {CACHE_TTL_FEEDERS}s)")
+        logger.info(f"Fetched {len(results)} feeder topology connections (cached for {CACHE_TTL_FEEDERS}s)")
         return results
     except Exception as e:
-        print(f"Error fetching feeder topology: {e}")
+        logger.info(f"Error fetching feeder topology: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1509,10 +1509,10 @@ async def get_kpis(request: Request, bypass_cache: bool = Query(False)):
     try:
         kpis = await run_snowflake_query(_fetch_kpis)
         await response_cache.set(cache_key, kpis, ttl=CACHE_TTL_KPIS)
-        print(f"Fetched KPIs (cached for {CACHE_TTL_KPIS}s)")
+        logger.info(f"Fetched KPIs (cached for {CACHE_TTL_KPIS}s)")
         return kpis
     except Exception as e:
-        print(f"Error fetching KPIs: {e}")
+        logger.info(f"Error fetching KPIs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1552,11 +1552,11 @@ async def get_service_areas(request: Request, bypass_cache: bool = Query(False))
                     })
                 
                 await response_cache.set(cache_key, service_areas, ttl=CACHE_TTL_SERVICE_AREAS)
-                print(f"Postgres: Fetched {len(service_areas)} circuits (cached for {CACHE_TTL_SERVICE_AREAS}s)")
+                logger.info(f"Postgres: Fetched {len(service_areas)} circuits (cached for {CACHE_TTL_SERVICE_AREAS}s)")
                 return service_areas
         
         except Exception as e:
-            print(f"Error fetching service areas from Postgres: {e}")
+            logger.info(f"Error fetching service areas from Postgres: {e}")
     
     return await get_service_areas_from_snowflake(cache_key)
 
@@ -1590,10 +1590,10 @@ async def get_service_areas_from_snowflake(cache_key: str = "service_areas") -> 
     try:
         service_areas = await run_snowflake_query(_fetch_service_areas)
         await response_cache.set(cache_key, service_areas, ttl=CACHE_TTL_SERVICE_AREAS)
-        print(f"Snowflake fallback: Fetched {len(service_areas)} circuits (cached for {CACHE_TTL_SERVICE_AREAS}s)")
+        logger.info(f"Snowflake fallback: Fetched {len(service_areas)} circuits (cached for {CACHE_TTL_SERVICE_AREAS}s)")
         return service_areas
     except Exception as e:
-        print(f"Error fetching service areas from Snowflake: {e}")
+        logger.info(f"Error fetching service areas from Snowflake: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1630,10 +1630,10 @@ async def get_weather(request: Request, bypass_cache: bool = Query(False)):
     try:
         weather = await run_snowflake_query(_fetch_weather)
         await response_cache.set(cache_key, weather, ttl=CACHE_TTL_WEATHER)
-        print(f"Fetched {len(weather)} weather records (cached for {CACHE_TTL_WEATHER}s)")
+        logger.info(f"Fetched {len(weather)} weather records (cached for {CACHE_TTL_WEATHER}s)")
         return weather
     except Exception as e:
-        print(f"Error fetching weather: {e}")
+        logger.info(f"Error fetching weather: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1688,7 +1688,7 @@ async def get_weather_image(
         return Response(content=buf.getvalue(), media_type="image/png")
     
     except Exception as e:
-        print(f"Error generating weather image: {e}")
+        logger.info(f"Error generating weather image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1720,11 +1720,11 @@ async def get_postgres_substation_status():
                 """)
                 
                 results = [dict(row) for row in rows]
-                print(f"Postgres: Fetched {len(results)} substation statuses")
+                logger.info(f"Postgres: Fetched {len(results)} substation statuses")
                 return results
         
         except Exception as e:
-            print(f"Postgres failed, falling back to Snowflake: {e}")
+            logger.info(f"Postgres failed, falling back to Snowflake: {e}")
     
     def _fetch_substation_status():
         conn = get_snowflake_connection()
@@ -1761,11 +1761,11 @@ async def get_postgres_substation_status():
 
     try:
         results = await run_snowflake_query(_fetch_substation_status)
-        print(f"Snowflake fallback: Fetched {len(results)} substation statuses")
+        logger.info(f"Snowflake fallback: Fetched {len(results)} substation statuses")
         return results
     
     except Exception as e:
-        print(f"Error fetching substation status: {e}")
+        logger.info(f"Error fetching substation status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1784,11 +1784,11 @@ async def get_substations():
                 """)
                 
                 results = [dict(row) for row in rows]
-                print(f"Postgres: Fetched {len(results)} substations")
+                logger.info(f"Postgres: Fetched {len(results)} substations")
                 return results
         
         except Exception as e:
-            print(f"Postgres failed, falling back to Snowflake: {e}")
+            logger.info(f"Postgres failed, falling back to Snowflake: {e}")
     
     def _fetch_substations():
         conn = get_snowflake_connection()
@@ -1814,10 +1814,10 @@ async def get_substations():
 
     try:
         results = await run_snowflake_query(_fetch_substations)
-        print(f"Snowflake fallback: Fetched {len(results)} substations")
+        logger.info(f"Snowflake fallback: Fetched {len(results)} substations")
         return results
     except Exception as e:
-        print(f"Error fetching substations: {e}")
+        logger.info(f"Error fetching substations: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1857,11 +1857,11 @@ async def get_circuit_metadata(
                 rows = await conn.fetch(query, *params)
                 results = [dict(row) for row in rows]
                 
-                print(f"Postgres: Fetched {len(results)} circuit metadata records")
+                logger.info(f"Postgres: Fetched {len(results)} circuit metadata records")
                 return results
         
         except Exception as e:
-            print(f"Postgres failed, falling back to Snowflake: {e}")
+            logger.info(f"Postgres failed, falling back to Snowflake: {e}")
     
     def _fetch_circuit_metadata():
         conn = get_snowflake_connection()
@@ -1904,11 +1904,11 @@ async def get_circuit_metadata(
 
     try:
         results = await run_snowflake_query(_fetch_circuit_metadata)
-        print(f"Snowflake fallback: Fetched {len(results)} circuit metadata records")
+        logger.info(f"Snowflake fallback: Fetched {len(results)} circuit metadata records")
         return results
     
     except Exception as e:
-        print(f"Error fetching circuit metadata: {e}")
+        logger.info(f"Error fetching circuit metadata: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1952,11 +1952,11 @@ async def get_active_outages(
                 rows = await conn.fetch(query, *params)
                 results = [dict(row) for row in rows]
                 
-                print(f"Postgres: Fetched {len(results)} active outages")
+                logger.info(f"Postgres: Fetched {len(results)} active outages")
                 return results
         
         except Exception as e:
-            print(f"Postgres failed, falling back to Snowflake: {e}")
+            logger.info(f"Postgres failed, falling back to Snowflake: {e}")
     
     def _fetch_outages():
         conn = get_snowflake_connection()
@@ -2011,11 +2011,11 @@ async def get_active_outages(
 
     try:
         results = await run_snowflake_query(_fetch_outages)
-        print(f"Snowflake fallback: Fetched {len(results)} active outages")
+        logger.info(f"Snowflake fallback: Fetched {len(results)} active outages")
         return results
     
     except Exception as e:
-        print(f"Error fetching active outages: {e}")
+        logger.info(f"Error fetching active outages: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2074,11 +2074,11 @@ async def get_active_work_orders(
                 rows = await conn.fetch(query, *params)
                 results = [dict(row) for row in rows]
                 
-                print(f"Postgres: Fetched {len(results)} work orders")
+                logger.info(f"Postgres: Fetched {len(results)} work orders")
                 return results
         
         except Exception as e:
-            print(f"Postgres failed, falling back to Snowflake: {e}")
+            logger.info(f"Postgres failed, falling back to Snowflake: {e}")
     
     def _fetch_work_orders():
         conn = get_snowflake_connection()
@@ -2133,11 +2133,11 @@ async def get_active_work_orders(
 
     try:
         results = await run_snowflake_query(_fetch_work_orders)
-        print(f"Snowflake fallback: Fetched {len(results)} work orders")
+        logger.info(f"Snowflake fallback: Fetched {len(results)} work orders")
         return results
     
     except Exception as e:
-        print(f"Error fetching work orders: {e}")
+        logger.info(f"Error fetching work orders: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2169,16 +2169,16 @@ async def create_thread():
         
         payload = {"origin_application": "flux_ops_center"}
         
-        print("Creating new thread...")
+        logger.info("Creating new thread...")
         async with httpx.AsyncClient() as client:
             response = await client.post(thread_url, json=payload, headers=headers, timeout=30.0)
         
         if response.status_code != 200:
-            print(f"Thread creation failed: {response.status_code} - {response.text}")
+            logger.info(f"Thread creation failed: {response.status_code} - {response.text}")
             raise HTTPException(status_code=response.status_code, detail=f'Failed to create thread: {response.text}')
         
         response_data = response.json()
-        print(f"Thread API response: {response_data}")
+        logger.info(f"Thread API response: {response_data}")
         
         if isinstance(response_data, dict):
             thread_id = response_data.get('thread_id') or response_data.get('id')
@@ -2186,18 +2186,18 @@ async def create_thread():
             thread_id = response_data
         
         if thread_id is None:
-            print(f"No thread_id in response: {response_data}")
+            logger.info(f"No thread_id in response: {response_data}")
             raise HTTPException(status_code=500, detail='Thread creation response missing thread_id')
         
         thread_id = int(thread_id)
-        print(f"Thread created: {thread_id}")
+        logger.info(f"Thread created: {thread_id}")
         
         return {"thread_id": thread_id}
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Thread creation error: {e}")
+        logger.info(f"Thread creation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2216,7 +2216,7 @@ async def agent_stream(request: Request):
         if not user_query:
             raise HTTPException(status_code=400, detail='Missing query parameter')
         
-        print(f"Agent request: thread_id={thread_id}, parent_message_id={parent_message_id}, query={user_query[:60]}...")
+        logger.info(f"Agent request: thread_id={thread_id}, parent_message_id={parent_message_id}, query={user_query[:60]}...")
         
         is_spcs = get_login_token() is not None and settings.snowflake_host is not None
         
@@ -2224,9 +2224,9 @@ async def agent_stream(request: Request):
             snowflake_host = settings.snowflake_host
             token = get_login_token()
             auth_token_type = "OAUTH"
-            print("SPCS mode: Using OAuth token")
+            logger.info("SPCS mode: Using OAuth token")
         else:
-            print("Local dev mode: Reading PAT from connection config")
+            logger.info("Local dev mode: Reading PAT from connection config")
             config_path = os.path.expanduser('~/.snowflake/config.toml')
             config = toml.load(config_path)
             conn_config = config['connections'][settings.snowflake_connection_name]
@@ -2252,10 +2252,10 @@ async def agent_stream(request: Request):
         if thread_id is not None:
             payload["thread_id"] = thread_id
             payload["parent_message_id"] = parent_message_id
-            print(f"Continuing thread {thread_id} from message {parent_message_id}")
+            logger.info(f"Continuing thread {thread_id} from message {parent_message_id}")
         else:
             payload["parent_message_id"] = 0
-            print("Starting new conversation")
+            logger.info("Starting new conversation")
         
         headers = {
             "Authorization": f"Bearer {token}",
@@ -2264,28 +2264,28 @@ async def agent_stream(request: Request):
             "X-Snowflake-Authorization-Token-Type": auth_token_type
         }
         
-        print(f"Streaming request to agent: {user_query[:100]}...")
+        logger.info(f"Streaming request to agent: {user_query[:100]}...")
         
         line_queue: queue.Queue = queue.Queue()
         
         def stream_from_agent():
             try:
                 with sync_requests.post(agent_url, json=payload, headers=headers, stream=True, timeout=300) as r:
-                    print(f"Response status: {r.status_code}")
+                    logger.info(f"Response status: {r.status_code}")
                     
                     if r.status_code != 200:
                         error_body = r.text[:500] if r.text else "No response body"
-                        print(f"Agent API error {r.status_code}: {error_body}")
+                        logger.info(f"Agent API error {r.status_code}: {error_body}")
                         line_queue.put(f"event: error\ndata: {{\"error\": \"Agent API returned status {r.status_code}: {error_body}\"}}\n\n")
                         line_queue.put(None)
                         return
                     
                     request_id = r.headers.get('X-Snowflake-Request-ID', '')
                     if request_id:
-                        print(f"Captured X-Snowflake-Request-ID: {request_id}")
+                        logger.info(f"Captured X-Snowflake-Request-ID: {request_id}")
                         line_queue.put(f"event: request_id\ndata: {{\"request_id\": \"{request_id}\"}}\n\n")
                     
-                    print("Starting SSE stream...")
+                    logger.info("Starting SSE stream...")
                     line_count = 0
                     buffer = b''
                     
@@ -2297,25 +2297,25 @@ async def agent_stream(request: Request):
                                 line = line_bytes.decode('utf-8', errors='replace')
                                 line_count += 1
                                 if line_count % 50 == 0:
-                                    print(f"Streamed {line_count} lines...")
+                                    logger.info(f"Streamed {line_count} lines...")
                                 # Debug: Log events containing tool_result, table, or json
                                 if 'tool_result' in line.lower() or 'response.table' in line.lower():
-                                    print(f"🔍 DEBUG SSE: {line[:500]}")
+                                    logger.info(f"🔍 DEBUG SSE: {line[:500]}")
                                 if line.startswith('data:') and ('sql' in line.lower() or 'results' in line.lower()):
-                                    print(f"📊 DEBUG DATA: {line[:500]}")
+                                    logger.info(f"📊 DEBUG DATA: {line[:500]}")
                                 line_queue.put(line + '\n')
                     
                     if buffer:
                         line = buffer.decode('utf-8', errors='replace')
                         line_queue.put(line + '\n')
                     
-                    print(f"Stream complete. Total lines: {line_count}")
+                    logger.info(f"Stream complete. Total lines: {line_count}")
                     
             except sync_requests.exceptions.Timeout:
-                print("Request timed out after 300 seconds")
+                logger.info("Request timed out after 300 seconds")
                 line_queue.put("event: error\ndata: {\"error\": \"Request timed out\"}\n\n")
             except Exception as e:
-                print(f"SSE streaming error: {e}")
+                logger.info(f"SSE streaming error: {e}")
                 line_queue.put(f"event: error\ndata: {{\"error\": \"{str(e)}\"}}\n\n")
             finally:
                 line_queue.put(None)
@@ -2352,7 +2352,7 @@ async def agent_stream(request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Agent stream endpoint error: {e}")
+        logger.info(f"Agent stream endpoint error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2417,22 +2417,22 @@ async def submit_feedback(feedback: FeedbackRequest):
         if feedback.thread_id is not None:
             payload["thread_id"] = feedback.thread_id
         
-        print(f"Submitting feedback: request_id={feedback.request_id}, positive={feedback.positive}")
+        logger.info(f"Submitting feedback: request_id={feedback.request_id}, positive={feedback.positive}")
         
         async with httpx.AsyncClient() as client:
             response = await client.post(feedback_url, json=payload, headers=headers, timeout=30.0)
         
         if response.status_code != 200:
-            print(f"Feedback submission failed: {response.status_code} - {response.text}")
+            logger.info(f"Feedback submission failed: {response.status_code} - {response.text}")
             raise HTTPException(status_code=response.status_code, detail=f'Failed to submit feedback: {response.text}')
         
-        print(f"Feedback submitted successfully for request_id={feedback.request_id}")
+        logger.info(f"Feedback submitted successfully for request_id={feedback.request_id}")
         return {"status": "success", "request_id": feedback.request_id}
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Feedback submission error: {e}")
+        logger.info(f"Feedback submission error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3582,10 +3582,10 @@ async def get_circuits_layer():
 
 if __name__ == '__main__':
     import uvicorn
-    print("Starting FastAPI backend server on port 3001...")
+    logger.info("Starting FastAPI backend server on port 3001...")
     if get_login_token() and settings.snowflake_host:
-        print(f"SPCS mode - OAuth token authentication")
-        print(f"Host: {settings.snowflake_host}")
+        logger.info(f"SPCS mode - OAuth token authentication")
+        logger.info(f"Host: {settings.snowflake_host}")
     else:
-        print(f"Local dev mode - Connection: {settings.snowflake_connection_name}")
+        logger.info(f"Local dev mode - Connection: {settings.snowflake_connection_name}")
     uvicorn.run(app, host='0.0.0.0', port=3001)

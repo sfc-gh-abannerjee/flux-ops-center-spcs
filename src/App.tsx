@@ -23,6 +23,7 @@ import {
 import ChatDrawer from './ChatDrawer';
 import DraggableFab from './DraggableFab';
 import { LAYOUT } from './layoutConstants';
+import { logger } from './utils/logger';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const theme = createTheme({
@@ -69,7 +70,7 @@ function isValidCoordinate(lon: number, lat: number): boolean {
 function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
   // Safety check: return empty polygon if coordinates are invalid (prevents deck.gl assertion failures)
   if (!isValidCoordinate(centerLon, centerLat)) {
-    console.warn('getSquarePolygon: Invalid coordinates', { centerLon, centerLat });
+    logger.warn('getSquarePolygon: Invalid coordinates', { centerLon, centerLat });
     return [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0]];  // Return valid but degenerate polygon
   }
   
@@ -98,7 +99,7 @@ function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: numb
 function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: number, sides: number, rotation: number = 0): number[][] {
   // Safety check: return empty polygon if coordinates are invalid (prevents deck.gl assertion failures)
   if (!isValidCoordinate(centerLon, centerLat)) {
-    console.warn('getPolygonShape: Invalid coordinates', { centerLon, centerLat });
+    logger.warn('getPolygonShape: Invalid coordinates', { centerLon, centerLat });
     const emptyVertices = Array(sides + 1).fill([0, 0]);
     return emptyVertices;
   }
@@ -489,7 +490,7 @@ function getPyramidPolygon(centerLon: number, centerLat: number, sizeMeters: num
 function getHexagonPolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
   // Safety check: return empty polygon if coordinates are invalid (prevents deck.gl assertion failures)
   if (!isValidCoordinate(centerLon, centerLat)) {
-    console.warn('getHexagonPolygon: Invalid coordinates', { centerLon, centerLat });
+    logger.warn('getHexagonPolygon: Invalid coordinates', { centerLon, centerLat });
     return [[0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0], [0, 0]];  // Return valid but degenerate hexagon
   }
   
@@ -829,7 +830,7 @@ function App() {
   // CACHE RESET: Clear all state and refs on browser refresh/component mount
   // This ensures no stale data persists between sessions
   useEffect(() => {
-    console.log('🔄 Browser refresh detected - resetting all caches and state');
+    logger.log('🔄 Browser refresh detected - resetting all caches and state');
     
     // Clear all refs
     dataFetchedRef.current = false;
@@ -860,7 +861,7 @@ function App() {
     setSelectedAssets(new Set());
     setPinnedAssets([]);
     
-    console.log('✅ All caches and state cleared');
+    logger.log('✅ All caches and state cleared');
   }, []); // Empty dependency array = runs only on mount (browser refresh)
 
   // Decouple spinner animation from data loading to prevent freeze-induced jank
@@ -933,15 +934,15 @@ function App() {
           substations.map((sub: any) => [sub.substation_id, sub as SubstationStatus])
         );
         setSubstationStatusMap(statusMap);
-        console.log(`✅ Postgres: Fetched real-time status for ${substations.length} substations (${substations.filter((s: any) => s.status === 'critical').length} critical, ${substations.filter((s: any) => s.status === 'warning').length} warning)`);
+        logger.log(`✅ Postgres: Fetched real-time status for ${substations.length} substations (${substations.filter((s: any) => s.status === 'critical').length} critical, ${substations.filter((s: any) => s.status === 'warning').length} warning)`);
         return; // Success - exit retry loop
       } catch (error) {
         const isLastAttempt = attempt === maxRetries;
         if (isLastAttempt) {
-          console.error('❌ Failed to fetch substation status from Postgres after retries:', error);
+          logger.error('❌ Failed to fetch substation status from Postgres after retries:', error);
         } else {
           const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
-          console.warn(`⚠️  Postgres fetch attempt ${attempt} failed, retrying in ${delay}ms...`);
+          logger.warn(`⚠️  Postgres fetch attempt ${attempt} failed, retrying in ${delay}ms...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
@@ -960,7 +961,7 @@ function App() {
   useEffect(() => {
     const stuckCount = loadingCircuitsRef.current.size;
     if (stuckCount > 0) {
-      console.log(`🧹 Cleaning up ${stuckCount} stuck circuits from previous session`);
+      logger.log(`🧹 Cleaning up ${stuckCount} stuck circuits from previous session`);
       loadingCircuitsRef.current.clear();
     }
   }, []); // Empty deps = runs once on mount
@@ -1296,7 +1297,7 @@ function App() {
       }
       
       const lodInfo = data.lod_level ? ` (LOD: ${data.lod_level}, ${data.total_vertices?.toLocaleString() || '?'} vertices)` : '';
-      console.log(`✅ Loaded ${layerType}: ${(data.features || data).length} features${lodInfo} in ${data.query_time_ms}ms`);
+      logger.log(`✅ Loaded ${layerType}: ${(data.features || data).length} features${lodInfo} in ${data.query_time_ms}ms`);
       
       // Engineering: Debug power lines data for visualization troubleshooting
       if (layerType === 'powerLines') {
@@ -1306,16 +1307,16 @@ function App() {
           acc[cls] = (acc[cls] || 0) + 1;
           return acc;
         }, {});
-        console.log(`   📊 Power line classes: ${Object.entries(classes).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+        logger.log(`   📊 Power line classes: ${Object.entries(classes).map(([k, v]) => `${k}=${v}`).join(', ')}`);
         // Verify path data structure
         const sample = features[0];
         if (sample) {
           const path = sample.coordinates || sample.path;
-          console.log(`   📍 Sample path format: ${Array.isArray(path) ? `Array[${path.length}], first coord: [${path[0]}]` : typeof path}`);
+          logger.log(`   📍 Sample path format: ${Array.isArray(path) ? `Array[${path.length}], first coord: [${path[0]}]` : typeof path}`);
         }
       }
     } catch (error) {
-      console.error(`Failed to load ${layerType}:`, error);
+      logger.error(`Failed to load ${layerType}:`, error);
     } finally {
       setSpatialLoading(prev => ({ ...prev, [layerType]: false }));
     }
@@ -1327,14 +1328,14 @@ function App() {
       setLoadingConnectedAssets(true);
       const response = await fetch(`/api/spatial/layers/power-lines/${lineId}/connected-assets?search_radius_m=75`);
       if (!response.ok) {
-        console.warn(`Failed to fetch connected assets for power line ${lineId}`);
+        logger.warn(`Failed to fetch connected assets for power line ${lineId}`);
         return [];
       }
       const data = await response.json();
-      console.log(`⚡ Power line ${lineId}: ${data.count} connected assets (${data.transformers} transformers, ${data.poles} poles) in ${data.query_time_ms}ms`);
+      logger.log(`⚡ Power line ${lineId}: ${data.count} connected assets (${data.transformers} transformers, ${data.poles} poles) in ${data.query_time_ms}ms`);
       return data.connected_assets || [];
     } catch (error) {
-      console.error('Failed to fetch power line connected assets:', error);
+      logger.error('Failed to fetch power line connected assets:', error);
       return [];
     } finally {
       setLoadingConnectedAssets(false);
@@ -1373,7 +1374,7 @@ function App() {
         // Re-check LOD after debounce (zoom may have changed back)
         const finalLod = getCurrentLod(viewState.zoom);
         if (finalLod !== loadedLod && !spatialLoading.powerLines) {
-          console.log(`🔄 Power lines LOD change: ${loadedLod} → ${finalLod} (zoom ${powerLinesLoadedZoom.toFixed(1)} → ${viewState.zoom.toFixed(1)})`);
+          logger.log(`🔄 Power lines LOD change: ${loadedLod} → ${finalLod} (zoom ${powerLinesLoadedZoom.toFixed(1)} → ${viewState.zoom.toFixed(1)})`);
           // DON'T clear old data - let it remain visible during load
           loadSpatialLayer('powerLines', viewState.zoom);
         }
@@ -1408,7 +1409,7 @@ function App() {
   useEffect(() => {
     if (layersVisible.weather && layersVisible.heatmap) {
       setLayersVisible(prev => ({ ...prev, heatmap: false }));
-      // console.log('⚡ GPU Optimization: Disabled usage heatmap (conflicts with weather overlay)');
+      // logger.log('⚡ GPU Optimization: Disabled usage heatmap (conflicts with weather overlay)');
     }
   }, [layersVisible.weather, layersVisible.heatmap]);
 
@@ -1461,7 +1462,7 @@ function App() {
       // Load once and keep for all higher zoom levels
       if (zoom >= 9 && metroTopologyData.length === 0 && !metroFeedersLoadingRef.current) {
         metroFeedersLoadingRef.current = true; // Prevent duplicate fetches
-        console.log(`📊 Zoom ${zoom.toFixed(1)}: Loading metro topology + feeders + substations...`);
+        logger.log(`📊 Zoom ${zoom.toFixed(1)}: Loading metro topology + feeders + substations...`);
         try {
           const [metroData, feedersData] = await Promise.all([
             fetch('/api/topology/metro').then(async r => {
@@ -1475,12 +1476,12 @@ function App() {
           ]);
           setMetroTopologyData(metroData);
           setFeederTopologyData(feedersData);
-          console.log(`✅ Loaded ${metroData.length} metro substations, ${feedersData.length} feeders`);
+          logger.log(`✅ Loaded ${metroData.length} metro substations, ${feedersData.length} feeders`);
           
           // Load substations immediately from metro data
           if (!substationsLoadedRef.current && metroData.length > 0) {
             substationsLoadedRef.current = true;
-            console.log(`   📍 Adding ${metroData.length} substations...`);
+            logger.log(`   📍 Adding ${metroData.length} substations...`);
             const substations: Asset[] = metroData.map((row: any) => {
               const status = substationStatusMap.get(row.SUBSTATION_ID);
               return {
@@ -1508,10 +1509,10 @@ function App() {
               assets: substations,
               loadedAt: Date.now()
             }]);
-            console.log(`   ✅ Added ${substations.length} substations instantly (batch-substations)`);
+            logger.log(`   ✅ Added ${substations.length} substations instantly (batch-substations)`);
           }
         } catch (error) {
-          console.error('Failed to load metro/feeders:', error);
+          logger.error('Failed to load metro/feeders:', error);
           metroFeedersLoadingRef.current = false; // Reset on error to allow retry
         }
       }
@@ -1521,7 +1522,7 @@ function App() {
       // Progressive loading (separate effect below) now handles topology with circuit filtering for Postgres cache
       // This old pattern hit Snowflake fallback and loaded 200K random connections
       if (false && zoom >= 10 && topology.length === 0 && serviceAreas.length > 0) {
-        console.log(`📊 Zoom ${zoom.toFixed(1)}: Loading topology connections (limited for performance)...`);
+        logger.log(`📊 Zoom ${zoom.toFixed(1)}: Loading topology connections (limited for performance)...`);
         try {
           // Load topology data with 200k limit for reasonable performance
           // Full 1.26M connections would take minutes - 200k gives better coverage
@@ -1538,7 +1539,7 @@ function App() {
           }));
           
           setTopology(mappedTopology);
-          console.log(`   ✅ Loaded ${mappedTopology.length.toLocaleString()} topology connections`);
+          logger.log(`   ✅ Loaded ${mappedTopology.length.toLocaleString()} topology connections`);
           
           // Immediately check how many are in viewport for debugging
           const degPerPixel = 360 / (256 * Math.pow(2, zoom));
@@ -1557,9 +1558,9 @@ function App() {
              link.to_latitude >= minLat && link.to_latitude <= maxLat)
           );
           
-          console.log(`   🎯 ${inViewport.length.toLocaleString()} connections in current viewport`);
+          logger.log(`   🎯 ${inViewport.length.toLocaleString()} connections in current viewport`);
         } catch (error) {
-          console.error('Failed to load topology:', error);
+          logger.error('Failed to load topology:', error);
         }
       }
       
@@ -1569,7 +1570,7 @@ function App() {
       // This fallback could cause mass loading of assets if triggered
       // Keeping code for reference but never executing
       if (false && zoom >= 10 && assets.length === 0 && serviceAreas.length === 0) {
-        console.log(`📊 Zoom ${zoom.toFixed(1)}: Loading viewport-filtered assets (circuit-based)...`);
+        logger.log(`📊 Zoom ${zoom.toFixed(1)}: Loading viewport-filtered assets (circuit-based)...`);
         try {
           // Get visible circuits from service areas (already loaded)
           // Sort by distance from viewport center for predictable loading
@@ -1605,7 +1606,7 @@ function App() {
           // Load up to 25 circuits for initial load (reduces pop-in)
           const circuitsToLoad = visibleCircuits.slice(0, 25);
           
-          console.log(`   📍 Visible circuits: ${visibleCircuits.length}, Loading first ${circuitsToLoad.length} circuits`);
+          logger.log(`   📍 Visible circuits: ${visibleCircuits.length}, Loading first ${circuitsToLoad.length} circuits`);
           
           if (circuitsToLoad.length === 0) {
             // ⚠️ CRITICAL FIX: Respect hard caps even for sample data
@@ -1614,7 +1615,7 @@ function App() {
             const maxAssetsAllowed = currentZoom < 11 ? 12000 : currentZoom < 12 ? 25000 : 50000;
             const spaceAvailable = Math.max(0, maxAssetsAllowed - currentTotal - pendingAssetCountRef.current);
             
-            console.log(`📦 SAMPLE: ${currentTotal.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} current | ${spaceAvailable.toLocaleString()} space | ${spaceAvailable > 0 ? '✅ ALLOW' : '❌ REJECT'}`);
+            logger.log(`📦 SAMPLE: ${currentTotal.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} current | ${spaceAvailable.toLocaleString()} space | ${spaceAvailable > 0 ? '✅ ALLOW' : '❌ REJECT'}`);
             
             if (spaceAvailable === 0) {
               limitsReachedRef.current = true;
@@ -1650,7 +1651,7 @@ function App() {
               assets: mappedAssets,
               loadedAt: Date.now()
             }]);
-            console.log(`   ✅ Sample: ${mappedAssets.length.toLocaleString()} assets loaded`);
+            logger.log(`   ✅ Sample: ${mappedAssets.length.toLocaleString()} assets loaded`);
             return;
           }
           
@@ -1708,7 +1709,7 @@ function App() {
             const maxAssetsAllowed = currentZoom < 11 ? 12000 : currentZoom < 12 ? 25000 : 50000;
             const spaceAvailable = Math.max(0, maxAssetsAllowed - currentTotal - pendingAssetCountRef.current);
             
-            console.log(`💾 LOAD: ${uniqueNew.length.toLocaleString()} new | ${currentTotal.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} current | ${spaceAvailable.toLocaleString()} space | ${spaceAvailable > 0 ? '✅ ALLOW' : '❌ REJECT'}`);
+            logger.log(`💾 LOAD: ${uniqueNew.length.toLocaleString()} new | ${currentTotal.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} current | ${spaceAvailable.toLocaleString()} space | ${spaceAvailable > 0 ? '✅ ALLOW' : '❌ REJECT'}`);
             
             if (spaceAvailable === 0) {
               limitsReachedRef.current = true;
@@ -1757,10 +1758,10 @@ function App() {
             }];
           });
           
-          console.log(`   ✅ Viewport assets loaded: ${mappedAssets.length.toLocaleString()} assets, ${mappedTopology.length.toLocaleString()} connections`);
-          console.log(`   🎯 Loaded ${circuitsToLoad.length} circuits: ${circuitsToLoad.slice(0, 3).join(', ')}${circuitsToLoad.length > 3 ? '...' : ''}`);
+          logger.log(`   ✅ Viewport assets loaded: ${mappedAssets.length.toLocaleString()} assets, ${mappedTopology.length.toLocaleString()} connections`);
+          logger.log(`   🎯 Loaded ${circuitsToLoad.length} circuits: ${circuitsToLoad.slice(0, 3).join(', ')}${circuitsToLoad.length > 3 ? '...' : ''}`);
         } catch (error) {
-          console.error('Failed to load assets/topology:', error);
+          logger.error('Failed to load assets/topology:', error);
         }
       }
     };
@@ -1791,7 +1792,7 @@ function App() {
     if (!selectedAsset) {
       // When deselecting, immediately cull previously pinned circuits if they're outside viewport
       if (previousPinned.size > 0) {
-        console.log(`🗑️ Deselected asset - checking ${previousPinned.size} previously pinned circuits for cleanup`);
+        logger.log(`🗑️ Deselected asset - checking ${previousPinned.size} previously pinned circuits for cleanup`);
         
         // Remove pinned circuits that are no longer needed
         // The next viewport/culling cycle will handle the actual asset removal
@@ -1807,14 +1808,14 @@ function App() {
             
             // Remove connected assets batch when deselecting
             if (batch.batchId === 'batch-connected-assets') {
-              console.log(`   🗑️ Removing connected assets batch`);
+              logger.log(`   🗑️ Removing connected assets batch`);
               return false;
             }
             
             // Remove batches that only contain previously pinned circuits
             const allCircuitsPinned = batch.circuitIds.every(cid => previousPinned.has(cid));
             if (allCircuitsPinned) {
-              console.log(`   🗑️ Removing batch for deselected circuits: ${batch.circuitIds.join(', ')}`);
+              logger.log(`   🗑️ Removing batch for deselected circuits: ${batch.circuitIds.join(', ')}`);
               return false;
             }
             return true;
@@ -1852,7 +1853,7 @@ function App() {
     
     // For substations: Find circuits from service areas that belong to this substation
     if (selectedAsset.type === 'substation') {
-      console.log(`🔍 Checking serviceAreas for ${selectedAsset.id}: ${serviceAreas.length} total areas loaded`);
+      logger.log(`🔍 Checking serviceAreas for ${selectedAsset.id}: ${serviceAreas.length} total areas loaded`);
       
       serviceAreas.forEach(sa => {
         if (sa.SUBSTATION_ID === selectedAsset.id && sa.CIRCUIT_ID) {
@@ -1863,12 +1864,12 @@ function App() {
       // DEBUG: Show first matching service area
       const matching = serviceAreas.filter(sa => sa.SUBSTATION_ID === selectedAsset.id);
       if (matching.length > 0) {
-        console.log(`   ✅ Found ${matching.length} matching service areas, first one:`, matching[0]);
+        logger.log(`   ✅ Found ${matching.length} matching service areas, first one:`, matching[0]);
       } else {
-        console.log(`   ❌ No matching service areas found. Sample IDs:`, serviceAreas.slice(0, 3).map(sa => sa.SUBSTATION_ID));
+        logger.log(`   ❌ No matching service areas found. Sample IDs:`, serviceAreas.slice(0, 3).map(sa => sa.SUBSTATION_ID));
       }
       
-      console.log(`📌 Substation ${selectedAsset.id}: Found ${pinnedCircuits.size} circuits to pin and load`);
+      logger.log(`📌 Substation ${selectedAsset.id}: Found ${pinnedCircuits.size} circuits to pin and load`);
     }
     
     // Find all connected assets via topology and pin their circuits too
@@ -1881,7 +1882,7 @@ function App() {
         a.circuit_id && pinnedCircuits.has(a.circuit_id)
       );
       
-      console.log(`🔍 Checking topology for ${circuitAssets.length} assets in ${pinnedCircuits.size} pinned circuits`);
+      logger.log(`🔍 Checking topology for ${circuitAssets.length} assets in ${pinnedCircuits.size} pinned circuits`);
       
       // Find all topology connections to/from these circuit assets
       topology.forEach(link => {
@@ -1909,7 +1910,7 @@ function App() {
     // Store connected asset IDs for explicit loading
     pinnedAssetIdsRef.current = connectedAssetIds;
     
-    console.log(`🔗 Found ${connectedAssetIds.size} connected assets for ${selectedAsset.type} ${selectedAsset.id}`);
+    logger.log(`🔗 Found ${connectedAssetIds.size} connected assets for ${selectedAsset.type} ${selectedAsset.id}`);
     
     // Map connected asset IDs to their circuit IDs
     connectedAssetIds.forEach(assetId => {
@@ -1931,7 +1932,7 @@ function App() {
     pinnedCircuitsRef.current = pinnedCircuits;
     
     if (pinnedCircuits.size > 0) {
-      console.log(`📌 Pinned ${pinnedCircuits.size} circuits for selected ${selectedAsset.type} ${selectedAsset.id}`);
+      logger.log(`📌 Pinned ${pinnedCircuits.size} circuits for selected ${selectedAsset.type} ${selectedAsset.id}`);
     }
   }, [selectedAsset, topology, assets, circuitBatches]);
 
@@ -1943,7 +1944,7 @@ function App() {
     
     // For substations, skip this - assets will come from pinned circuits
     if (selectedAsset.type === 'substation') {
-      console.log(`   ℹ️ Substation selected - assets will load via ${pinnedCircuitsRef.current.size} pinned circuits`);
+      logger.log(`   ℹ️ Substation selected - assets will load via ${pinnedCircuitsRef.current.size} pinned circuits`);
       return;
     }
     
@@ -1958,11 +1959,11 @@ function App() {
       const missingAssetIds = connectedIds.filter(id => !loadedAssetIds.has(id));
       
       if (missingAssetIds.length === 0) {
-        console.log(`✅ All ${connectedIds.length} connected assets already loaded`);
+        logger.log(`✅ All ${connectedIds.length} connected assets already loaded`);
         return;
       }
       
-      console.log(`🔗 Fetching ${missingAssetIds.length} missing connected assets for ${selectedAsset.type} ${selectedAsset.id}`);
+      logger.log(`🔗 Fetching ${missingAssetIds.length} missing connected assets for ${selectedAsset.type} ${selectedAsset.id}`);
       
       try {
         // Fetch specific assets by ID
@@ -1991,11 +1992,11 @@ function App() {
         }));
         
         if (newAssets.length === 0) {
-          console.log(`   ⚠️ No connected assets found in database`);
+          logger.log(`   ⚠️ No connected assets found in database`);
           return;
         }
         
-        console.log(`   ✅ Fetched ${newAssets.length} connected assets`);
+        logger.log(`   ✅ Fetched ${newAssets.length} connected assets`);
         
         // Add to circuit batches (create special batch for connected assets)
         setCircuitBatches(prev => {
@@ -2026,7 +2027,7 @@ function App() {
         });
         
       } catch (error) {
-        console.error(`❌ Failed to fetch connected assets:`, error);
+        logger.error(`❌ Failed to fetch connected assets:`, error);
       }
     };
     
@@ -2179,7 +2180,7 @@ function App() {
           // Remove pinned from sampled to avoid duplicates, then prepend pinned
           sampledCircuits = sampledCircuits.filter(cid => !pinnedCircuitsRef.current.has(cid));
           sampledCircuits = [...pinnedArray, ...sampledCircuits];
-          console.log(`   📌 Prioritized ${pinnedArray.length} pinned circuits for selected asset`);
+          logger.log(`   📌 Prioritized ${pinnedArray.length} pinned circuits for selected asset`);
         }
         
         // HIGH ZOOM ENHANCEMENT: At zoom >= 14, include circuits from ALL visible topology
@@ -2220,7 +2221,7 @@ function App() {
           // Merge with sampled circuits
           const additionalCircuits = Array.from(topologyCircuitIds).filter(cid => !sampledCircuits.includes(cid));
           if (additionalCircuits.length > 0) {
-            console.log(`   🔗 High zoom (${throttledZoom.toFixed(1)}): Adding ${additionalCircuits.length} circuits from visible topology`);
+            logger.log(`   🔗 High zoom (${throttledZoom.toFixed(1)}): Adding ${additionalCircuits.length} circuits from visible topology`);
             sampledCircuits = [...sampledCircuits, ...additionalCircuits];
           }
         }
@@ -2232,7 +2233,7 @@ function App() {
         const avgEstimatedAssetsPerSubstation = substationStats.reduce((sum, s) => sum + s.estimatedAssets, 0) / substationStats.length;
         const totalEstimatedAssets = substationStats.reduce((sum, s) => sum + s.estimatedAssets, 0);
         
-        console.log(`   🏭 Substation-based sampling: ${substationsInViewport} substations in viewport | Circuits: ${avgCircuitsPerSubstation.toFixed(1)} avg → ${avgSelectedPerSubstation.toFixed(1)} selected/substation (min ${minCircuitsPerSubstation}) | Est Assets: ${avgEstimatedAssetsPerSubstation.toFixed(0)}/substation (${totalEstimatedAssets.toLocaleString()} total) | Target: ${minAssetsPerSubstation}+ assets/substation @ zoom ${throttledZoom.toFixed(1)}`);
+        logger.log(`   🏭 Substation-based sampling: ${substationsInViewport} substations in viewport | Circuits: ${avgCircuitsPerSubstation.toFixed(1)} avg → ${avgSelectedPerSubstation.toFixed(1)} selected/substation (min ${minCircuitsPerSubstation}) | Est Assets: ${avgEstimatedAssetsPerSubstation.toFixed(0)}/substation (${totalEstimatedAssets.toLocaleString()} total) | Target: ${minAssetsPerSubstation}+ assets/substation @ zoom ${throttledZoom.toFixed(1)}`);
         
         // Find circuits not yet loaded AND not currently loading
         // USE REF (not recalculating from assets) to prevent reload loop when assets are culled
@@ -2263,7 +2264,7 @@ function App() {
         });
         circuitsToRemove.forEach(cid => loadedCircuitsRef.current.delete(cid));
         if (circuitsToRemove.length > 0) {
-          console.log(`   🧹 Removed ${circuitsToRemove.length} circuits outside cull bounds (${loadedCircuitsRef.current.size} remain loaded, ${pinnedCircuitsRef.current.size} pinned)`);
+          logger.log(`   🧹 Removed ${circuitsToRemove.length} circuits outside cull bounds (${loadedCircuitsRef.current.size} remain loaded, ${pinnedCircuitsRef.current.size} pinned)`);
         }
         
         // CRITICAL FIX: Include pinned circuits (from substation selection) in addition to viewport circuits
@@ -2282,12 +2283,12 @@ function App() {
           !loadedCircuitsRef.current.has(cid) && !loadingCircuitsRef.current.has(cid)
         );
         if (pinnedNewCircuits.length > 0) {
-          console.log(`   📍 ${pinnedNewCircuits.length} pinned circuits need loading`);
+          logger.log(`   📍 ${pinnedNewCircuits.length} pinned circuits need loading`);
         }
         
         // REDUCED LOGGING: Only log when there are new circuits to load or limits hit
         if (newCircuits.length > 0 || limitsReachedRef.current) {
-          console.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${circuitsInViewport.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
+          logger.log(`   📊 Viewport [${centerLng.toFixed(3)}, ${centerLat.toFixed(3)}]: ${circuitsInViewport.length} circuits visible, ${loadedCircuitsRef.current.size} loaded, ${newCircuits.length} new | Assets: ${assets.length.toLocaleString()}`);
         }
         
         // VIEWPORT CHANGE DETECTION: Clear limits flag when user significantly changes viewport
@@ -2304,7 +2305,7 @@ function App() {
           const viewportChangedSignificantly = lngDiff > 0.01 || latDiff > 0.01 || zoomDiff > 0.5;
           
           if (viewportChangedSignificantly && limitsReachedRef.current) {
-            console.log(`   🔄 Viewport changed significantly (lng: ${lngDiff.toFixed(3)}, lat: ${latDiff.toFixed(3)}, zoom: ${zoomDiff.toFixed(3)}) - clearing limits flag to allow loading in new area`);
+            logger.log(`   🔄 Viewport changed significantly (lng: ${lngDiff.toFixed(3)}, lat: ${latDiff.toFixed(3)}, zoom: ${zoomDiff.toFixed(3)}) - clearing limits flag to allow loading in new area`);
             limitsReachedRef.current = false;
           }
         }
@@ -2336,10 +2337,10 @@ function App() {
         // 🔍 SIMPLE DEBUG: One-line status
         const willCull = needsAggressiveCull && canCullNow;
         const blockedBy = !willCull ? (assets.length <= maxAssetsForZoom ? 'under-cap' : timeSinceSelection < 2000 ? 'recent-selection' : loadingCircuitsRef.current.size > 0 ? 'loading-circuits' : !canCullNow ? 'debounce' : 'unknown') : 'none';
-        console.log(`🔍 CULL CHECK: ${assets.length.toLocaleString()}/${maxAssetsForZoom.toLocaleString()} assets | zoom ${throttledZoom.toFixed(1)} | loading ${loadingCircuitsRef.current.size} circuits | ${willCull ? '✅ WILL CULL' : '❌ BLOCKED: ' + blockedBy}`);
+        logger.log(`🔍 CULL CHECK: ${assets.length.toLocaleString()}/${maxAssetsForZoom.toLocaleString()} assets | zoom ${throttledZoom.toFixed(1)} | loading ${loadingCircuitsRef.current.size} circuits | ${willCull ? '✅ WILL CULL' : '❌ BLOCKED: ' + blockedBy}`);
         
         if (needsAggressiveCull && canCullNow) {
-          console.log(`   ⚠️ Aggressive cull triggered: ${assets.length.toLocaleString()} > ${maxAssetsForZoom.toLocaleString()} at zoom ${throttledZoom.toFixed(2)}`);
+          logger.log(`   ⚠️ Aggressive cull triggered: ${assets.length.toLocaleString()} > ${maxAssetsForZoom.toLocaleString()} at zoom ${throttledZoom.toFixed(2)}`);
           lastCullTimeRef.current = Date.now(); // Update last cull time
           
           // Aggressive cull: Keep only viewport assets (1.5x buffer, not 3.5x)
@@ -2397,7 +2398,7 @@ function App() {
             }).filter((batch): batch is CircuitBatch => batch !== null);
             
             if (totalRemoved > 0) {
-              console.log(`   🗑️ Aggressively culled ${totalRemoved.toLocaleString()} assets from ${culledCircuits.size} circuits (${assetsBeforeCull.toLocaleString()} → ${(assetsBeforeCull - totalRemoved).toLocaleString()})`);
+              logger.log(`   🗑️ Aggressively culled ${totalRemoved.toLocaleString()} assets from ${culledCircuits.size} circuits (${assetsBeforeCull.toLocaleString()} → ${(assetsBeforeCull - totalRemoved).toLocaleString()})`);
             }
             
             return filtered;
@@ -2439,7 +2440,7 @@ function App() {
                 // Calculate from filtered result, not stale state
                 const topologyAfterCull = filtered.flatMap(b => b.connections).length;
                 if (topologyAfterCull < topologyBeforeCull) {
-                  console.log(`   🗑️ Also removed ${(topologyBeforeCull - topologyAfterCull).toLocaleString()} topology connections`);
+                  logger.log(`   🗑️ Also removed ${(topologyBeforeCull - topologyAfterCull).toLocaleString()} topology connections`);
                 }
                 
                 return filtered;
@@ -2499,7 +2500,7 @@ function App() {
             }).filter((batch): batch is CircuitBatch => batch !== null);
             
             if (totalRemoved > 0) {
-              console.log(`   🗑️ Culled ${totalRemoved.toLocaleString()} assets from ${culledCircuits.size} circuits outside 2.0x viewport (${assetsBeforeCull.toLocaleString()} → ${(assetsBeforeCull - totalRemoved).toLocaleString()})`);
+              logger.log(`   🗑️ Culled ${totalRemoved.toLocaleString()} assets from ${culledCircuits.size} circuits outside 2.0x viewport (${assetsBeforeCull.toLocaleString()} → ${(assetsBeforeCull - totalRemoved).toLocaleString()})`);
             }
             
             return filtered;
@@ -2543,7 +2544,7 @@ function App() {
                 // Calculate from filtered result, not stale state
                 const topologyAfterCull = filtered.flatMap(b => b.connections).length;
                 if (topologyAfterCull < topologyBeforeCull) {
-                  console.log(`   🗑️ Culled ${(topologyBeforeCull - topologyAfterCull).toLocaleString()} topology connections (${topologyBeforeCull.toLocaleString()} → ${topologyAfterCull.toLocaleString()})`);
+                  logger.log(`   🗑️ Culled ${(topologyBeforeCull - topologyAfterCull).toLocaleString()} topology connections (${topologyBeforeCull.toLocaleString()} → ${topologyAfterCull.toLocaleString()})`);
                 }
                 
                 return filtered;
@@ -2609,7 +2610,7 @@ function App() {
             // Calculate from filtered result, not stale state
             const topologyAfterCleanup = cleaned.flatMap(b => b.connections).length;
             if (topologyAfterCleanup < topologyBeforeCleanup) {
-              console.log(`   🧹 Periodic topology cleanup: ${(topologyBeforeCleanup - topologyAfterCleanup).toLocaleString()} removed (${topologyBeforeCleanup.toLocaleString()} → ${topologyAfterCleanup.toLocaleString()}) | Batches: ${cleaned.length}`);
+              logger.log(`   🧹 Periodic topology cleanup: ${(topologyBeforeCleanup - topologyAfterCleanup).toLocaleString()} removed (${topologyBeforeCleanup.toLocaleString()} → ${topologyAfterCleanup.toLocaleString()}) | Batches: ${cleaned.length}`);
             }
             
             return cleaned;
@@ -2623,7 +2624,7 @@ function App() {
         const BACKOFF_THRESHOLD = 60000;    // Start aggressive unloading here (TIGHTENED from 80k)
         
         if (assets.length > BACKOFF_THRESHOLD && loadingCircuitsRef.current.size === 0) {
-          console.log(`   ⚡ BACKOFF TRIGGERED: ${assets.length.toLocaleString()} assets loaded (threshold: ${BACKOFF_THRESHOLD.toLocaleString()})`);
+          logger.log(`   ⚡ BACKOFF TRIGGERED: ${assets.length.toLocaleString()} assets loaded (threshold: ${BACKOFF_THRESHOLD.toLocaleString()})`);
           
           const centerLng = (east + west) / 2;
           const centerLat = (north + south) / 2;
@@ -2664,7 +2665,7 @@ function App() {
               // CRITICAL: Don't unload batches containing pinned circuits (e.g., from selected substations)
               const hasPinnedCircuit = batch.circuitIds.some(cid => pinnedCircuitsRef.current.has(cid));
               if (hasPinnedCircuit) {
-                console.log(`   📍 Skipping batch ${batch.batchId} - contains ${batch.circuitIds.filter(cid => pinnedCircuitsRef.current.has(cid)).length} pinned circuits`);
+                logger.log(`   📍 Skipping batch ${batch.batchId} - contains ${batch.circuitIds.filter(cid => pinnedCircuitsRef.current.has(cid)).length} pinned circuits`);
                 continue;
               }
               
@@ -2673,8 +2674,8 @@ function App() {
               removedCount += batch.assets.length;
             }
             
-            console.log(`   🎯 Unloading ${batchIdsToRemove.size} distant batches (${removedCount.toLocaleString()} assets, ${circuitsToUnload.size} circuits)`);
-            console.log(`   📍 Furthest batch distance: ${batchesWithDistance[0]?.distance.toFixed(4)} degrees (~${(batchesWithDistance[0]?.distance * 111).toFixed(1)}km)`);
+            logger.log(`   🎯 Unloading ${batchIdsToRemove.size} distant batches (${removedCount.toLocaleString()} assets, ${circuitsToUnload.size} circuits)`);
+            logger.log(`   📍 Furthest batch distance: ${batchesWithDistance[0]?.distance.toFixed(4)} degrees (~${(batchesWithDistance[0]?.distance * 111).toFixed(1)}km)`);
             
             // Remove batches from state
             setCircuitBatches(prev => 
@@ -2691,7 +2692,7 @@ function App() {
               const removedTopology = prev.flatMap(b => b.connections).length - 
                                      filtered.flatMap(b => b.connections).length;
               if (removedTopology > 0) {
-                console.log(`   🗑️ Also removed ${removedTopology.toLocaleString()} topology connections from distant batches`);
+                logger.log(`   🗑️ Also removed ${removedTopology.toLocaleString()} topology connections from distant batches`);
               }
               
               return filtered;
@@ -2706,14 +2707,14 @@ function App() {
             // Clear limits flag since we freed up space
             limitsReachedRef.current = false;
             
-            console.log(`   ✅ Backoff complete: ${assets.length.toLocaleString()} → ~${(assets.length - removedCount).toLocaleString()} assets - limits flag cleared`);
+            logger.log(`   ✅ Backoff complete: ${assets.length.toLocaleString()} → ~${(assets.length - removedCount).toLocaleString()} assets - limits flag cleared`);
           }
         }
         
         // EARLY EXIT: If limits were already reached, don't try NEW LOADING until user pans/zooms significantly
         // IMPORTANT: This comes AFTER culling/backoff so those systems can free up space
         if (limitsReachedRef.current && newCircuits.length > 0) {
-          console.log(`   ⏸️ Limits reached - waiting for culling/backoff or user to pan to new area (${newCircuits.length} unloadable circuits)`);
+          logger.log(`   ⏸️ Limits reached - waiting for culling/backoff or user to pan to new area (${newCircuits.length} unloadable circuits)`);
           return; // Don't attempt new loading until limits are cleared by culling or viewport change
         }
         
@@ -2749,13 +2750,13 @@ function App() {
           
           // Hard stop at 100% cap (no threshold needed with zoom-aware sampling)
           if (totalAssets >= maxAssetsAllowed) {
-            console.log(`   ⚠️ Asset limit reached: ${totalAssets.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} assets (${assets.length.toLocaleString()} loaded + ${pendingAssetCountRef.current.toLocaleString()} pending). Backing off until culling or user pans away.`);
+            logger.log(`   ⚠️ Asset limit reached: ${totalAssets.toLocaleString()}/${maxAssetsAllowed.toLocaleString()} assets (${assets.length.toLocaleString()} loaded + ${pendingAssetCountRef.current.toLocaleString()} pending). Backing off until culling or user pans away.`);
             limitsReachedRef.current = true; // Set flag to prevent retries
             return;
           }
           
           if (loadedCircuitsRef.current.size >= maxCircuitsAllowed) {
-            console.log(`   ⚠️ Circuit limit reached: ${loadedCircuitsRef.current.size}/${maxCircuitsAllowed} circuits loaded. Backing off until culling or user pans away.`);
+            logger.log(`   ⚠️ Circuit limit reached: ${loadedCircuitsRef.current.size}/${maxCircuitsAllowed} circuits loaded. Backing off until culling or user pans away.`);
             limitsReachedRef.current = true; // Set flag to prevent retries
             return;
           }
@@ -2764,7 +2765,7 @@ function App() {
           const currentTopologyCount = topology.length;
           const maxTopologyAllowed = 50000;
           if (currentTopologyCount >= maxTopologyAllowed) {
-            console.log(`   ⚠️ Topology limit reached: ${currentTopologyCount.toLocaleString()}/${maxTopologyAllowed.toLocaleString()} connections loaded. Backing off until culling or user pans away.`);
+            logger.log(`   ⚠️ Topology limit reached: ${currentTopologyCount.toLocaleString()}/${maxTopologyAllowed.toLocaleString()} connections loaded. Backing off until culling or user pans away.`);
             limitsReachedRef.current = true; // Set flag to prevent retries
             return;
           }
@@ -2772,7 +2773,7 @@ function App() {
           // Conservative loading: Max 15 circuits per viewport update (reduced from 20 for stability)
           const circuitsToLoad = newCircuits.slice(0, 15);
           
-          console.log(`   🔄 Loading ${circuitsToLoad.length}/${newCircuits.length} circuits (${loadedCircuitsRef.current.size} already loaded)...`);
+          logger.log(`   🔄 Loading ${circuitsToLoad.length}/${newCircuits.length} circuits (${loadedCircuitsRef.current.size} already loaded)...`);
           
           // Mark circuits as loading
           circuitsToLoad.forEach(cid => loadingCircuitsRef.current.add(cid));
@@ -2800,7 +2801,7 @@ function App() {
                   return response;
                 } catch (err: any) {
                   if (attempt < maxRetries && (err.name === 'AbortError' || err.message?.includes('timeout'))) {
-                    console.log(`   ⚠️ Batch ${idx + 1} attempt ${attempt + 1} failed, retrying...`);
+                    logger.log(`   ⚠️ Batch ${idx + 1} attempt ${attempt + 1} failed, retrying...`);
                     await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // Backoff: 1s, 2s
                     continue;
                   }
@@ -2849,7 +2850,7 @@ function App() {
               }));
             
             // Log filtering results to track viewport filtering effectiveness
-            console.log(`   🎯 Batch ${idx + 1}: Backend returned ${beforeFilterCount.toLocaleString()} → filtered to ${newAssets.length.toLocaleString()} viewport assets (${((newAssets.length / beforeFilterCount) * 100).toFixed(1)}%)`);
+            logger.log(`   🎯 Batch ${idx + 1}: Backend returned ${beforeFilterCount.toLocaleString()} → filtered to ${newAssets.length.toLocaleString()} viewport assets (${((newAssets.length / beforeFilterCount) * 100).toFixed(1)}%)`);
             
             
             // Filter topology connections to only include links where BOTH endpoints are in viewport
@@ -2871,7 +2872,7 @@ function App() {
                 to_longitude: row.TO_LON
               }));
             
-            console.log(`   🎯 Batch ${idx + 1}: Backend returned ${beforeTopologyCount.toLocaleString()} → filtered to ${newTopology.length.toLocaleString()} viewport connections (${((newTopology.length / beforeTopologyCount) * 100).toFixed(1)}%)`);
+            logger.log(`   🎯 Batch ${idx + 1}: Backend returned ${beforeTopologyCount.toLocaleString()} → filtered to ${newTopology.length.toLocaleString()} viewport connections (${((newTopology.length / beforeTopologyCount) * 100).toFixed(1)}%)`);
             
             
             return { batchIdx: idx, batch, assets: newAssets, topology: newTopology };
@@ -2913,7 +2914,7 @@ function App() {
                 const spaceAvailable = Math.max(0, maxAssetsAllowed - currentTotal - pendingAssetCountRef.current);
                 
                 if (spaceAvailable === 0) {
-                  console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} REJECTED: Asset cap reached (${(currentTotal + pendingAssetCountRef.current).toLocaleString()}/${maxAssetsAllowed.toLocaleString()})`);
+                  logger.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} REJECTED: Asset cap reached (${(currentTotal + pendingAssetCountRef.current).toLocaleString()}/${maxAssetsAllowed.toLocaleString()})`);
                   limitsReachedRef.current = true; // Set flag when cap hit during batch processing
                   return prev;
                 }
@@ -2923,7 +2924,7 @@ function App() {
                 if (assetsToAdd.length > 0) {
                   // Update pending counter IMMEDIATELY (prevents race condition overshoot)
                   pendingAssetCountRef.current += assetsToAdd.length;
-                  console.log(`   ✅ Batch ${batchIdx + 1}/${batches.length} added ${assetsToAdd.length.toLocaleString()}/${uniqueNew.length.toLocaleString()} assets (pending: ${pendingAssetCountRef.current.toLocaleString()})`);
+                  logger.log(`   ✅ Batch ${batchIdx + 1}/${batches.length} added ${assetsToAdd.length.toLocaleString()}/${uniqueNew.length.toLocaleString()} assets (pending: ${pendingAssetCountRef.current.toLocaleString()})`);
                   return [...prev, {
                     batchId: `batch-${batchIdx}-${Date.now()}`,
                     circuitIds: batch,
@@ -2948,7 +2949,7 @@ function App() {
                 const spaceAvailable = Math.max(0, maxTopologyAllowed - currentTotal - pendingTopologyCountRef.current);
                 
                 if (spaceAvailable === 0) {
-                  console.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} topology REJECTED: Cap reached (${(currentTotal + pendingTopologyCountRef.current).toLocaleString()}/${maxTopologyAllowed.toLocaleString()})`);
+                  logger.log(`   ⚠️ Batch ${batchIdx + 1}/${batches.length} topology REJECTED: Cap reached (${(currentTotal + pendingTopologyCountRef.current).toLocaleString()}/${maxTopologyAllowed.toLocaleString()})`);
                   limitsReachedRef.current = true; // Set flag when topology cap hit
                   return prev;
                 }
@@ -2971,11 +2972,11 @@ function App() {
                 return prev;
               });
             }).catch(err => {
-              console.error(`❌ Batch ${idx + 1}/${batches.length} failed (${batches[idx]?.length} circuits):`, err.message || err);
+              logger.error(`❌ Batch ${idx + 1}/${batches.length} failed (${batches[idx]?.length} circuits):`, err.message || err);
               // Remove circuits from loading set on error (prevent permanent blocking)
               batches[idx]?.forEach(cid => {
                 loadingCircuitsRef.current.delete(cid);
-                console.log(`   🧹 Cleaned up failed circuit: ${cid}`);
+                logger.log(`   🧹 Cleaned up failed circuit: ${cid}`);
               });
             });
           });
@@ -2987,7 +2988,7 @@ function App() {
           });
         }
       } catch (error) {
-        console.error('Progressive loading failed:', error);
+        logger.error('Progressive loading failed:', error);
       }
     };
     
@@ -3052,7 +3053,7 @@ function App() {
        link.to_latitude >= minLat && link.to_latitude <= maxLat)
     );
     
-    console.log(`   🔗 Visible topology: ${viewportFiltered.length.toLocaleString()}/${topology.length.toLocaleString()} connections in viewport`);
+    logger.log(`   🔗 Visible topology: ${viewportFiltered.length.toLocaleString()}/${topology.length.toLocaleString()} connections in viewport`);
     
     if (selectedAssets.size > 0) {
       const selectedConnections = topology.filter(link =>
@@ -3288,7 +3289,7 @@ function App() {
     const loadInitial = async () => {
       setIsLoadingData(true);
       try {
-        console.log('🔄 Loading initial data via batch endpoint...');
+        logger.log('🔄 Loading initial data via batch endpoint...');
         const startTime = performance.now();
         
         // FASTAPI OPTIMIZATION: Use batch endpoint for parallel fetching
@@ -3307,11 +3308,11 @@ function App() {
         const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
         const cacheHits = Object.entries(initialData.cache_hits || {}).filter(([_, hit]) => hit).length;
         
-        console.log(`✅ Initial load complete in ${loadTime}s (${cacheHits}/4 cache hits)`);
-        console.log(`   📊 Metro: ${initialData.metro?.length || 0} substations (${initialData.timing?.metro?.toFixed(2) || '?'}s)`);
-        console.log(`   📊 Feeders: ${initialData.feeders?.length || 0} connections (${initialData.timing?.feeders?.toFixed(2) || '?'}s)`);
-        console.log(`   📊 Service Areas: ${initialData.service_areas?.length || 0} circuits (${initialData.timing?.service_areas?.toFixed(2) || '?'}s)`);
-        console.log(`   📊 KPIs: ${Object.keys(initialData.kpis || {}).length} metrics (${initialData.timing?.kpis?.toFixed(2) || '?'}s)`);
+        logger.log(`✅ Initial load complete in ${loadTime}s (${cacheHits}/4 cache hits)`);
+        logger.log(`   📊 Metro: ${initialData.metro?.length || 0} substations (${initialData.timing?.metro?.toFixed(2) || '?'}s)`);
+        logger.log(`   📊 Feeders: ${initialData.feeders?.length || 0} connections (${initialData.timing?.feeders?.toFixed(2) || '?'}s)`);
+        logger.log(`   📊 Service Areas: ${initialData.service_areas?.length || 0} circuits (${initialData.timing?.service_areas?.toFixed(2) || '?'}s)`);
+        logger.log(`   📊 KPIs: ${Object.keys(initialData.kpis || {}).length} metrics (${initialData.timing?.kpis?.toFixed(2) || '?'}s)`);
         
         // Set all data from batch response
         if (initialData.service_areas) setServiceAreas(initialData.service_areas);
@@ -3345,7 +3346,7 @@ function App() {
               assets: substations,
               loadedAt: Date.now()
             }]);
-            console.log(`   ✅ Added ${substations.length} substations from batch response`);
+            logger.log(`   ✅ Added ${substations.length} substations from batch response`);
           }
         }
         if (initialData.feeders) setFeederTopologyData(initialData.feeders);
@@ -3356,9 +3357,9 @@ function App() {
         // Start lightweight service area polling (5 min refresh for aggregate stats)
         startServiceAreaPolling();
       } catch (error) {
-        console.error('❌ Initial load failed:', error);
+        logger.error('❌ Initial load failed:', error);
         // Fallback to legacy loading if batch endpoint fails
-        console.log('⚠️ Falling back to legacy separate API calls...');
+        logger.log('⚠️ Falling back to legacy separate API calls...');
         try {
           const [serviceAreas, weatherData] = await Promise.all([
             fetch('/api/service-areas').then(r => r.json()),
@@ -3366,9 +3367,9 @@ function App() {
           ]);
           setServiceAreas(serviceAreas);
           setWeather(weatherData);
-          console.log(`✅ Fallback load: ${serviceAreas.length} service areas`);
+          logger.log(`✅ Fallback load: ${serviceAreas.length} service areas`);
         } catch (fallbackError) {
-          console.error('❌ Fallback also failed:', fallbackError);
+          logger.error('❌ Fallback also failed:', fallbackError);
         }
         setIsLoadingData(false);
       }
@@ -3389,7 +3390,7 @@ function App() {
           setServiceAreas(serviceAreas);
           setLastUpdateTime(new Date());
         } catch (error) {
-          console.error('❌ Service area poll failed:', error);
+          logger.error('❌ Service area poll failed:', error);
         }
       }, 300000); // 5 minutes (Postgres handles real-time every 10s)
     };
@@ -3502,7 +3503,7 @@ function App() {
     // Trigger loading animation on layer transition
     if (lastIntelligenceLayerRef.current !== null && 
         lastIntelligenceLayerRef.current !== currentLayer) {
-      // console.log(`🔄 Intelligence layer transition: ${lastIntelligenceLayerRef.current} → ${currentLayer}`);
+      // logger.log(`🔄 Intelligence layer transition: ${lastIntelligenceLayerRef.current} → ${currentLayer}`);
       setIsLoadingData(true);
       setTimeout(() => {
         setIsLoadingData(false);
@@ -3739,7 +3740,7 @@ function App() {
                        viewportPoles.length + viewportMeters.length;
     
     if (totalAssets > 50000) {
-      console.log(`⚠️ Viewport assets capped: ${totalAssets.toLocaleString()} (S:${viewportSubstations.length} T:${viewportTransformers.length} P:${viewportPoles.length} M:${viewportMeters.length})`);
+      logger.log(`⚠️ Viewport assets capped: ${totalAssets.toLocaleString()} (S:${viewportSubstations.length} T:${viewportTransformers.length} P:${viewportPoles.length} M:${viewportMeters.length})`);
     }
     
     return { 
@@ -3755,11 +3756,11 @@ function App() {
     // INIT OPTIMIZATION: Only compute when feeders are actually visible (zoom 9-11.5)
     // Saves 30-50ms on initialization (zoom 9.5 doesn't need this)
     if (throttledZoom < 9 || throttledZoom >= 11.5 || feederTopologyData.length === 0) {
-      console.log(`🔌 Feeders skipped: zoom=${throttledZoom.toFixed(1)}, feederData=${feederTopologyData.length}`);
+      logger.log(`🔌 Feeders skipped: zoom=${throttledZoom.toFixed(1)}, feederData=${feederTopologyData.length}`);
       return [];
     }
     
-    console.log(`🔌 Computing feeders: zoom=${throttledZoom.toFixed(1)}, feederData=${feederTopologyData.length}`);
+    logger.log(`🔌 Computing feeders: zoom=${throttledZoom.toFixed(1)}, feederData=${feederTopologyData.length}`);
     const { minLng, maxLng, minLat, maxLat } = viewportBounds;
     
     // Zoom-based LOD: limit connections at lower zoom for performance
@@ -3824,7 +3825,7 @@ function App() {
     });
     
     const finalResult = result.slice(0, maxConnections);
-    console.log(`🔌 Feeders result: ${filtered.length} filtered → ${finalResult.length} final (max ${maxConnections})`);
+    logger.log(`🔌 Feeders result: ${filtered.length} filtered → ${finalResult.length} final (max ${maxConnections})`);
     return finalResult;
   }, [feederTopologyData, viewportBounds, throttledZoom]);
 
@@ -3835,7 +3836,7 @@ function App() {
       return [];
     }
     
-    console.time('⚡ unifiedClusters calculation');
+    logger.time('⚡ unifiedClusters calculation');
     // CIRCUIT-BASED SERVICE AREAS (Utility-Grade Clustering)
     // Uses pre-computed FLUX_OPS_CENTER_SERVICE_AREAS_CIRCUIT_BASED table
     // Benefits:
@@ -3893,7 +3894,7 @@ function App() {
           });
         });
         
-        console.timeEnd('⚡ unifiedClusters calculation');
+        logger.timeEnd('⚡ unifiedClusters calculation');
         return updatedClusters;
       }
       
@@ -3909,7 +3910,7 @@ function App() {
       cachedSubstationHashRef.current = substationHash;
       clusterCacheRef.current = result;
       
-      console.timeEnd('⚡ unifiedClusters calculation');
+      logger.timeEnd('⚡ unifiedClusters calculation');
       return result;
     }
     
@@ -3927,7 +3928,7 @@ function App() {
     
     if (serviceAreasChanged || clusterCacheRef.current.length === 0 || circuitMapRef.current.size === 0) {
       // Service areas changed - rebuild cluster structure and circuit map
-      console.log('🔄 Rebuilding circuit-based cluster structure');
+      logger.log('🔄 Rebuilding circuit-based cluster structure');
       
       const clusters: AssetCluster[] = serviceAreas.map(area => {
         // Find real substation asset from loaded metro topology
@@ -3999,15 +4000,15 @@ function App() {
       poleAssets.forEach(a => assignAsset(a, 'poles'));
       meterAssets.forEach(a => assignAsset(a, 'meters'));
       
-      console.log(`✅ Circuit-based clustering: ${clusters.length} circuits, ${clusters.reduce((sum, c) => sum + c.assets.length, 0)} assets assigned`);
+      logger.log(`✅ Circuit-based clustering: ${clusters.length} circuits, ${clusters.reduce((sum, c) => sum + c.assets.length, 0)} assets assigned`);
       
-      console.timeEnd('⚡ unifiedClusters calculation');
+      logger.timeEnd('⚡ unifiedClusters calculation');
       return clusters;
     }
     
     // FAST PATH: Service areas unchanged - reuse cached structure and circuit map
     // This makes asset updates nearly instant (just O(N) reassignment with cached lookups)
-    console.log('⚡ Fast path: Reusing cached circuit map');
+    logger.log('⚡ Fast path: Reusing cached circuit map');
     
     const updatedClusters: AssetCluster[] = clusterCacheRef.current.map(cluster => ({
       ...cluster,
@@ -4032,17 +4033,17 @@ function App() {
     poleAssets.forEach(a => assignAsset(a, 'poles'));
     meterAssets.forEach(a => assignAsset(a, 'meters'));
     
-    console.timeEnd('⚡ unifiedClusters calculation');
+    logger.timeEnd('⚡ unifiedClusters calculation');
     return updatedClusters;
   }, [serviceAreas, substationAssets, transformerAssets, poleAssets, meterAssets]);
 
   const flattenedClusterData = useMemo(() => {
-    console.time('🔍 flattenedClusterData calculation');
+    logger.time('🔍 flattenedClusterData calculation');
     const aggregateTowers: any[] = [];
     
     // ALWAYS aggregate circuits by substation - circuits are for O(1) assignment, not visual display
     // Each tower represents ONE substation with all its circuits aggregated
-    console.log(`🔍 Creating towers: ${unifiedClusters.length} circuits → aggregating by substation`);
+    logger.log(`🔍 Creating towers: ${unifiedClusters.length} circuits → aggregating by substation`);
     
     if (serviceAreas.length > 0) {
       // Aggregate circuits by substation
@@ -4073,7 +4074,7 @@ function App() {
       });
       
       // Create towers from substation aggregates
-      console.log(`✅ AGGREGATING ${substationAggregates.size} substations from ${unifiedClusters.length} circuits`);
+      logger.log(`✅ AGGREGATING ${substationAggregates.size} substations from ${unifiedClusters.length} circuits`);
       substationAggregates.forEach((aggregate, substationId) => {
         const sub = aggregate.substation;
         const totalAssets = aggregate.allAssets.length;
@@ -4091,7 +4092,7 @@ function App() {
         
         // Debug SUB-HOU-062 specifically
         if (substationId === 'SUB-HOU-062') {
-          console.log(`🔍 SUB-HOU-062 DEBUG:`, {
+          logger.log(`🔍 SUB-HOU-062 DEBUG:`, {
             avgLoad,
             worstLoad,
             pgStatus: substationStatus?.status,
@@ -4168,7 +4169,7 @@ function App() {
         
         // Debug: log first 3 substations to see what's happening
         if (substationAggregates.size <= 3) {
-          console.log(`📊 Substation ${substationId}: avgLoad=${avgLoad}, avgHealth=${avgHealth}, critical=${criticalCount}, warning=${warningCount}, healthy=${healthyCount}, status=${worstStatus}`);
+          logger.log(`📊 Substation ${substationId}: avgLoad=${avgLoad}, avgHealth=${avgHealth}, critical=${criticalCount}, warning=${warningCount}, healthy=${healthyCount}, status=${worstStatus}`);
         }
         
         // Calculate radius based on circuit count and asset density
@@ -4212,10 +4213,10 @@ function App() {
         });
       });
       
-      console.log(`📊 Towers created: ${aggregateTowers.length} substations (from ${unifiedClusters.length} circuits)`);
+      logger.log(`📊 Towers created: ${aggregateTowers.length} substations (from ${unifiedClusters.length} circuits)`);
     }
 
-    console.timeEnd('🔍 flattenedClusterData calculation');
+    logger.timeEnd('🔍 flattenedClusterData calculation');
     return { aggregateTowers };
   }, [unifiedClusters, serviceAreas.length, substationStatusMap]);
 
@@ -4458,7 +4459,7 @@ function App() {
           },
           onClick: (info: any) => {
             // if (info.object) {
-            //   console.log('Grid cell operational status:', {
+            //   logger.log('Grid cell operational status:', {
             //     cellId: info.object.cellId,
             //     status: info.object.operationalStatus,
             //     avgLoad: info.object.avgLoad?.toFixed(1),
@@ -4524,7 +4525,7 @@ function App() {
           },
           onClick: (info: any) => {
             if (info.object) {
-              // console.log('Distribution feeder:', info.object);
+              // logger.log('Distribution feeder:', info.object);
             }
           }
         }));
