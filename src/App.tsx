@@ -515,6 +515,7 @@ interface SubstationStatus {
 interface SpatialBuilding {
   id: string;
   type: 'building';
+  building_name?: string;
   building_type?: string;
   height_meters?: number;
   num_floors?: number;
@@ -1117,9 +1118,8 @@ function App() {
   const [spatialData, setSpatialData] = useState<{
     powerLines: any[];
     vegetation: any[];
-    buildingLabels: any[];
-  }>({ powerLines: [], vegetation: [], buildingLabels: [] });
-  const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false, buildingLabels: false });
+  }>({ powerLines: [], vegetation: [] });
+  const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false });
 
   // Track last loaded zoom level for power lines LOD
   const [powerLinesLoadedZoom, setPowerLinesLoadedZoom] = useState<number | null>(null);
@@ -1201,70 +1201,6 @@ function App() {
       loadSpatialLayer('vegetation');
     }
   }, [layersVisible.vegetation, spatialData.vegetation.length, spatialLoading.vegetation, loadSpatialLayer]);
-
-  // Engineering: Load building labels when building footprints are enabled at sufficient zoom
-  // Only show labels at zoom >= 14 to avoid clutter
-  const buildingLabelsLastLoadRef = useRef<{zoom: number; lat: number; lon: number} | null>(null);
-  
-  useEffect(() => {
-    const loadBuildingLabels = async () => {
-      if (!layersVisible.buildingFootprints) return;
-      if (viewState.zoom < 14) {
-        // Clear labels when zoomed out
-        if (spatialData.buildingLabels.length > 0) {
-          setSpatialData(prev => ({ ...prev, buildingLabels: [] }));
-        }
-        return;
-      }
-      if (spatialLoading.buildingLabels) return;
-      
-      // Check if we need to reload (significant viewport change)
-      const lastLoad = buildingLabelsLastLoadRef.current;
-      if (lastLoad) {
-        const zoomDiff = Math.abs(viewState.zoom - lastLoad.zoom);
-        const latDiff = Math.abs(viewState.latitude - lastLoad.lat);
-        const lonDiff = Math.abs(viewState.longitude - lastLoad.lon);
-        // Skip if minor change
-        if (zoomDiff < 0.5 && latDiff < 0.005 && lonDiff < 0.005) return;
-      }
-      
-      setSpatialLoading(prev => ({ ...prev, buildingLabels: true }));
-      
-      try {
-        // Calculate viewport bounds
-        const degPerPixel = 360 / (256 * Math.pow(2, viewState.zoom));
-        const width = (typeof window !== 'undefined' ? window.innerWidth : 1920) * degPerPixel;
-        const height = (typeof window !== 'undefined' ? window.innerHeight : 1080) * degPerPixel;
-        const buffer = 1.2; // 20% buffer
-        
-        const min_lon = viewState.longitude - (width / 2) * buffer;
-        const max_lon = viewState.longitude + (width / 2) * buffer;
-        const min_lat = viewState.latitude - (height / 2) * buffer;
-        const max_lat = viewState.latitude + (height / 2) * buffer;
-        
-        const response = await fetch(
-          `/api/spatial/layers/building-labels?min_lon=${min_lon}&max_lon=${max_lon}&min_lat=${min_lat}&max_lat=${max_lat}&limit=150`
-        );
-        
-        if (response.ok) {
-          const data = await response.json();
-          setSpatialData(prev => ({ ...prev, buildingLabels: data.features || [] }));
-          buildingLabelsLastLoadRef.current = {
-            zoom: viewState.zoom,
-            lat: viewState.latitude,
-            lon: viewState.longitude
-          };
-          console.log(`✅ Loaded ${(data.features || []).length} building labels in ${data.query_time_ms}ms`);
-        }
-      } catch (error) {
-        console.error('Failed to load building labels:', error);
-      } finally {
-        setSpatialLoading(prev => ({ ...prev, buildingLabels: false }));
-      }
-    };
-    
-    loadBuildingLabels();
-  }, [layersVisible.buildingFootprints, viewState.zoom, viewState.latitude, viewState.longitude, spatialLoading.buildingLabels, spatialData.buildingLabels.length]);
 
   // Helper: Format time ago (depends on currentTime to trigger re-calculation)
   const getTimeAgo = useCallback((date: Date) => {
@@ -5458,8 +5394,9 @@ function App() {
         onClick: (info: any) => {
           if (info.object) {
             const building: SpatialBuilding = {
-              id: info.object.properties?.id || `bldg-${info.index}`,
+              id: info.object.properties?.building_id || `bldg-${info.index}`,
               type: 'building',
+              building_name: info.object.properties?.building_name,
               building_type: info.object.properties?.building_type,
               height_meters: info.object.properties?.height_meters,
               num_floors: info.object.properties?.num_floors,
@@ -5474,8 +5411,9 @@ function App() {
         onHover: (info: any) => {
           if (info.object) {
             const building: SpatialBuilding = {
-              id: info.object.properties?.id || `bldg-${info.index}`,
+              id: info.object.properties?.building_id || `bldg-${info.index}`,
               type: 'building',
+              building_name: info.object.properties?.building_name,
               building_type: info.object.properties?.building_type,
               height_meters: info.object.properties?.height_meters,
               num_floors: info.object.properties?.num_floors,
@@ -5488,34 +5426,6 @@ function App() {
             setSpatialHoverPosition(null);
           }
         }
-      })
-    ] : []),
-
-    // Engineering: Building Labels (POI names like CVS, Walmart, etc.)
-    // Only show at zoom >= 14 to avoid clutter
-    ...(layersVisible.buildingFootprints && spatialData.buildingLabels.length > 0 && currentZoom >= 14 ? [
-      new TextLayer({
-        id: 'building-labels',
-        data: spatialData.buildingLabels,
-        getPosition: (d: any) => d.position,
-        getText: (d: any) => d.name,
-        getSize: 12,
-        getColor: [255, 255, 255, 230],
-        getBackgroundColor: [30, 30, 40, 180],
-        backgroundPadding: [4, 2, 4, 2],
-        getTextAnchor: 'middle',
-        getAlignmentBaseline: 'center',
-        fontFamily: 'Inter, Arial, sans-serif',
-        fontWeight: 'bold',
-        outlineWidth: 2,
-        outlineColor: [0, 0, 0, 200],
-        billboard: true,
-        sizeUnits: 'pixels',
-        sizeMinPixels: 10,
-        sizeMaxPixels: 16,
-        // Slight elevation to float above buildings
-        getPixelOffset: [0, -15],
-        pickable: false
       })
     ] : []),
 
@@ -8903,8 +8813,19 @@ function App() {
                           {/* Building Info Card */}
                           {selectedSpatialObject.type === 'building' && (() => {
                             const bldg = selectedSpatialObject as SpatialBuilding;
+                            // Check if building has a real name (not generic)
+                            const hasRealName = bldg.building_name && 
+                              !['Unnamed', 'unnamed', 'Unknown', 'unknown', 'Yes', 'yes', ''].includes(bldg.building_name);
                             return (
                               <>
+                                {hasRealName && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Name</Typography>
+                                    <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 15, color: '#F97316' }}>
+                                      {bldg.building_name}
+                                    </Typography>
+                                  </Box>
+                                )}
                                 <Box>
                                   <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>ID</Typography>
                                   <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
@@ -9411,12 +9332,26 @@ function App() {
                       <Stack spacing={0.75} divider={<Divider sx={{ borderColor: 'rgba(255,255,255,0.1)' }} />}>
                         {hoveredSpatialObject.type === 'building' && (
                           <>
-                            <Box>
-                              <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Layer Type</Typography>
-                              <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, textTransform: 'capitalize', color: '#F97316' }}>
-                                Building Footprint
-                              </Typography>
-                            </Box>
+                            {/* Show building name prominently if available */}
+                            {(() => {
+                              const bldg = hoveredSpatialObject as SpatialBuilding;
+                              const hasRealName = bldg.building_name && 
+                                !['Unnamed', 'unnamed', 'Unknown', 'unknown', 'Yes', 'yes', ''].includes(bldg.building_name);
+                              return hasRealName ? (
+                                <Box>
+                                  <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, color: '#F97316' }}>
+                                    {bldg.building_name}
+                                  </Typography>
+                                </Box>
+                              ) : (
+                                <Box>
+                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Layer Type</Typography>
+                                  <Typography variant="body2" sx={{ fontWeight: 700, fontSize: 13, lineHeight: 1.3, textTransform: 'capitalize', color: '#F97316' }}>
+                                    Building Footprint
+                                  </Typography>
+                                </Box>
+                              );
+                            })()}
                             {(hoveredSpatialObject as SpatialBuilding).building_type && (
                               <Box>
                                 <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Building Type</Typography>
