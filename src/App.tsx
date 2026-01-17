@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
-import { ScatterplotLayer, ArcLayer, ColumnLayer, PolygonLayer, BitmapLayer, PathLayer, TextLayer, IconLayer } from '@deck.gl/layers';
+import { ScatterplotLayer, ArcLayer, PolygonLayer, BitmapLayer, PathLayer, TextLayer, IconLayer } from '@deck.gl/layers';
 import { HeatmapLayer, GridLayer } from '@deck.gl/aggregation-layers';
 import { MVTLayer } from '@deck.gl/geo-layers';
 import { DataFilterExtension } from '@deck.gl/extensions';
@@ -46,6 +46,46 @@ const theme = createTheme({
 });
 
 const BASEMAP_URL = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+
+// deck.gl v9: Use PolygonLayer instead of ColumnLayer for extruded shapes
+// ColumnLayer has rendering issues in v9 (missing faces/sides)
+// PolygonLayer with extruded:true renders correctly
+
+// Polygon generators for different shapes (return closed polygon coordinates)
+const HOUSTON_LAT = 29.7604;
+const METERS_TO_DEG_LON = 1 / 111320 / Math.cos(HOUSTON_LAT * Math.PI / 180);
+const METERS_TO_DEG_LAT = 1 / 110540;
+
+function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: number): number[][] {
+  const halfLon = (sizeMeters * METERS_TO_DEG_LON) / 2;
+  const halfLat = (sizeMeters * METERS_TO_DEG_LAT) / 2;
+  return [
+    [centerLon - halfLon, centerLat - halfLat],
+    [centerLon + halfLon, centerLat - halfLat],
+    [centerLon + halfLon, centerLat + halfLat],
+    [centerLon - halfLon, centerLat + halfLat],
+    [centerLon - halfLon, centerLat - halfLat]
+  ];
+}
+
+function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: number, sides: number): number[][] {
+  const radiusLon = (sizeMeters * METERS_TO_DEG_LON) / 2;
+  const radiusLat = (sizeMeters * METERS_TO_DEG_LAT) / 2;
+  const vertices: number[][] = [];
+  for (let i = 0; i < sides; i++) {
+    const angle = (Math.PI * 2 / sides) * i - Math.PI / 2;
+    vertices.push([
+      centerLon + radiusLon * Math.cos(angle),
+      centerLat + radiusLat * Math.sin(angle)
+    ]);
+  }
+  vertices.push(vertices[0]);
+  return vertices;
+}
+
+function getOctagonPolygon(centerLon: number, centerLat: number, sizeMeters: number): number[][] {
+  return getPolygonShape(centerLon, centerLat, sizeMeters, 8);
+}
 
 // PERFORMANCE: Pre-compute common colors to avoid alpha() calls in render
 const COLORS = {
@@ -4508,15 +4548,15 @@ function App() {
       batchesByType.flatMap(batch =>
         batch.transformers.length > 0 ? [
         // Transformer base - BATCHED: One layer per circuit batch prevents GPU buffer regeneration
-        new ColumnLayer({
+        // deck.gl v9: Using PolygonLayer instead of ColumnLayer (ColumnLayer has missing faces bug)
+        new PolygonLayer({
           id: `transformers-individual-${batch.batchId}`,
           data: batch.transformers,
           pickable: true,
           extruded: true,
-          diskResolution: 4,  // Low-poly square shape (4-sided) for rectangular appearance
-          flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
+          wireframe: true,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPosition: (d: Asset) => [d.longitude, d.latitude, 0],
+          getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 30),
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
               d.longitude, 
@@ -4527,7 +4567,7 @@ function App() {
               'transformer'
             );
             const fadeProgress = getAssetFadeProgress(d);
-            return 23.4375 * heightScale * staggeredScale * fadeProgress;  // Rise animation (50% reduction, then +25% height)
+            return 23.4375 * heightScale * staggeredScale * fadeProgress;
           },
           getFillColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
@@ -4539,7 +4579,7 @@ function App() {
               'transformer'
             );
             const fadeProgress = getAssetFadeProgress(d);
-            return [236, 72, 153, 200 * staggeredScale * fadeProgress];  // Fade-in
+            return [236, 72, 153, 200 * staggeredScale * fadeProgress];
           },
           getLineColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
@@ -4551,9 +4591,8 @@ function App() {
               'transformer'
             );
             const fadeProgress = getAssetFadeProgress(d);
-            return [255, 100, 180, 100 * staggeredScale * fadeProgress];  // Fade-in
+            return [255, 100, 180, 100 * staggeredScale * fadeProgress];
           },
-          radius: 15,  // 50% size reduction from original 30m
           elevationScale: 1,
           lineWidthMinPixels: 2,
           transitions: {
@@ -4602,30 +4641,15 @@ function App() {
           }
         }),
         // Transformer health cap - BATCHED: Matches base layer batching
-        new ColumnLayer({
+        // deck.gl v9: Using PolygonLayer - cap rendered as additional height on top of base
+        new PolygonLayer({
           id: `transformers-cap-${batch.batchId}`,
           data: batch.transformers,
           extruded: true,
+          wireframe: true,
           pickable: false,
-          diskResolution: 4,  // Match base shape (square-like)
-          flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPosition: (d: Asset) => {
-            const staggeredScale = getStaggerDelay(
-              d.longitude, 
-              d.latitude, 
-              assetScaleAnimation,
-              d.health_score,
-              d.load_percent,
-              'transformer'
-            );
-            const fadeProgress = getAssetFadeProgress(d);
-            return [
-              d.longitude,
-              d.latitude,
-              23.4375 * heightScale * staggeredScale * fadeProgress  // Start cap at top of base (23.4375m base height)
-            ];
-          },
+          getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 16.875),
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
               d.longitude, 
@@ -4636,7 +4660,9 @@ function App() {
               'transformer'
             );
             const fadeProgress = getAssetFadeProgress(d);
-            return 4.6875 * heightScale * staggeredScale * fadeProgress;  // 25% of base height (23.4375 * 0.2 = 4.6875)
+            const baseHeight = 23.4375 * heightScale * staggeredScale * fadeProgress;
+            const capHeight = 4.6875 * heightScale * staggeredScale * fadeProgress;
+            return baseHeight + capHeight;
           },
           getFillColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
@@ -4652,9 +4678,9 @@ function App() {
             const health = d.health_score != null ? d.health_score : 100;
             const load = d.load_percent != null ? d.load_percent : 0;
             
-            if (load > 85 || health < 50) return [239, 68, 68, 220 * staggeredScale * fadeProgress]; // Red
-            if (load > 70 || health < 70) return [251, 191, 36, 220 * staggeredScale * fadeProgress]; // Yellow
-            return [34, 197, 94, 220 * staggeredScale * fadeProgress]; // Green
+            if (load > 85 || health < 50) return [239, 68, 68, 220 * staggeredScale * fadeProgress];
+            if (load > 70 || health < 70) return [251, 191, 36, 220 * staggeredScale * fadeProgress];
+            return [34, 197, 94, 220 * staggeredScale * fadeProgress];
           },
           getLineColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
@@ -4673,7 +4699,6 @@ function App() {
             if (load > 70 || health < 70) return [217, 119, 6, 180 * staggeredScale * fadeProgress];
             return [21, 128, 61, 180 * staggeredScale * fadeProgress];
           },
-          radius: 8.4375,  // 75% of previous cap radius (11.25 * 0.75, 25% area reduction)
           elevationScale: 1,
           lineWidthMinPixels: 2,
           transitions: {
@@ -4747,35 +4772,36 @@ function App() {
       batchesByType.flatMap(batch =>
         batch.poles.length > 0 ? [
         // Poles base layer - BATCHED: One layer per circuit batch
-        new ColumnLayer({
+        // deck.gl v9: Using PolygonLayer instead of ColumnLayer
+        new PolygonLayer({
           id: `poles-individual-base-${batch.batchId}`,
           data: batch.poles,
           pickable: true,
           extruded: true,
-          diskResolution: 6,  // Reduced from 8 for GPU performance (30k poles)
-          flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
+          wireframe: true,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPosition: (d: Asset) => [d.longitude, d.latitude, 0],
+          getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 25),
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
             const fadeProgress = getAssetFadeProgress(d);
-            return 40 * heightScale * staggeredScale * fadeProgress;  // Rise animation
+            return 40 * heightScale * staggeredScale * fadeProgress;
           },
           getFillColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
             const fadeProgress = getAssetFadeProgress(d);
-            return [136, 128, 255, 200 * staggeredScale * fadeProgress];  // Fade-in
+            return [136, 128, 255, 200 * staggeredScale * fadeProgress];
           },
           getLineColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
             const fadeProgress = getAssetFadeProgress(d);
-            return [255, 140, 60, 100 * staggeredScale * fadeProgress];  // Fade-in
+            return [255, 140, 60, 100 * staggeredScale * fadeProgress];
           },
-          radius: 12.5,  // 75% total reduction
+          elevationScale: 1,
+          lineWidthMinPixels: 2,
           transitions: {
             getElevation: {
               duration: 400,
-              easing: t => t * t * (3 - 2 * t)  // Smooth ease-in-out
+              easing: t => t * t * (3 - 2 * t)
             },
             getFillColor: {
               duration: 400,
@@ -4803,7 +4829,7 @@ function App() {
               setSelectedAsset(info.object);
               setSelectedAssets(new Set([info.object.id]));
               setSelectedAssetPosition(null);
-              setHoveredAsset(null); // Clear hover when asset is selected
+              setHoveredAsset(null);
               setHoverPosition(null);
               setClickPosition({ x: info.x, y: info.y });
             }
@@ -4820,40 +4846,36 @@ function App() {
         }
         }),
         // Poles health cap - BATCHED: Cap on top for health indication
-        new ColumnLayer({
+        // deck.gl v9: Using PolygonLayer - cap rendered with total height
+        new PolygonLayer({
           id: `poles-individual-cap-${batch.batchId}`,
           data: batch.poles,
           pickable: false,
           extruded: true,
-          diskResolution: 6,  // Match base shape
-          flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
+          wireframe: true,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPosition: (d: Asset) => [
-            d.longitude,
-            d.latitude,
-            40 * heightScale  // Start cap at top of base (40m base height)
-          ],
+          getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 18.75),
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
             const fadeProgress = getAssetFadeProgress(d);
-            return 10 * heightScale * staggeredScale * fadeProgress;  // Rise animation
+            const baseHeight = 40 * heightScale * staggeredScale * fadeProgress;
+            const capHeight = 10 * heightScale * staggeredScale * fadeProgress;
+            return baseHeight + capHeight;
           },
           getFillColor: (d: Asset) => {
             const health = d.health_score !== undefined ? d.health_score : 75;
             const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
             const fadeProgress = getAssetFadeProgress(d);
             const alpha = 220 * staggeredScale * fadeProgress;
-            // Health-based status colors
             if (d.status && (d.status.includes('Poor') || d.status.includes('Critical'))) {
-              return [239, 68, 68, alpha]; // Red for Poor/Critical
+              return [239, 68, 68, alpha];
             }
             if (d.status && d.status.includes('Fair')) {
-              return [251, 191, 36, alpha]; // Yellow/Orange for Fair
+              return [251, 191, 36, alpha];
             }
-            // Fallback to health score
-            if (health < 60) return [239, 68, 68, alpha];  // Red
-            if (health < 80) return [251, 191, 36, alpha];  // Yellow
-            return [34, 197, 94, alpha];  // Green
+            if (health < 60) return [239, 68, 68, alpha];
+            if (health < 80) return [251, 191, 36, alpha];
+            return [34, 197, 94, alpha];
           },
           getLineColor: (d: Asset) => {
             const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
@@ -4870,7 +4892,6 @@ function App() {
             if (health < 80) return [217, 119, 6, 180 * staggeredScale * fadeProgress];
             return [21, 128, 61, 180 * staggeredScale * fadeProgress];
           },
-          radius: 9.375,  // 75% of base radius (12.5 * 0.75)
           elevationScale: 1,
           lineWidthMinPixels: 2,
           transitions: {
@@ -4884,7 +4905,6 @@ function App() {
             }
           },
           updateTriggers: {
-            getPosition: [assetScaleAnimation],
             getElevation: [assetScaleAnimation],
             getFillColor: [assetScaleAnimation],
             getLineColor: [assetScaleAnimation]
@@ -4898,38 +4918,34 @@ function App() {
 
     // Meters (rectangular columns - emerge LAST at highest zoom)
     // ZOOM-BASED VISIBILITY: Show individual meters only at maximum zoom (field inspection level)
-    // SHAPE: OPTIMIZED ColumnLayer with diskResolution=4 for square/rectangular meter housing
-    // PERFORMANCE: 3-5x faster than PolygonLayer - GPU-optimized geometry
+    // SHAPE: deck.gl v9: Using PolygonLayer instead of ColumnLayer for proper rendering
     // EMERGENCE: Meters appear LAST - delayed start + slowest emergence
     ...(layersVisible.meters && viewState.zoom > 13.5 ?
       batchesByType.flatMap(batch =>
         batch.meters.length > 0 ? [
-      new ColumnLayer({
+      new PolygonLayer({
         id: `meters-${batch.batchId}`,
         data: batch.meters,
         pickable: true,
         extruded: true,
-        diskResolution: 4,  // Square base for rectangular meter housing
-        flatShading: true,   // Blocky appearance for meter boxes
+        wireframe: true,
         coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-        getPosition: (d: Asset) => [d.longitude, d.latitude, 0],
+        getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 10),
         getElevation: (d: Asset) => {
-          const baseHeight = 6; // Operational visibility height (6m)
+          const baseHeight = 6;
           const fadeProgress = getAssetFadeProgress(d);
-          return baseHeight * heightScale * assetScaleAnimation * fadeProgress;  // Rise animation
+          return baseHeight * heightScale * assetScaleAnimation * fadeProgress;
         },
         getFillColor: (d: Asset) => {
           const fadeProgress = getAssetFadeProgress(d);
           const baseAlpha = 220 * assetScaleAnimation * fadeProgress;
-          return [147, 51, 234, baseAlpha]; // Purple with fade-in
+          return [147, 51, 234, baseAlpha];
         },
         getLineColor: (d: Asset) => {
           const fadeProgress = getAssetFadeProgress(d);
           const lineAlpha = 180 * assetScaleAnimation * fadeProgress;
-          return [107, 33, 168, lineAlpha];  // Purple outline with fade-in
+          return [107, 33, 168, lineAlpha];
         },
-        radius: 5.0,  // 10m diameter for ops center visibility
-        angle: 45,    // Rotate 45° for diamond orientation
         elevationScale: 1,
         lineWidthMinPixels: 2,
         material: {
@@ -4941,7 +4957,7 @@ function App() {
         transitions: {
           getElevation: {
             duration: 400,
-            easing: t => t * t * (3 - 2 * t)  // Smooth ease-in-out
+            easing: t => t * t * (3 - 2 * t)
           },
           getFillColor: {
             duration: 400,
@@ -4969,7 +4985,7 @@ function App() {
               setSelectedAsset(info.object);
               setSelectedAssets(new Set([info.object.id]));
               setSelectedAssetPosition(null);
-              setHoveredAsset(null); // Clear hover when asset is selected
+              setHoveredAsset(null);
               setHoverPosition(null);
               setClickPosition({ x: info.x, y: info.y });
             }
@@ -5395,15 +5411,18 @@ function App() {
     ] : []),
 
     // Engineering: Vegetation Risk from PostGIS (3D tree columns)
+    // deck.gl v9: Using PolygonLayer instead of ColumnLayer
     ...(layersVisible.vegetation && spatialData.vegetation.length > 0 ? [
-      new ColumnLayer({
+      new PolygonLayer({
         id: 'vegetation-risk-3d',
         data: spatialData.vegetation,
-        diskResolution: 6,
-        flatShading: true,  // deck.gl v9 fix: ensures all faces render properly
-        radius: currentZoom > 15 ? 4 : currentZoom > 13 ? 6 : 8,
         extruded: layersVisible.enable3D,
-        getPosition: (d: any) => [d.longitude || d.lon, d.latitude || d.lat],
+        wireframe: true,
+        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+        getPolygon: (d: any) => {
+          const radius = currentZoom > 15 ? 8 : currentZoom > 13 ? 12 : 16;
+          return getOctagonPolygon(d.longitude || d.lon, d.latitude || d.lat, radius);
+        },
         getFillColor: (d: any) => {
           const risk = d.risk_score || d.proximity_risk || 0.5;
           if (risk > 0.7) return [220, 38, 38, 200];
