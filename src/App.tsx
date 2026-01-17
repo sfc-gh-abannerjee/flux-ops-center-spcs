@@ -2577,16 +2577,16 @@ function App() {
             return;
           }
           
-          // Conservative loading: Max 20 circuits per viewport update (was 60)
-          const circuitsToLoad = newCircuits.slice(0, 20);
+          // Conservative loading: Max 15 circuits per viewport update (reduced from 20 for stability)
+          const circuitsToLoad = newCircuits.slice(0, 15);
           
           console.log(`   🔄 Loading ${circuitsToLoad.length}/${newCircuits.length} circuits (${loadedCircuitsRef.current.size} already loaded)...`);
           
           // Mark circuits as loading
           circuitsToLoad.forEach(cid => loadingCircuitsRef.current.add(cid));
           
-          // PARALLEL LOADING: Split into 10-circuit batches for finer control
-          const batchSize = 10; // Smaller batches = more control over limits
+          // PARALLEL LOADING: Split into 5-circuit batches (reduced from 10 for stability)
+          const batchSize = 5; // Smaller batches = less chance of timeout
           const batches: string[][] = [];
           for (let i = 0; i < circuitsToLoad.length; i += batchSize) {
             batches.push(circuitsToLoad.slice(i, i + batchSize));
@@ -2596,23 +2596,35 @@ function App() {
           const batchPromises = batches.map(async (batch, idx) => {
             const circuitParam = batch.join(',');
             
-            // Helper: Add timeout to fetch requests
-            const fetchWithTimeout = (url: string, timeout = 30000) => {
-              return Promise.race([
-                fetch(url),
-                new Promise<Response>((_, reject) => 
-                  setTimeout(() => reject(new Error('Request timeout')), timeout)
-                )
-              ]);
+            // Helper: Add timeout and retry to fetch requests (Engineering: handle network instability)
+            const fetchWithRetry = async (url: string, timeout = 45000, maxRetries = 2): Promise<Response> => {
+              for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                  const controller = new AbortController();
+                  const timeoutId = setTimeout(() => controller.abort(), timeout);
+                  
+                  const response = await fetch(url, { signal: controller.signal });
+                  clearTimeout(timeoutId);
+                  return response;
+                } catch (err: any) {
+                  if (attempt < maxRetries && (err.name === 'AbortError' || err.message?.includes('timeout'))) {
+                    console.log(`   ⚠️ Batch ${idx + 1} attempt ${attempt + 1} failed, retrying...`);
+                    await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // Backoff: 1s, 2s
+                    continue;
+                  }
+                  throw err;
+                }
+              }
+              throw new Error('Request failed after retries');
             };
             
             // Load assets and topology in parallel for this circuit batch
             const [assetsData, topologyData] = await Promise.all([
-              fetchWithTimeout(`/api/assets?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
+              fetchWithRetry(`/api/assets?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
                 if (!r.ok) throw new Error(`Assets HTTP ${r.status}: ${r.statusText}`);
                 return r.json();
               }),
-              fetchWithTimeout(`/api/topology?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
+              fetchWithRetry(`/api/topology?circuits=${encodeURIComponent(circuitParam)}`).then(async r => {
                 if (!r.ok) throw new Error(`Topology HTTP ${r.status}: ${r.statusText}`);
                 return r.json();
               })
