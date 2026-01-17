@@ -1086,7 +1086,8 @@ async def get_assets(
                         asset_id, asset_name, asset_type,
                         latitude, longitude,
                         load_percent, health_score,
-                        status, voltage, circuit_id
+                        status, voltage, circuit_id,
+                        rotation_rad
                     FROM grid_assets_cache
                     {where_clause}
                     ORDER BY asset_type, asset_id
@@ -1111,6 +1112,7 @@ async def get_assets(
                         'STATUS': row['status'],
                         'VOLTAGE': row['voltage'],
                         'CIRCUIT_ID': row['circuit_id'],
+                        'ROTATION_RAD': float(row['rotation_rad']) if row['rotation_rad'] is not None else 0,
                         'COMMISSIONED_DATE': None,
                         'USAGE_KWH': None,
                         'POLE_HEIGHT_FT': None,
@@ -2894,65 +2896,78 @@ async def get_power_lines_layer(
     max_lon: float = Query(-94.9, description="Viewport max longitude"),
     min_lat: float = Query(29.4, description="Viewport min latitude"),
     max_lat: float = Query(30.2, description="Viewport max latitude"),
-    limit: int = Query(1000, description="Max features to return")
+    zoom: int = Query(12, description="Map zoom level for LOD selection"),
+    limit: int = Query(3000, description="Max features to return")
 ):
     """
-    Engineering: Return power lines with in-memory caching for instant viewport queries.
-    First request loads all 5K lines, subsequent requests filter in Python (<5ms).
+    Engineering: Return power lines using PostGIS LOD (Level of Detail) optimization.
+    
+    Zoom-based LOD selection:
+    - zoom < 12: power_lines_lod_overview (major lines, ~96% vertex reduction)
+    - zoom 12-14: power_lines_lod_mid (all lines, ~88% vertex reduction)  
+    - zoom >= 15: power_lines_spatial (full detail)
+    
+    Uses PostGIS GIST spatial index for fast viewport queries (<50ms).
     """
     if not postgres_pool:
         raise HTTPException(status_code=503, detail="Postgres not configured")
     
     start = time.time()
     
+    # Determine LOD table based on zoom
+    if zoom < 12:
+        lod_table = "power_lines_lod_overview"
+        lod_level = "overview"
+    elif zoom < 15:
+        lod_table = "power_lines_lod_mid"
+        lod_level = "mid"
+    else:
+        lod_table = "power_lines_spatial"
+        lod_level = "full"
+    
     try:
-        cached = await spatial_cache.get_power_lines(min_lon, max_lon, min_lat, max_lat, limit)
-        if cached is not None:
-            return {
-                "type": "power_lines",
-                "features": cached,
-                "count": len(cached),
-                "query_time_ms": round((time.time() - start) * 1000, 2),
-                "cache_hit": True
-            }
-        
         async with postgres_pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT power_line_id, class, length_meters, ST_AsGeoJSON(geom) as geometry
-                FROM power_lines_spatial
-                LIMIT 10000
-            """)
+            # Use PostGIS spatial index with ST_Intersects for efficient viewport query
+            rows = await conn.fetch(f"""
+                SELECT 
+                    power_line_id, 
+                    class, 
+                    length_meters,
+                    ST_AsGeoJSON(geom) as geometry
+                FROM {lod_table}
+                WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+                ORDER BY length_meters DESC
+                LIMIT $5
+            """, min_lon, min_lat, max_lon, max_lat, limit)
             
             import json as json_lib
-            all_features = []
+            features = []
+            total_vertices = 0
             for row in rows:
                 geom_str = row["geometry"]
                 if geom_str:
                     geom = json_lib.loads(geom_str)
-                    if geom.get("coordinates"):
-                        all_features.append({
+                    coords = geom.get("coordinates", [])
+                    if coords:
+                        total_vertices += len(coords)
+                        features.append({
                             "id": row["power_line_id"],
-                            "path": geom["coordinates"],
+                            "path": coords,
                             "class": row["class"],
                             "length_m": float(row["length_meters"]) if row["length_meters"] else 0
                         })
             
-            await spatial_cache.set_power_lines(all_features)
-            
-            features = []
-            for pl in all_features:
-                if len(features) >= limit:
-                    break
-                path = pl.get("path", [])
-                if any(min_lon <= c[0] <= max_lon and min_lat <= c[1] <= max_lat for c in path):
-                    features.append(pl)
+            query_time_ms = round((time.time() - start) * 1000, 2)
             
             return {
                 "type": "power_lines",
                 "features": features,
                 "count": len(features),
-                "query_time_ms": round((time.time() - start) * 1000, 2),
-                "cache_hit": False
+                "total_vertices": total_vertices,
+                "lod_level": lod_level,
+                "lod_table": lod_table,
+                "zoom": zoom,
+                "query_time_ms": query_time_ms
             }
     
     except Exception as e:

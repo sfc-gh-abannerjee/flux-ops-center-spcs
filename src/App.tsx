@@ -56,23 +56,14 @@ const HOUSTON_LAT = 29.7604;
 const METERS_TO_DEG_LON = 1 / 111320 / Math.cos(HOUSTON_LAT * Math.PI / 180);
 const METERS_TO_DEG_LAT = 1 / 110540;
 
-// Generate street-aligned rotation from position (deterministic pseudo-random)
-// Houston grid is roughly 45° rotated, with some variation
-function getStreetRotation(lon: number, lat: number): number {
-  const hash = Math.sin(lon * 12345.6789) * Math.cos(lat * 98765.4321);
-  const baseAngle = Math.PI / 4; // 45° base for Houston grid
-  const variation = (hash - Math.floor(hash)) * Math.PI / 6; // ±30° variation
-  return baseAngle + variation;
-}
-
-function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation?: number): number[][] {
+// Rotation from backend is computed from nearest power line bearing (PostGIS ST_Azimuth)
+// Fallback to 0 (north-aligned) if no rotation data available
+function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
   const halfLon = (sizeMeters * METERS_TO_DEG_LON) / 2;
   const halfLat = (sizeMeters * METERS_TO_DEG_LAT) / 2;
-  const angle = rotation ?? getStreetRotation(centerLon, centerLat);
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
   
-  // Rotated square corners
   const corners = [
     [-halfLon, -halfLat],
     [halfLon, -halfLat],
@@ -90,13 +81,12 @@ function getSquarePolygon(centerLon: number, centerLat: number, sizeMeters: numb
   ];
 }
 
-function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: number, sides: number, rotation?: number): number[][] {
+function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: number, sides: number, rotation: number = 0): number[][] {
   const radiusLon = (sizeMeters * METERS_TO_DEG_LON) / 2;
   const radiusLat = (sizeMeters * METERS_TO_DEG_LAT) / 2;
-  const baseRotation = rotation ?? getStreetRotation(centerLon, centerLat);
   const vertices: number[][] = [];
   for (let i = 0; i < sides; i++) {
-    const angle = (Math.PI * 2 / sides) * i + baseRotation;
+    const angle = (Math.PI * 2 / sides) * i + rotation;
     vertices.push([
       centerLon + radiusLon * Math.cos(angle),
       centerLat + radiusLat * Math.sin(angle)
@@ -106,8 +96,8 @@ function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: numbe
   return vertices;
 }
 
-function getOctagonPolygon(centerLon: number, centerLat: number, sizeMeters: number): number[][] {
-  return getPolygonShape(centerLon, centerLat, sizeMeters, 8);
+function getOctagonPolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
+  return getPolygonShape(centerLon, centerLat, sizeMeters, 8, rotation);
 }
 
 // PERFORMANCE: Pre-compute common colors to avoid alpha() calls in render
@@ -474,8 +464,8 @@ function getPyramidPolygon(centerLon: number, centerLat: number, sizeMeters: num
   ];
 }
 
-// Helper function to generate hexagon polygon (for substations)
-function getHexagonPolygon(centerLon: number, centerLat: number, sizeMeters: number): number[][] {
+// Helper function to generate hexagon polygon (for substations and poles)
+function getHexagonPolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
   const metersToDegreesLon = 1 / 111320 / Math.cos(29.7604 * Math.PI / 180);
   const metersToDegreesLat = 1 / 110540;
   
@@ -484,7 +474,7 @@ function getHexagonPolygon(centerLon: number, centerLat: number, sizeMeters: num
   
   const vertices: number[][] = [];
   for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 3) * i; // 60 degrees between vertices
+    const angle = (Math.PI / 3) * i + rotation; // 60 degrees between vertices + rotation
     vertices.push([
       centerLon + radiusLon * Math.cos(angle),
       centerLat + radiusLat * Math.sin(angle)
@@ -511,6 +501,7 @@ interface Asset {
   pole_height_ft?: number;
   circuit_id?: string;  // CIRCUIT_ID from source tables for utility-grade clustering
   loadedAt?: number;  // Timestamp for fade-in animation
+  rotation_rad?: number;  // Rotation from nearest power line bearing (computed by PostGIS)
 }
 
 interface SubstationStatus {
@@ -1129,13 +1120,17 @@ function App() {
   }>({ powerLines: [], vegetation: [] });
   const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false });
 
-  const loadSpatialLayer = useCallback(async (layerType: 'powerLines' | 'vegetation') => {
+  // Track last loaded zoom level for power lines LOD
+  const [powerLinesLoadedZoom, setPowerLinesLoadedZoom] = useState<number | null>(null);
+  
+  const loadSpatialLayer = useCallback(async (layerType: 'powerLines' | 'vegetation', zoom?: number) => {
     if (spatialLoading[layerType]) return;
     setSpatialLoading(prev => ({ ...prev, [layerType]: true }));
     
     try {
+      // Engineering: Pass zoom level for LOD-based power line queries
       const endpoints: Record<string, string> = {
-        powerLines: '/api/spatial/layers/power-lines',
+        powerLines: `/api/spatial/layers/power-lines?zoom=${Math.floor(zoom || 12)}`,
         vegetation: '/api/spatial/layers/vegetation'
       };
       
@@ -1144,7 +1139,14 @@ function App() {
       const data = await response.json();
       
       setSpatialData(prev => ({ ...prev, [layerType]: data.features || data }));
-      console.log(`✅ Loaded ${layerType}: ${(data.features || data).length} features`);
+      
+      // Track loaded zoom for power lines LOD
+      if (layerType === 'powerLines' && zoom) {
+        setPowerLinesLoadedZoom(zoom);
+      }
+      
+      const lodInfo = data.lod_level ? ` (LOD: ${data.lod_level}, ${data.total_vertices?.toLocaleString() || '?'} vertices)` : '';
+      console.log(`✅ Loaded ${layerType}: ${(data.features || data).length} features${lodInfo} in ${data.query_time_ms}ms`);
     } catch (error) {
       console.error(`Failed to load ${layerType}:`, error);
     } finally {
@@ -1152,11 +1154,29 @@ function App() {
     }
   }, [spatialLoading]);
 
+  // Engineering: Load power lines with zoom-based LOD
   useEffect(() => {
     if (layersVisible.powerLines && spatialData.powerLines.length === 0 && !spatialLoading.powerLines) {
-      loadSpatialLayer('powerLines');
+      loadSpatialLayer('powerLines', currentZoom);
     }
-  }, [layersVisible.powerLines, spatialData.powerLines.length, spatialLoading.powerLines, loadSpatialLayer]);
+  }, [layersVisible.powerLines, spatialData.powerLines.length, spatialLoading.powerLines, loadSpatialLayer, currentZoom]);
+
+  // Engineering: Reload power lines when zoom crosses LOD thresholds
+  useEffect(() => {
+    if (!layersVisible.powerLines || spatialLoading.powerLines || powerLinesLoadedZoom === null) return;
+    
+    // Determine current and loaded LOD levels
+    const getCurrentLod = (z: number) => z < 12 ? 'overview' : z < 15 ? 'mid' : 'full';
+    const currentLod = getCurrentLod(currentZoom);
+    const loadedLod = getCurrentLod(powerLinesLoadedZoom);
+    
+    // Reload if LOD level changed
+    if (currentLod !== loadedLod) {
+      console.log(`🔄 Power lines LOD change: ${loadedLod} → ${currentLod} (zoom ${powerLinesLoadedZoom.toFixed(1)} → ${currentZoom.toFixed(1)})`);
+      setSpatialData(prev => ({ ...prev, powerLines: [] }));
+      loadSpatialLayer('powerLines', currentZoom);
+    }
+  }, [currentZoom, powerLinesLoadedZoom, layersVisible.powerLines, spatialLoading.powerLines, loadSpatialLayer]);
 
   useEffect(() => {
     if (layersVisible.vegetation && spatialData.vegetation.length === 0 && !spatialLoading.vegetation) {
@@ -1405,7 +1425,8 @@ function App() {
               load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
               commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
               usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
-              circuit_id: row.CIRCUIT_ID
+              circuit_id: row.CIRCUIT_ID,
+              rotation_rad: row.ROTATION_RAD
             }));
             
             // Substations are loaded separately in the dedicated block above (line 965)
@@ -1443,7 +1464,8 @@ function App() {
             load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
             commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
             usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
-            circuit_id: row.CIRCUIT_ID
+            circuit_id: row.CIRCUIT_ID,
+            rotation_rad: row.ROTATION_RAD
           }));
           
           // Substations are loaded separately in the dedicated block above (line 965)
@@ -4579,7 +4601,7 @@ function App() {
           extruded: true,
           wireframe: true,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 30),
+          getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 30, d.rotation_rad || 0),
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
               d.longitude, 
@@ -4672,7 +4694,7 @@ function App() {
           wireframe: true,
           pickable: false,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 16.875),
+          getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 16.875, d.rotation_rad || 0),
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(
               d.longitude, 
@@ -4803,7 +4825,7 @@ function App() {
           extruded: true,
           wireframe: true,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 25),
+          getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 25, d.rotation_rad || 0),
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
             const fadeProgress = getAssetFadeProgress(d);
@@ -4877,7 +4899,7 @@ function App() {
           extruded: true,
           wireframe: true,
           coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 18.75),
+          getPolygon: (d: Asset) => getHexagonPolygon(d.longitude, d.latitude, 18.75, d.rotation_rad || 0),
           getElevation: (d: Asset) => {
             const staggeredScale = getStaggerDelay(d.longitude, d.latitude, assetScaleAnimation, d.health_score, undefined, 'pole');
             const fadeProgress = getAssetFadeProgress(d);
@@ -4953,7 +4975,7 @@ function App() {
         extruded: true,
         wireframe: true,
         coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-        getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 10),
+        getPolygon: (d: Asset) => getSquarePolygon(d.longitude, d.latitude, 10, d.rotation_rad || 0),
         getElevation: (d: Asset) => {
           const baseHeight = 6;
           const fadeProgress = getAssetFadeProgress(d);
@@ -5367,17 +5389,23 @@ function App() {
       })
     ] : []),
 
-    // Engineering: Power Lines from PostGIS (PathLayer with glow effect)
+    // Engineering: Power Lines from PostGIS with LOD + class-based styling
+    // Major lines (power_line): Orange, thicker
+    // Minor lines (minor_line): Yellow, thinner
     ...(layersVisible.powerLines && spatialData.powerLines.length > 0 ? [
       new PathLayer({
         id: 'power-lines-glow',
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
-        getColor: [255, 180, 60, 80],
-        getWidth: 12,
+        // Class-based glow color: brighter for major lines
+        getColor: (d: any) => d.class === 'power_line' 
+          ? [255, 160, 40, 100]   // Orange glow for major
+          : [255, 200, 100, 60],  // Softer yellow for minor
+        // Class-based width: wider glow for major lines
+        getWidth: (d: any) => d.class === 'power_line' ? 14 : 8,
         widthUnits: 'pixels',
-        widthMinPixels: 8,
-        widthMaxPixels: 20,
+        widthMinPixels: 6,
+        widthMaxPixels: 24,
         capRounded: true,
         jointRounded: true,
         billboard: true
@@ -5386,11 +5414,15 @@ function App() {
         id: 'power-lines-core',
         data: spatialData.powerLines,
         getPath: (d: any) => d.coordinates || d.path,
-        getColor: [255, 180, 60, 255],
-        getWidth: 3,
+        // Class-based core color: distinct orange vs yellow
+        getColor: (d: any) => d.class === 'power_line'
+          ? [255, 140, 0, 255]    // Deep orange for major (transmission)
+          : [255, 200, 80, 220],  // Yellow for minor (distribution)
+        // Class-based width: major lines more prominent
+        getWidth: (d: any) => d.class === 'power_line' ? 4 : 2,
         widthUnits: 'pixels',
         widthMinPixels: 2,
-        widthMaxPixels: 6,
+        widthMaxPixels: 8,
         capRounded: true,
         jointRounded: true,
         pickable: true,
@@ -5401,9 +5433,9 @@ function App() {
             const powerLine: SpatialPowerLine = {
               id: info.object.id || `line-${info.index}`,
               type: 'power_line',
-              line_name: info.object.line_name,
-              voltage_kv: info.object.voltage_kv,
-              length_km: info.object.length_km,
+              line_name: info.object.class === 'power_line' ? 'Transmission Line' : 'Distribution Line',
+              voltage_kv: info.object.class === 'power_line' ? 138 : 12.5,  // Typical voltages
+              length_km: info.object.length_m ? info.object.length_m / 1000 : undefined,
               conductor_type: info.object.conductor_type,
               installation_year: info.object.installation_year,
               coordinates: info.object.coordinates || info.object.path
@@ -5418,9 +5450,9 @@ function App() {
             const powerLine: SpatialPowerLine = {
               id: info.object.id || `line-${info.index}`,
               type: 'power_line',
-              line_name: info.object.line_name,
-              voltage_kv: info.object.voltage_kv,
-              length_km: info.object.length_km,
+              line_name: info.object.class === 'power_line' ? 'Transmission Line' : 'Distribution Line',
+              voltage_kv: info.object.class === 'power_line' ? 138 : 12.5,
+              length_km: info.object.length_m ? info.object.length_m / 1000 : undefined,
               coordinates: info.object.coordinates || info.object.path
             };
             setHoveredSpatialObject(powerLine);
