@@ -24,3 +24,11 @@ export {
 } from './useFetch';
 
 export type { FetchState, UseFetchOptions } from './useFetch';
+
+export {
+  useWeatherLayers,
+  useHeatmapLayers,
+  usePowerLineGlowLayers,
+} from './useLayers';
+
+export type { WeatherLayerProps, HeatmapLayerProps, PowerLineGlowProps } from './useLayers';

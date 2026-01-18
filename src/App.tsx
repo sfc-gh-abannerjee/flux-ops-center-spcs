@@ -25,6 +25,7 @@ const ChatDrawer = lazy(() => import('./ChatDrawer'));
 import DraggableFab from './DraggableFab';
 import { LAYOUT } from './layoutConstants';
 import { logger } from './utils/logger';
+import { useWeatherLayers, useHeatmapLayers, usePowerLineGlowLayers } from './hooks';
 import type { 
   Asset,
   SubstationStatus,
@@ -4384,55 +4385,30 @@ function App() {
     });
   }, [circuitBatches]);  // Only recalculates when batches added/removed, NOT on viewport changes!
 
+  // Performance: Independent layer hooks - only recalculate on their specific dependencies
+  const weatherLayers = useWeatherLayers({
+    weather,
+    weatherTimelineIndex,
+    visible: layersVisible.weather
+  });
+
+  const heatmapLayers = useHeatmapLayers({
+    heatmapData,
+    visible: layersVisible.heatmap
+  });
+
+  const powerLineGlowLayers = usePowerLineGlowLayers({
+    powerLines: spatialData.powerLines,
+    currentZoom,
+    visible: layersVisible.powerLines
+  });
+
   const layers = useMemo(() => [
-    // FLUX WEATHER INTELLIGENCE - Broadcast-quality weather visualization
-    // Server-rendered smooth gradient image displayed as single texture (GPU-optimized)
-    ...(layersVisible.weather && weather.length > 0 ? (() => {
-      const currentTemp = weather[weatherTimelineIndex]?.TEMP_F || 75;
-      
-      // Houston metro bounds for image overlay
-      const bounds: [[number, number], [number, number]] = [
-        [-96.1, 29.4],  // Southwest corner [lon, lat]
-        [-94.9, 30.2]   // Northeast corner [lon, lat]
-      ];
-      
-      // Generate weather image URL with correct aspect ratio for Houston bounds
-      // Bounds span 1.2° lon × 0.8° lat = 1.5:1 ratio → use 1536×1024 pixels
-      const imageUrl = `/api/weather/image?temp_f=${currentTemp}&width=1536&height=1024&t=${weatherTimelineIndex}`;
+    // Performance: Weather layer from independent hook
+    ...weatherLayers,
 
-      return [
-        new BitmapLayer({
-          id: 'weather-gradient',
-          bounds: bounds,
-          image: imageUrl,
-          opacity: 0.7,
-          pickable: false,
-          coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-          updateTriggers: {
-            image: weatherTimelineIndex  // Regenerate image when timeline changes
-          }
-        })
-      ];
-    })() : []),
-
-    // Heatmap layer for meter usage density (GPU-optimized)
-    ...(layersVisible.heatmap ? [new HeatmapLayer({
-      id: 'usage-heatmap',
-      data: heatmapData,
-      getPosition: (d: { position: [number, number] }) => d.position,
-      getWeight: (d: { weight: number }) => d.weight,
-      radiusPixels: 25,
-      intensity: 1.5,
-      threshold: 0.02,
-      aggregation: 'SUM',
-      colorRange: [
-        [255, 255, 178, 25],
-        [254, 204, 92, 85],
-        [253, 141, 60, 170],
-        [240, 59, 32, 255],
-        [189, 0, 38, 255]
-      ]
-    })] : []),
+    // Performance: Heatmap layer from independent hook
+    ...heatmapLayers,
 
     // ZOOM-ADAPTIVE NETWORK TOPOLOGY: Three-tier hierarchical visualization
     // Metro view (<9): Service area polygons | Neighborhood (9-11.5): Distribution feeders | Street (>11.5): Full network
@@ -5688,7 +5664,8 @@ function App() {
     // Minor lines (minor_line): Cyan with electric glow - distribution feeders
     // NOTE: Green connections on map are TOPOLOGY LINKS (ArcLayer), not power lines
     // Zoom-adaptive widths: thinner at low zooms to avoid overwhelming the map
-    // OPTIMIZED: Uses PathLayer memoization and stable data references
+    // Performance: Glow layers extracted to usePowerLineGlowLayers hook
+    ...powerLineGlowLayers,
     ...(layersVisible.powerLines && spatialData.powerLines.length > 0 ? (() => {
       // Scale factor: 0.5 at zoom 9, 1.0 at zoom 14+
       const zoomScale = Math.min(1, Math.max(0.4, (currentZoom - 9) / 5));
@@ -5712,40 +5689,6 @@ function App() {
           billboard: true
         })
       ] : []),
-      // Outer glow layer - creates electric halo effect
-      new PathLayer({
-        id: 'power-lines-outer-glow',
-        data: spatialData.powerLines,
-        getPath: (d: SpatialPowerLine) => d.coordinates || d.path,
-        getColor: (d: SpatialPowerLine) => d.class === 'power_line' 
-          ? [255, 180, 60, 45]    // Warm orange outer glow for transmission
-          : [80, 180, 255, 40],   // Electric blue outer glow for distribution
-        getWidth: (d: SpatialPowerLine) => (d.class === 'power_line' ? 18 : 12) * zoomScale,
-        widthUnits: 'pixels',
-        widthMinPixels: 4,
-        widthMaxPixels: 24,
-        capRounded: true,
-        jointRounded: true,
-        billboard: true,
-        updateTriggers: { getWidth: currentZoom }
-      }),
-      // Inner glow layer - intensified glow near line
-      new PathLayer({
-        id: 'power-lines-inner-glow',
-        data: spatialData.powerLines,
-        getPath: (d: SpatialPowerLine) => d.coordinates || d.path,
-        getColor: (d: SpatialPowerLine) => d.class === 'power_line' 
-          ? [255, 160, 40, 100]   // Orange inner glow
-          : [100, 200, 255, 90],  // Cyan inner glow
-        getWidth: (d: SpatialPowerLine) => (d.class === 'power_line' ? 10 : 6) * zoomScale,
-        widthUnits: 'pixels',
-        widthMinPixels: 2,
-        widthMaxPixels: 14,
-        capRounded: true,
-        jointRounded: true,
-        billboard: true,
-        updateTriggers: { getWidth: currentZoom }
-      }),
       // Core line - solid visible line with improved contrast
       new PathLayer({
         id: 'power-lines-core',
@@ -5894,10 +5837,13 @@ function App() {
       })
     ] : [])
   ].filter(Boolean), [
+    // Performance: Memoized layer arrays from independent hooks
+    weatherLayers,
+    heatmapLayers,
+    powerLineGlowLayers,
+    // Remaining dependencies for layers still in this useMemo
     layersVisible,
     useClusteredView,
-    weather,
-    weatherTimelineIndex,
     meterAssets,
     visibleTopology,
     flattenedClusterData,
@@ -5911,7 +5857,6 @@ function App() {
     towerScaleAnimation,
     currentZoom,
     heightScale,
-    heatmapData,
     connectedAssets,
     assetConnectionCounts,
     spatialData
