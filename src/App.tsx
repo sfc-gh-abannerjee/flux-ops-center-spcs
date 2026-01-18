@@ -5771,71 +5771,125 @@ function App() {
       })
     ]; })() : []),
 
-    // Engineering: Vegetation Risk from PostGIS (3D tree columns)
-    // deck.gl v9: Using PolygonLayer instead of ColumnLayer
-    ...(layersVisible.vegetation && spatialData.vegetation.length > 0 ? [
-      new PolygonLayer({
-        id: 'vegetation-risk-3d',
-        data: spatialData.vegetation,
-        extruded: layersVisible.enable3D,
-        wireframe: true,
-        coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
-        getPolygon: (d: HexagonTileData) => {
-          const radius = currentZoom > 15 ? 8 : currentZoom > 13 ? 12 : 16;
-          return getOctagonPolygon(d.longitude || d.lon, d.latitude || d.lat, radius);
-        },
-        getFillColor: (d: HexagonTileData) => {
-          const risk = d.risk_score || d.proximity_risk || 0.5;
-          if (risk > 0.7) return [220, 38, 38, 200];
-          if (risk > 0.4) return [234, 179, 8, 200];
-          return [34, 197, 94, 180];
-        },
-        getElevation: (d: SpatialVegetation) => (d.height_m || d.canopy_height || 12) * (currentZoom > 15 ? 1 : currentZoom > 13 ? 1.5 : 2),
-        elevationScale: currentZoom > 15 ? 1 : currentZoom > 13 ? 1.5 : 2.5,
-        pickable: true,
-        autoHighlight: true,
-        highlightColor: [255, 255, 100, 255],
-        onClick: (info: DeckPickInfo) => {
-          if (info.object) {
-            const vegetation: SpatialVegetation = {
-              id: info.object.id || `tree-${info.index}`,
-              type: 'vegetation',
-              species: info.object.species,
-              height_m: info.object.height_m,
-              canopy_height: info.object.canopy_height,
-              risk_score: info.object.risk_score,
-              proximity_risk: info.object.proximity_risk,
-              distance_to_line_m: info.object.distance_to_line_m,
-              latitude: info.object.latitude || info.object.lat,
-              longitude: info.object.longitude || info.object.lon
-            };
-            setSelectedSpatialObject(vegetation);
-            setSpatialClickPosition({ x: info.x, y: info.y });
-            setSelectedSpatialPosition(null); // Clear stored position for new selection
-            setSelectedAsset(null);
+    // Engineering: Vegetation Risk Layer - Beautiful tree visualization with risk-based styling
+    // Uses ScatterplotLayer for smooth rendering + glow effects for high-risk trees
+    ...(layersVisible.vegetation && spatialData.vegetation.length > 0 ? (() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      type VegData = Record<string, any>;
+      
+      // Separate high-risk trees for glow effect
+      const highRiskTrees = spatialData.vegetation.filter((d: VegData) => 
+        (d.risk_score || 0) > 0.6 || d.risk_level === 'critical' || d.risk_level === 'warning'
+      );
+      
+      return [
+        // Outer glow for high-risk trees (pulsing warning effect)
+        new ScatterplotLayer({
+          id: 'vegetation-risk-glow',
+          data: highRiskTrees,
+          getPosition: (d: VegData) => d.position || [d.longitude, d.latitude],
+          getRadius: (d: VegData) => {
+            const risk = d.risk_score || 0.7;
+            const baseRadius = currentZoom > 15 ? 12 : currentZoom > 13 ? 18 : 25;
+            return baseRadius * (0.8 + risk * 0.4);
+          },
+          getFillColor: (d: VegData) => {
+            const risk = d.risk_score || 0.7;
+            if (risk > 0.8 || d.risk_level === 'critical') return [220, 38, 38, 60];  // Red glow
+            return [251, 191, 36, 50];  // Amber glow
+          },
+          radiusUnits: 'pixels',
+          radiusMinPixels: 8,
+          radiusMaxPixels: 35,
+          pickable: false,
+          antialiasing: true,
+          updateTriggers: {
+            getRadius: currentZoom
           }
-        },
-        onHover: (info: DeckPickInfo) => {
-          if (info.object) {
-            const vegetation: SpatialVegetation = {
-              id: info.object.id || `tree-${info.index}`,
-              type: 'vegetation',
-              species: info.object.species,
-              height_m: info.object.height_m,
-              risk_score: info.object.risk_score,
-              proximity_risk: info.object.proximity_risk,
-              latitude: info.object.latitude || info.object.lat,
-              longitude: info.object.longitude || info.object.lon
-            };
-            setHoveredSpatialObject(vegetation);
-            setSpatialHoverPosition({ x: info.x, y: info.y });
-          } else {
-            setHoveredSpatialObject(null);
-            setSpatialHoverPosition(null);
+        }),
+        // Main tree markers with risk-based coloring
+        new ScatterplotLayer({
+          id: 'vegetation-risk-markers',
+          data: spatialData.vegetation,
+          getPosition: (d: VegData) => d.position || [d.longitude, d.latitude],
+          getRadius: (d: VegData) => {
+            const height = d.height_m || 10;
+            const baseRadius = currentZoom > 15 ? 5 : currentZoom > 13 ? 7 : 10;
+            // Taller trees appear slightly larger
+            return baseRadius * (0.6 + (height / 30) * 0.6);
+          },
+          getFillColor: (d: VegData) => {
+            const risk = d.risk_score || 0;
+            const riskLevel = d.risk_level;
+            // Risk-based color gradient: Red (critical) → Amber (warning) → Yellow (monitor) → Green (safe)
+            if (risk > 0.8 || riskLevel === 'critical') return [220, 38, 38, 220];   // Bright red
+            if (risk > 0.6 || riskLevel === 'warning') return [251, 146, 60, 210];   // Orange
+            if (risk > 0.35 || riskLevel === 'monitor') return [234, 179, 8, 200];   // Amber
+            return [34, 197, 94, 180];   // Green (safe)
+          },
+          getLineColor: (d: VegData) => {
+            const risk = d.risk_score || 0;
+            // Darker outline for visibility
+            if (risk > 0.6) return [100, 20, 20, 255];  // Dark red outline
+            if (risk > 0.35) return [120, 80, 0, 255];  // Dark amber outline
+            return [20, 80, 40, 255];  // Dark green outline
+          },
+          lineWidthMinPixels: 1,
+          stroked: true,
+          filled: true,
+          radiusUnits: 'pixels',
+          radiusMinPixels: 3,
+          radiusMaxPixels: 15,
+          pickable: true,
+          autoHighlight: true,
+          highlightColor: [255, 255, 100, 255],
+          onClick: (info: DeckPickInfo) => {
+            if (info.object) {
+              const d = info.object as VegData;
+              const vegetation: SpatialVegetation = {
+                id: d.id || `tree-${info.index}`,
+                type: 'vegetation',
+                species: d.species || d.subtype,
+                height_m: d.height_m,
+                canopy_height: d.canopy_height,
+                risk_score: d.risk_score,
+                proximity_risk: d.proximity_risk || d.risk_score,
+                distance_to_line_m: d.distance_to_line_m,
+                latitude: d.latitude || d.position?.[1],
+                longitude: d.longitude || d.position?.[0]
+              };
+              setSelectedSpatialObject(vegetation);
+              setSpatialClickPosition({ x: info.x, y: info.y });
+              setSelectedSpatialPosition(null);
+              setSelectedAsset(null);
+            }
+          },
+          onHover: (info: DeckPickInfo) => {
+            if (info.object) {
+              const d = info.object as VegData;
+              const vegetation: SpatialVegetation = {
+                id: d.id || `tree-${info.index}`,
+                type: 'vegetation',
+                species: d.species || d.subtype,
+                height_m: d.height_m,
+                risk_score: d.risk_score,
+                proximity_risk: d.proximity_risk || d.risk_score,
+                latitude: d.latitude || d.position?.[1],
+                longitude: d.longitude || d.position?.[0]
+              };
+              setHoveredSpatialObject(vegetation);
+              setSpatialHoverPosition({ x: info.x, y: info.y });
+            } else {
+              setHoveredSpatialObject(null);
+              setSpatialHoverPosition(null);
+            }
+          },
+          updateTriggers: {
+            getRadius: currentZoom
           }
-        }
-      })
-    ] : [])
+        })
+      ];
+    })() : [])
   ].filter(Boolean), [
     // Performance: Memoized layer arrays from independent hooks
     weatherLayers,

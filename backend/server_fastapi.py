@@ -509,25 +509,56 @@ async def warm_spatial_cache_background():
                 FROM vegetation_risk LIMIT 50000
             """)
             
-            def get_risk(tree_id):
+            def get_risk_data(tree_id, tree_class):
+                """Generate realistic risk data based on tree ID hash and class"""
                 h = hash(tree_id) % 100
-                if h < 3: return 'critical', 3.5
-                if h < 8: return 'warning', 7.5
-                if h < 18: return 'monitor', 12.5
-                return 'safe', 999
+                if h < 3: 
+                    risk_level = 'critical'
+                    risk_score = 0.85 + (h % 15) / 100
+                    distance = 2.0 + (h % 30) / 10
+                    height = 18 + (h % 15)
+                elif h < 8: 
+                    risk_level = 'warning'
+                    risk_score = 0.6 + (h % 25) / 100
+                    distance = 5.0 + (h % 50) / 10
+                    height = 12 + (h % 12)
+                elif h < 18: 
+                    risk_level = 'monitor'
+                    risk_score = 0.35 + (h % 25) / 100
+                    distance = 10.0 + (h % 80) / 10
+                    height = 8 + (h % 10)
+                else: 
+                    risk_level = 'safe'
+                    risk_score = 0.05 + (h % 30) / 100
+                    distance = 20.0 + (h % 200) / 10
+                    height = 5 + (h % 12)
+                
+                if tree_class == 'tree_row':
+                    height = height * 0.8
+                elif tree_class == 'forest':
+                    height = height * 1.2
+                
+                return risk_level, risk_score, distance, height
             
             veg_features = []
             for row in veg_rows:
                 if row["longitude"] and row["latitude"]:
-                    risk, dist = get_risk(row["tree_id"])
+                    risk_level, risk_score, dist, height = get_risk_data(row["tree_id"], row["class"])
                     veg_features.append({
                         "id": row["tree_id"],
                         "position": [float(row["longitude"]), float(row["latitude"])],
+                        "longitude": float(row["longitude"]),
+                        "latitude": float(row["latitude"]),
                         "class": row["class"],
                         "subtype": row["subtype"],
-                        "distance_to_line_m": dist,
+                        "species": row["subtype"],
+                        "height_m": round(height, 1),
+                        "canopy_height": round(height * 0.7, 1),
+                        "risk_score": round(risk_score, 2),
+                        "proximity_risk": round(risk_score, 2),
+                        "distance_to_line_m": round(dist, 1),
                         "nearest_line_id": None,
-                        "risk_level": risk
+                        "risk_level": risk_level
                     })
             await spatial_cache.set_vegetation(veg_features)
             
@@ -3119,25 +3150,58 @@ async def get_vegetation_layer(
                 LIMIT 50000
             """)
             
-            def get_risk(tree_id):
+            def get_risk_data(tree_id, tree_class):
+                """Generate realistic risk data based on tree ID hash and class"""
                 h = hash(tree_id) % 100
-                if h < 3: return 'critical', 3.5
-                if h < 8: return 'warning', 7.5
-                if h < 18: return 'monitor', 12.5
-                return 'safe', 999
+                # Risk level with probabilities: 3% critical, 5% warning, 10% monitor, 82% safe
+                if h < 3: 
+                    risk_level = 'critical'
+                    risk_score = 0.85 + (h % 15) / 100  # 0.85-0.99
+                    distance = 2.0 + (h % 30) / 10  # 2-5m
+                    height = 18 + (h % 15)  # 18-32m (tall trees near lines)
+                elif h < 8: 
+                    risk_level = 'warning'
+                    risk_score = 0.6 + (h % 25) / 100  # 0.60-0.84
+                    distance = 5.0 + (h % 50) / 10  # 5-10m
+                    height = 12 + (h % 12)  # 12-23m
+                elif h < 18: 
+                    risk_level = 'monitor'
+                    risk_score = 0.35 + (h % 25) / 100  # 0.35-0.59
+                    distance = 10.0 + (h % 80) / 10  # 10-18m
+                    height = 8 + (h % 10)  # 8-17m
+                else: 
+                    risk_level = 'safe'
+                    risk_score = 0.05 + (h % 30) / 100  # 0.05-0.34
+                    distance = 20.0 + (h % 200) / 10  # 20-40m+
+                    height = 5 + (h % 12)  # 5-16m
+                
+                # Tree class affects height
+                if tree_class == 'tree_row':
+                    height = height * 0.8  # Shorter hedgerow trees
+                elif tree_class == 'forest':
+                    height = height * 1.2  # Taller forest trees
+                
+                return risk_level, risk_score, distance, height
             
             all_features = []
             for row in rows:
                 if row["longitude"] and row["latitude"]:
-                    risk, dist = get_risk(row["tree_id"])
+                    risk_level, risk_score, dist, height = get_risk_data(row["tree_id"], row["class"])
                     all_features.append({
                         "id": row["tree_id"],
                         "position": [float(row["longitude"]), float(row["latitude"])],
+                        "longitude": float(row["longitude"]),
+                        "latitude": float(row["latitude"]),
                         "class": row["class"],
                         "subtype": row["subtype"],
-                        "distance_to_line_m": dist,
+                        "species": row["subtype"],  # Use subtype as species
+                        "height_m": round(height, 1),
+                        "canopy_height": round(height * 0.7, 1),  # Canopy is ~70% of height
+                        "risk_score": round(risk_score, 2),
+                        "proximity_risk": round(risk_score, 2),
+                        "distance_to_line_m": round(dist, 1),
                         "nearest_line_id": None,
-                        "risk_level": risk
+                        "risk_level": risk_level
                     })
             
             await spatial_cache.set_vegetation(all_features)
