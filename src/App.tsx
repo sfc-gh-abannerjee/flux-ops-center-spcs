@@ -1,31 +1,33 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, lazy, Suspense } from 'react';
 import DeckGL from '@deck.gl/react';
-import { ScatterplotLayer, ArcLayer, PolygonLayer, BitmapLayer, PathLayer, TextLayer, IconLayer } from '@deck.gl/layers';
-import { HeatmapLayer, GridLayer } from '@deck.gl/aggregation-layers';
+import { ScatterplotLayer, ArcLayer, PolygonLayer, PathLayer } from '@deck.gl/layers';
+// import { HeatmapLayer } from '@deck.gl/aggregation-layers'; // Currently unused
 import { MVTLayer } from '@deck.gl/geo-layers';
-import { DataFilterExtension } from '@deck.gl/extensions';
+import { PathStyleExtension } from '@deck.gl/extensions';
 import { FlyToInterpolator, COORDINATE_SYSTEM, WebMercatorViewport } from '@deck.gl/core';
 import { Map as MapGL } from 'react-map-gl/maplibre';
 import maplibregl from 'maplibre-gl';
 import { 
   ThemeProvider, createTheme, CssBaseline, Box, AppBar, Toolbar, Typography, 
-  Tabs, Tab, Grid, Card, CardContent, Paper, Chip, Stack, IconButton, 
-  Switch, FormControlLabel, Divider, Badge, alpha, Fade, Grow, Collapse, 
+  Tabs, Tab, Card, CardContent, Paper, Chip, Stack, IconButton, 
+  Divider, alpha, Fade, Collapse, 
   Button, LinearProgress, Tooltip, CircularProgress
 } from '@mui/material';
 import { 
   ElectricBolt, Assessment, Warning, Engineering, TrendingUp,
-  Speed, Memory, NetworkCheck, FilterList, Close, Refresh, ExpandMore, ExpandLess,
-  MyLocation, ZoomIn, GridOn, BarChart, PieChart, PushPin, FavoriteOutlined, ElectricMeter,
+  Speed, Memory, NetworkCheck, Close, ExpandMore, ExpandLess,
+  MyLocation, ZoomIn, GridOn, PushPin, FavoriteOutlined,
   Whatshot, WbSunny, Thermostat, Opacity, SkipPrevious, FastRewind, PlayArrow, Pause, 
-  FastForward, SkipNext, Layers, Power, Hub, Park, Business, ElectricalServices
+  FastForward, SkipNext, Layers, Power, Hub, Park, Business, ElectricalServices, CheckCircle,
+  Groups, LocationOn, Water, Refresh, Timeline
 } from '@mui/icons-material';
 // Performance: Lazy load ChatDrawer (contains Vega charting library ~500KB)
 const ChatDrawer = lazy(() => import('./ChatDrawer'));
 import DraggableFab from './DraggableFab';
 import { LAYOUT } from './layoutConstants';
 import { logger } from './utils/logger';
-import { useWeatherLayers, useHeatmapLayers, usePowerLineGlowLayers } from './hooks';
+import { useWeatherLayers, useHeatmapLayers, usePowerLineGlowLayers, useCascadeLayers } from './hooks';
+import CascadeControlPanel from './components/CascadeControlPanel';
 import type { 
   Asset,
   SubstationStatus,
@@ -40,12 +42,12 @@ import type {
   DeckPickInfo,
   HexagonTileData,
   AggregateTower,
-  SpatialDataState,
   SpatialPowerLine,
   SpatialVegetation,
+  SpatialBuilding,
   SubstationAggregate,
   GeoJSONFeature,
-  InitialDataResponse
+  CascadeNode
 } from './types';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
@@ -141,7 +143,8 @@ function getPolygonShape(centerLon: number, centerLat: number, sizeMeters: numbe
   return vertices;
 }
 
-function getOctagonPolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _getOctagonPolygon(centerLon: number, centerLat: number, sizeMeters: number, rotation: number = 0): number[][] {
   return getPolygonShape(centerLon, centerLat, sizeMeters, 8, rotation);
 }
 
@@ -536,91 +539,7 @@ function getHexagonPolygon(centerLon: number, centerLat: number, sizeMeters: num
   return vertices;
 }
 
-interface Asset {
-  id: string;
-  name: string;
-  type: 'pole' | 'transformer' | 'meter' | 'substation';
-  latitude: number;
-  longitude: number;
-  health_score?: number;
-  load_percent?: number;
-  usage_kwh?: number;
-  voltage?: string;
-  status?: string;
-  last_maintenance?: string;
-  commissioned_date?: string;
-  pole_height_ft?: number;
-  circuit_id?: string;  // CIRCUIT_ID from source tables for utility-grade clustering
-  loadedAt?: number;  // Timestamp for fade-in animation
-  rotation_rad?: number;  // Rotation from nearest power line bearing (computed by PostGIS)
-}
-
-interface SubstationStatus {
-  substation_id: string;
-  status: 'healthy' | 'warning' | 'critical' | null;
-  load_percent: number | null;
-  health_score: number | null;
-  last_updated?: string;
-}
-
-interface SpatialBuilding {
-  id: string;
-  type: 'building';
-  building_name?: string;
-  building_type?: string;
-  height_meters?: number;
-  num_floors?: number;
-  footprint_area_sqm?: number;
-  address?: string;
-  centroid?: [number, number];
-}
-
-interface SpatialPowerLine {
-  id: string;
-  type: 'power_line';
-  line_name?: string;
-  voltage_kv?: number;
-  length_km?: number;
-  conductor_type?: string;
-  installation_year?: number;
-  coordinates: number[][];
-  // Connected assets (loaded on demand when selecting power line)
-  connected_assets?: Array<{
-    id: string;
-    name: string;
-    type: string;
-    latitude: number;
-    longitude: number;
-    health_score?: number;
-    load_percent?: number;
-    circuit_id?: string;
-    distance_m?: number;
-  }>;
-}
-
-interface SpatialVegetation {
-  id: string;
-  type: 'vegetation';
-  species?: string;
-  height_m?: number;
-  canopy_height?: number;
-  risk_score?: number;
-  proximity_risk?: number;
-  distance_to_line_m?: number;
-  latitude: number;
-  longitude: number;
-}
-
-interface TopologyLink {
-  from_asset_id: string;
-  to_asset_id: string;
-  connection_type: string;
-  from_latitude: number;
-  from_longitude: number;
-  to_latitude: number;
-  to_longitude: number;
-}
-
+// Local interfaces that extend the shared types (for App-specific fields)
 interface KPICardProps {
   title: string;
   value: string | number;
@@ -784,6 +703,10 @@ function App() {
   const [spatialHoverPosition, setSpatialHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const [selectedSpatialObject, setSelectedSpatialObject] = useState<SpatialBuilding | SpatialPowerLine | SpatialVegetation | null>(null);
   const [spatialClickPosition, setSpatialClickPosition] = useState<{ x: number; y: number } | null>(null);
+  // Engineering: Track if spatial card was opened as "secondary" from within another card
+  // This enables intelligent side-by-side positioning to avoid overlaps
+  const [isSpatialCardSecondary, setIsSpatialCardSecondary] = useState(false);
+  const [isAssetCardSecondary, setIsAssetCardSecondary] = useState(false);
   // Position tracking for dragging the unpinned selected spatial object card
   const [selectedSpatialPosition, setSelectedSpatialPosition] = useState<{ x: number; y: number } | null>(null);
   // Ref for high-performance position tracking during drag/momentum (avoids re-renders)
@@ -816,15 +739,22 @@ function App() {
   const momentumAnimationRef = useRef<number | null>(null);
   const dragAnimationFrameRef = useRef<number | null>(null);
   const pendingDragPosition = useRef<{cardId: string, x: number, y: number} | null>(null);
-  const [viewState, setViewState] = useState(INITIAL_VIEW_STATE);
+  const [viewState, setViewState] = useState<ViewState>(INITIAL_VIEW_STATE);
   const isProgrammaticTransition = useRef(false);
+  
+  // Production Pattern: MapLibre basemap interleaving for proper z-ordering
+  // Water bodies rendered as native MapLibre layer BELOW roads (not deck.gl layer above basemap)
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const waterLayerAddedRef = useRef(false);
+  const [mapLoaded, setMapLoaded] = useState(false);  // Track when map style is ready
   const viewportUpdateTimer = useRef<NodeJS.Timeout | null>(null);
   const pendingViewState = useRef<ViewState | null>(null);
   const [expandedSections, setExpandedSections] = useState({
     infrastructure: true,
     health: true,
     distribution: false,
-    connected: false
+    connected: false,
+    vegetation: true  // Engineering: Vegetation risks section expanded by default
   });
   const [expandedAssetCategories, setExpandedAssetCategories] = useState<{
     [cardId: string]: {
@@ -1265,7 +1195,9 @@ function App() {
     enable3D: true,
     buildingFootprints: false,
     powerLines: false,
-    vegetation: false
+    vegetation: false,
+    waterBodies: false,
+    cascadeAnalysis: false  // # Cascade failure analysis layer
   });
   const [layersPanelExpanded, setLayersPanelExpanded] = useState(true);
   const [spatialPanelExpanded, setSpatialPanelExpanded] = useState(true);
@@ -1273,11 +1205,37 @@ function App() {
   const [spatialData, setSpatialData] = useState<{
     powerLines: SpatialPowerLine[];
     vegetation: SpatialVegetation[];
-  }>({ powerLines: [], vegetation: [] });
-  const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false });
+    waterBodies: Array<{ id: string; geometry: GeoJSON.Geometry; properties: Record<string, unknown> }>;
+  }>({ powerLines: [], vegetation: [], waterBodies: [] });
+  const [spatialLoading, setSpatialLoading] = useState({ powerLines: false, vegetation: false, waterBodies: false });
+  const [spatialLoaded, setSpatialLoaded] = useState({ powerLines: false, vegetation: false, waterBodies: false });  // Track if data was fetched (even if empty)
+  const [spatialQueryTime, setSpatialQueryTime] = useState<{ powerLines: number | null; vegetation: number | null; waterBodies: number | null }>({ powerLines: null, vegetation: null, waterBodies: null });  // Demo: Track query times for PostGIS performance story
 
-  // Track last loaded zoom level for power lines LOD
+  // Feature: Vegetation risk level filters - only show selected risk levels
+  // Default: Only HIGH risk visible (most actionable for utility operations)
+  const [vegetationRiskFilters, setVegetationRiskFilters] = useState({
+    high: true,     // risk_score > 0.6 or risk_level = critical/warning
+    medium: false,  // risk_score 0.35-0.6 or risk_level = monitor  
+    low: false      // risk_score < 0.35 or risk_level = safe
+  });
+
+  // Feature: Compute filtered vegetation count based on risk level toggles
+  const filteredVegetationCount = useMemo(() => {
+    return spatialData.vegetation.filter((d) => {
+      const risk = (d as Record<string, unknown>).risk_score as number || 0;
+      const riskLevel = (d as Record<string, unknown>).risk_level as string;
+      const isHigh = risk > 0.6 || riskLevel === 'critical' || riskLevel === 'warning';
+      const isMedium = (risk > 0.35 && risk <= 0.6) || riskLevel === 'monitor';
+      const isLow = (risk <= 0.35 && riskLevel !== 'monitor') || riskLevel === 'safe';
+      return (vegetationRiskFilters.high && isHigh) ||
+             (vegetationRiskFilters.medium && isMedium) ||
+             (vegetationRiskFilters.low && isLow);
+    }).length;
+  }, [spatialData.vegetation, vegetationRiskFilters]);
+
+  // Track last loaded zoom level for LOD-based layer reloading
   const [powerLinesLoadedZoom, setPowerLinesLoadedZoom] = useState<number | null>(null);
+  const [waterBodiesLoadedZoom, setWaterBodiesLoadedZoom] = useState<number | null>(null);
   
   // ARCHITECTURE: Spatial Layers vs Grid Assets - INDEPENDENT STREAMING SYSTEMS
   // ===============================================================================
@@ -1297,29 +1255,90 @@ function App() {
   // 3. Power lines/vegetation load once per LOD level, not per circuit
   // ===============================================================================
   
-  const loadSpatialLayer = useCallback(async (layerType: 'powerLines' | 'vegetation', zoom?: number) => {
-    if (spatialLoading[layerType]) return;
+  const loadSpatialLayer = useCallback(async (layerType: 'powerLines' | 'vegetation' | 'waterBodies', zoom?: number, forceRefresh?: boolean) => {
+    if (spatialLoading[layerType] && !forceRefresh) return;
     setSpatialLoading(prev => ({ ...prev, [layerType]: true }));
     
     try {
-      // Engineering: Pass zoom level for LOD-based power line queries
+      // Engineering: Pass zoom level for LOD-based queries
+      // Water bodies: Zoom controls minimum acreage filter (500 acres at metro, 0 at street level)
+      // Power lines: Zoom controls vertex simplification
+      const zoomLevel = Math.floor(zoom || 12);
+      
+      // CRITICAL: Calculate actual viewport bounds for spatial queries
+      // Without this, the backend uses static defaults that may exclude important features
+      const viewport = new WebMercatorViewport({
+        longitude: viewState.longitude,
+        latitude: viewState.latitude,
+        zoom: viewState.zoom,
+        pitch: viewState.pitch,
+        bearing: viewState.bearing,
+        width: window.innerWidth,
+        height: window.innerHeight
+      });
+      const bounds = viewport.getBounds();
+      // Add 20% buffer to catch features near viewport edge
+      const lngSpan = bounds[2] - bounds[0];
+      const latSpan = bounds[3] - bounds[1];
+      const minLon = (bounds[0] - lngSpan * 0.2).toFixed(4);
+      const maxLon = (bounds[2] + lngSpan * 0.2).toFixed(4);
+      const minLat = (bounds[1] - latSpan * 0.2).toFixed(4);
+      const maxLat = (bounds[3] + latSpan * 0.2).toFixed(4);
+      
       const endpoints: Record<string, string> = {
-        powerLines: `/api/spatial/layers/power-lines?zoom=${Math.floor(zoom || 12)}`,
-        vegetation: '/api/spatial/layers/vegetation'
+        powerLines: `/api/spatial/layers/power-lines?zoom=${zoomLevel}`,
+        vegetation: '/api/spatial/layers/vegetation?limit=50000',
+        waterBodies: `/api/spatial/layers/water-bodies?zoom=${zoomLevel}&limit=10000&min_lon=${minLon}&max_lon=${maxLon}&min_lat=${minLat}&max_lat=${maxLat}&_t=${Date.now()}`
       };
       
       const response = await fetch(endpoints[layerType]);
       if (!response.ok) throw new Error(`Failed to load ${layerType}`);
       const data = await response.json();
       
-      setSpatialData(prev => ({ ...prev, [layerType]: data.features || data }));
+      // Demo: Track query time for PostGIS performance story
+      if (data.query_time_ms !== undefined) {
+        setSpatialQueryTime(prev => ({ ...prev, [layerType]: Math.round(data.query_time_ms) }));
+      }
       
-      // Track loaded zoom for power lines LOD
+      // Engineering: Flatten MultiPolygon water bodies into individual polygons for proper rendering
+      let features = data.features || data;
+      if (layerType === 'waterBodies') {
+        const flattenedFeatures: Array<{ id: string; geometry: GeoJSON.Geometry; properties: Record<string, unknown> }> = [];
+        let multiPolygonCount = 0;
+        for (const feature of features) {
+          if (feature.geometry?.type === 'MultiPolygon') {
+            multiPolygonCount++;
+            // Split MultiPolygon into individual Polygon features
+            for (let i = 0; i < feature.geometry.coordinates.length; i++) {
+              flattenedFeatures.push({
+                id: `${feature.id}_${i}`,
+                geometry: { type: 'Polygon', coordinates: feature.geometry.coordinates[i] },
+                properties: { ...feature.properties, originalId: feature.id, partIndex: i }
+              });
+            }
+          } else {
+            flattenedFeatures.push(feature);
+          }
+        }
+        features = flattenedFeatures;
+        logger.log(`   🌊 Flattened ${multiPolygonCount} MultiPolygons → ${features.length} total polygons`);
+      }
+      
+      setSpatialData(prev => ({ ...prev, [layerType]: features }));
+      setSpatialLoaded(prev => ({ ...prev, [layerType]: true }));  // Mark as loaded even if empty
+      
+      // Track loaded zoom for LOD-based reload
       if (layerType === 'powerLines' && zoom) {
         setPowerLinesLoadedZoom(zoom);
       }
+      if (layerType === 'waterBodies' && zoom) {
+        setWaterBodiesLoadedZoom(zoom);
+        // Engineering: Track viewport center for pan-based reload
+        waterBodiesLoadedCenterRef.current = { lon: viewState.longitude, lat: viewState.latitude };
+      }
       
-      const lodInfo = data.lod_level ? ` (LOD: ${data.lod_level}, ${data.total_vertices?.toLocaleString() || '?'} vertices)` : '';
+      const lodInfo = data.lod_level ? ` (LOD: ${data.lod_level}, ${data.total_vertices?.toLocaleString() || '?'} vertices)` : 
+                      data.min_acres_filter !== undefined ? ` (LOD: ≥${data.min_acres_filter} acres)` : '';
       logger.log(`✅ Loaded ${layerType}: ${(data.features || data).length} features${lodInfo} in ${data.query_time_ms}ms`);
       
       // Engineering: Debug power lines data for visualization troubleshooting
@@ -1343,6 +1362,8 @@ function App() {
     } finally {
       setSpatialLoading(prev => ({ ...prev, [layerType]: false }));
     }
+  // Note: viewState intentionally NOT in deps - we read current value at call time
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spatialLoading]);
 
   // Engineering: Fetch connected assets for a selected power line
@@ -1367,10 +1388,10 @@ function App() {
 
   // Engineering: Load power lines with zoom-based LOD
   useEffect(() => {
-    if (layersVisible.powerLines && spatialData.powerLines.length === 0 && !spatialLoading.powerLines) {
+    if (layersVisible.powerLines && !spatialLoaded.powerLines && !spatialLoading.powerLines) {
       loadSpatialLayer('powerLines', viewState.zoom);
     }
-  }, [layersVisible.powerLines, spatialData.powerLines.length, spatialLoading.powerLines, loadSpatialLayer, viewState.zoom]);
+  }, [layersVisible.powerLines, spatialLoaded.powerLines, spatialLoading.powerLines, loadSpatialLayer, viewState.zoom]);
 
   // Engineering: Reload power lines when zoom crosses LOD thresholds
   // OPTIMIZED: Use debounced reload to prevent flickering during zoom animations
@@ -1412,10 +1433,255 @@ function App() {
   }, [viewState.zoom, powerLinesLoadedZoom, layersVisible.powerLines, spatialLoading.powerLines, loadSpatialLayer]);
 
   useEffect(() => {
-    if (layersVisible.vegetation && spatialData.vegetation.length === 0 && !spatialLoading.vegetation) {
+    if (layersVisible.vegetation && !spatialLoaded.vegetation && !spatialLoading.vegetation) {
       loadSpatialLayer('vegetation');
     }
-  }, [layersVisible.vegetation, spatialData.vegetation.length, spatialLoading.vegetation, loadSpatialLayer]);
+  }, [layersVisible.vegetation, spatialLoaded.vegetation, spatialLoading.vegetation, loadSpatialLayer]);
+
+  // Engineering: Load water bodies layer with LOD based on zoom
+  // At metro zoom (< 11), only show major water bodies (500+ acres)
+  // At street level (15+), show all water features including streams
+  useEffect(() => {
+    if (layersVisible.waterBodies && !spatialLoaded.waterBodies && !spatialLoading.waterBodies) {
+      loadSpatialLayer('waterBodies', viewState.zoom);
+    }
+  }, [layersVisible.waterBodies, spatialLoaded.waterBodies, spatialLoading.waterBodies, loadSpatialLayer, viewState.zoom]);
+
+  // Engineering: Reload water bodies when zoom crosses LOD thresholds
+  // Uses same LOD bands as backend: <11 (500ac), 11-12 (100ac), 13-14 (10ac), 15+ (all)
+  const waterBodiesReloadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Engineering: Track loaded viewport center to detect significant pan
+  const waterBodiesLoadedCenterRef = useRef<{lon: number, lat: number} | null>(null);
+  
+  useEffect(() => {
+    if (!layersVisible.waterBodies || spatialLoading.waterBodies || waterBodiesLoadedZoom === null) return;
+    
+    // Water bodies LOD levels (match backend min_acres thresholds)
+    const getWaterLod = (z: number) => z < 11 ? 'major' : z < 13 ? 'large' : z < 15 ? 'medium' : 'all';
+    const currentLod = getWaterLod(viewState.zoom);
+    const loadedLod = getWaterLod(waterBodiesLoadedZoom);
+    
+    // Engineering: Check if user panned significantly (> 50% of viewport span)
+    // This ensures water bodies load for new areas when panning
+    let significantPan = false;
+    if (waterBodiesLoadedCenterRef.current) {
+      // Approximate viewport span based on zoom level
+      // At zoom 10: ~0.5° span, at zoom 15: ~0.015° span
+      const viewportSpan = 180 / Math.pow(2, viewState.zoom);
+      const panDistance = Math.max(
+        Math.abs(viewState.longitude - waterBodiesLoadedCenterRef.current.lon),
+        Math.abs(viewState.latitude - waterBodiesLoadedCenterRef.current.lat)
+      );
+      // Reload if panned more than 50% of viewport
+      significantPan = panDistance > viewportSpan * 0.5;
+    }
+    
+    if (currentLod !== loadedLod || significantPan) {
+      if (waterBodiesReloadTimeoutRef.current) {
+        clearTimeout(waterBodiesReloadTimeoutRef.current);
+      }
+      
+      // Debounce reload for zoom/pan stability
+      waterBodiesReloadTimeoutRef.current = setTimeout(() => {
+        const finalLod = getWaterLod(viewState.zoom);
+        if ((finalLod !== loadedLod || significantPan) && !spatialLoading.waterBodies) {
+          const reason = significantPan ? 'viewport pan' : `LOD ${loadedLod} → ${finalLod}`;
+          logger.log(`🔄 Water bodies reload: ${reason} (zoom ${waterBodiesLoadedZoom.toFixed(1)} → ${viewState.zoom.toFixed(1)})`);
+          loadSpatialLayer('waterBodies', viewState.zoom);
+        }
+      }, 300);
+    }
+    
+    return () => {
+      if (waterBodiesReloadTimeoutRef.current) {
+        clearTimeout(waterBodiesReloadTimeoutRef.current);
+      }
+    };
+  }, [viewState.zoom, viewState.longitude, viewState.latitude, waterBodiesLoadedZoom, layersVisible.waterBodies, spatialLoading.waterBodies, loadSpatialLayer]);
+
+  // =============================================================================
+  // PRODUCTION PATTERN: MapLibre Basemap Layer Interleaving
+  // =============================================================================
+  // PRODUCTION PATTERN: MapLibre Basemap Interleaving for Water Bodies
+  // =============================================================================
+  // PROBLEM: deck.gl renders ALL layers ABOVE the basemap, so water polygons obscure roads
+  // SOLUTION: Inject water bodies as a native MapLibre layer positioned BEFORE road layers
+  // 
+  // CartoDB dark-matter layer stack (bottom to top):
+  //   background → landcover → water → [OUR LAYER HERE] → boundary → roads → buildings → labels
+  // 
+  // By inserting before 'tunnel' (first road-related layer), water boundaries render
+  // above basemap water but BELOW roads, providing proper visual hierarchy
+  // =============================================================================
+  useEffect(() => {
+    const map = mapRef.current;
+    
+    // CRITICAL: Only proceed if map is fully loaded
+    if (!map || !mapLoaded) {
+      logger.log('🌊 Water Layer: Waiting for map to load...', { mapRef: !!map, mapLoaded });
+      return;
+    }
+    
+    const SOURCE_ID = 'water-bodies-source';
+    const LAYER_ID = 'water-bodies-interleaved';
+    
+    // Find the first road-related layer to insert before
+    // CartoDB dark-matter uses: tunnel_*, bridge_*, road_* naming conventions
+    const findRoadLayer = (): string | undefined => {
+      const style = map.getStyle();
+      if (!style?.layers) {
+        logger.log('🌊 Water Layer: No style layers found');
+        return undefined;
+      }
+      
+      // Log all layer IDs for debugging
+      const layerIds = style.layers.map(l => l.id);
+      logger.log('🌊 Water Layer: Available basemap layers:', layerIds.slice(0, 20).join(', '), '...');
+      
+      for (const layer of style.layers) {
+        // Insert before first tunnel, bridge, or road layer
+        if (layer.id.startsWith('tunnel') || 
+            layer.id.startsWith('bridge') || 
+            layer.id.startsWith('road') ||
+            layer.id.startsWith('highway')) {
+          logger.log(`🌊 Water Layer: Found road layer to insert before: '${layer.id}'`);
+          return layer.id;
+        }
+      }
+      logger.log('🌊 Water Layer: No road layer found, will add to top');
+      return undefined;
+    };
+    
+    // Handle layer visibility and data updates
+    if (layersVisible.waterBodies && spatialData.waterBodies.length > 0) {
+      logger.log(`🌊 Water Layer: Processing ${spatialData.waterBodies.length} water bodies`);
+      
+      // FORCE RECREATION: Remove old layers to apply new styling (outline-only)
+      // This ensures the fill layer is removed and replaced with line layers
+      if (map.getLayer(LAYER_ID)) {
+        logger.log('🌊 Water Layer: Removing old layers for style update...');
+        if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
+        if (map.getLayer(`${LAYER_ID}-outline`)) map.removeLayer(`${LAYER_ID}-outline`);
+        if (map.getLayer(`${LAYER_ID}-glow`)) map.removeLayer(`${LAYER_ID}-glow`);
+        waterLayerAddedRef.current = false;
+      }
+      
+      // Convert our data to GeoJSON FeatureCollection
+      const geojsonData: GeoJSON.FeatureCollection = {
+        type: 'FeatureCollection',
+        features: spatialData.waterBodies.map((wb, idx) => ({
+          type: 'Feature' as const,
+          id: wb.id || idx,
+          properties: wb.properties || {},
+          geometry: wb.geometry
+        }))
+      };
+      
+      // Add or update source
+      if (!map.getSource(SOURCE_ID)) {
+        logger.log('🌊 Water Layer: Adding GeoJSON source');
+        map.addSource(SOURCE_ID, {
+          type: 'geojson',
+          data: geojsonData
+        });
+      } else {
+        logger.log('🌊 Water Layer: Updating existing source data');
+        (map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource).setData(geojsonData);
+      }
+      
+      // Add layer if not exists
+      if (!map.getLayer(LAYER_ID)) {
+        const beforeLayer = findRoadLayer();
+        
+        // Water body visualization: Fill + Outline for clear water identification
+        // Now using ACCURATE OSM data (rivers, streams, ponds) - NOT flood zones!
+        // Fill is more visible since these are actual water features
+        // Interleaved BELOW roads so infrastructure remains visible
+        
+        // 1. FILL LAYER - clear water area indication
+        map.addLayer({
+          id: LAYER_ID,
+          type: 'fill',
+          source: SOURCE_ID,
+          paint: {
+            'fill-color': '#0891B2',       // Cyan-600 - deeper water color
+            'fill-opacity': 0.25           // More visible - these are ACTUAL water features
+          }
+        }, beforeLayer);
+        logger.log('🌊 Water Layer: Added fill (25% opacity - actual water)');
+        
+        // 2. OUTLINE LAYER - clear boundary
+        map.addLayer({
+          id: `${LAYER_ID}-outline`,
+          type: 'line',
+          source: SOURCE_ID,
+          paint: {
+            'line-color': '#22D3EE',       // Cyan-400 - bright outline
+            'line-width': 2.5,             // Slightly thicker for visibility
+            'line-opacity': 0.95           // High visibility
+          }
+        }, beforeLayer);
+        logger.log('🌊 Water Layer: Added outline');
+        
+        // 3. GLOW LAYER - soft outer glow for visibility
+        map.addLayer({
+          id: `${LAYER_ID}-glow`,
+          type: 'line',
+          source: SOURCE_ID,
+          paint: {
+            'line-color': '#67E8F9',       // Cyan-300 - light glow
+            'line-width': 5,               // Moderate glow width
+            'line-opacity': 0.25,          // Subtle
+            'line-blur': 3                 // Soft blur
+          }
+        }, beforeLayer);
+        logger.log('🌊 Water Layer: Added glow');
+        
+        waterLayerAddedRef.current = true;
+        logger.log(`✅ Water Layer: Fill + outline interleaved before '${beforeLayer || 'top'}'`);
+      }
+      
+      // Ensure visibility for all three layers
+      map.setLayoutProperty(LAYER_ID, 'visibility', 'visible');
+      map.setLayoutProperty(`${LAYER_ID}-outline`, 'visibility', 'visible');
+      map.setLayoutProperty(`${LAYER_ID}-glow`, 'visibility', 'visible');
+      logger.log('🌊 Water Layer: Set visibility to visible');
+      
+    } else {
+      // Hide layers when toggled off (but don't remove - for fast toggle)
+      if (map.getLayer(LAYER_ID)) {
+        map.setLayoutProperty(LAYER_ID, 'visibility', 'none');
+        map.setLayoutProperty(`${LAYER_ID}-outline`, 'visibility', 'none');
+        map.setLayoutProperty(`${LAYER_ID}-glow`, 'visibility', 'none');
+        logger.log('🌊 Water Layer: Hidden (toggle off)');
+      }
+    }
+  }, [mapLoaded, layersVisible.waterBodies, spatialData.waterBodies]);  // CRITICAL: mapLoaded in deps
+
+  // Cleanup water layers when map changes
+  useEffect(() => {
+    return () => {
+      const map = mapRef.current;
+      if (map && waterLayerAddedRef.current) {
+        try {
+          if (map.getLayer('water-bodies-interleaved-glow')) {
+            map.removeLayer('water-bodies-interleaved-glow');
+          }
+          if (map.getLayer('water-bodies-interleaved-outline')) {
+            map.removeLayer('water-bodies-interleaved-outline');
+          }
+          if (map.getLayer('water-bodies-interleaved')) {
+            map.removeLayer('water-bodies-interleaved');
+          }
+          if (map.getSource('water-bodies-source')) {
+            map.removeSource('water-bodies-source');
+          }
+        } catch {
+          // Map may already be destroyed
+        }
+      }
+    };
+  }, []);
 
   // Helper: Format time ago (depends on currentTime to trigger re-calculation)
   const getTimeAgo = useCallback((date: Date) => {
@@ -1554,14 +1820,14 @@ function App() {
             return r.json();
           });
           
-          const mappedTopology = topologyData.map((row: AssetRow) => ({
+          const mappedTopology = topologyData.map((row: TopologyRow) => ({
             from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
             connection_type: 'Distribution',
             from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
             to_latitude: row.TO_LAT, to_longitude: row.TO_LON
           }));
           
-          setTopology(mappedTopology);
+          // setTopology(mappedTopology); // TODO: This function doesn't exist anymore
           logger.log(`   ✅ Loaded ${mappedTopology.length.toLocaleString()} topology connections`);
           
           // Immediately check how many are in viewport for debugging
@@ -1619,8 +1885,8 @@ function App() {
             .map(sa => ({
               circuit_id: sa.CIRCUIT_ID,
               distance: Math.sqrt(
-                Math.pow(sa.CENTROID_LAT - viewState.latitude, 2) +
-                Math.pow(sa.CENTROID_LON - viewState.longitude, 2)
+                Math.pow((sa.CENTROID_LAT ?? 0) - viewState.latitude, 2) +
+                Math.pow((sa.CENTROID_LON ?? 0) - viewState.longitude, 2)
               )
             }))
             .sort((a, b) => a.distance - b.distance) // Closest first
@@ -1659,7 +1925,17 @@ function App() {
               commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
               usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
               circuit_id: row.CIRCUIT_ID,
-              rotation_rad: row.ROTATION_RAD
+              rotation_rad: row.ROTATION_RAD,
+              // Engineering: Location + customer impact
+              city: row.CITY, zip_code: row.ZIP_CODE, county: row.COUNTY,
+              service_address: row.SERVICE_ADDRESS, customer_name: row.CUSTOMER_NAME,
+              customer_segment: row.CUSTOMER_SEGMENT,
+              // Engineering: Use actual customer count from database
+              // Meters: actual count (1 for single-family, more for multi-family)
+              // Other assets: circuit-level customer count
+              connected_customers: row.CONNECTED_CUSTOMERS,
+              circuits_served: row.CIRCUITS_SERVED,
+              capacity_mva: row.CAPACITY_MVA, substation_name: row.SUBSTATION_NAME
             }));
             
             // Substations are loaded separately in the dedicated block above (line 965)
@@ -1698,13 +1974,23 @@ function App() {
             commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
             usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
             circuit_id: row.CIRCUIT_ID,
-            rotation_rad: row.ROTATION_RAD
+            rotation_rad: row.ROTATION_RAD,
+            // Engineering: Location + customer impact
+            city: row.CITY, zip_code: row.ZIP_CODE, county: row.COUNTY,
+            service_address: row.SERVICE_ADDRESS, customer_name: row.CUSTOMER_NAME,
+            customer_segment: row.CUSTOMER_SEGMENT,
+            // Engineering: Use actual customer count from database
+            // Meters: actual count (1 for single-family, more for multi-family)
+            // Other assets: circuit-level customer count
+            connected_customers: row.CONNECTED_CUSTOMERS,
+            circuits_served: row.CIRCUITS_SERVED,
+            capacity_mva: row.CAPACITY_MVA, substation_name: row.SUBSTATION_NAME
           }));
           
           // Substations are loaded separately in the dedicated block above (line 965)
           // Don't add them here to prevent duplicates
           
-          const mappedTopology = topologyData.map((row: AssetRow) => ({
+          const mappedTopology = topologyData.map((row: TopologyRow) => ({
             from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
             connection_type: 'Distribution',
             from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
@@ -1762,11 +2048,11 @@ function App() {
             // Deduplicate connections by from-to pair
             const existingConnections = new Set<string>();
             prev.forEach(batch => 
-              batch.connections.forEach(c => 
+              batch.connections.forEach((c: TopologyLink) => 
                 existingConnections.add(`${c.from_asset_id}-${c.to_asset_id}`)
               )
             );
-            const uniqueTopology = mappedTopology.filter(c => 
+            const uniqueTopology = mappedTopology.filter((c: TopologyLink) => 
               !existingConnections.has(`${c.from_asset_id}-${c.to_asset_id}`)
             );
             
@@ -2140,8 +2426,8 @@ function App() {
             lat: sa.CENTROID_LAT,
             lon: sa.CENTROID_LON,
             distance: Math.sqrt(
-              Math.pow(sa.CENTROID_LAT - centerLat, 2) +
-              Math.pow(sa.CENTROID_LON - centerLng, 2)
+              Math.pow((sa.CENTROID_LAT ?? 0) - centerLat, 2) +
+              Math.pow((sa.CENTROID_LON ?? 0) - centerLng, 2)
             )
           }));
         
@@ -2831,7 +3117,8 @@ function App() {
                   clearTimeout(timeoutId);
                   return response;
                 } catch (err: unknown) {
-                  if (attempt < maxRetries && (err.name === 'AbortError' || err.message?.includes('timeout'))) {
+                  const error = err as Error;
+                  if (attempt < maxRetries && (error.name === 'AbortError' || error.message?.includes('timeout'))) {
                     logger.log(`   ⚠️ Batch ${idx + 1} attempt ${attempt + 1} failed, retrying...`);
                     await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); // Backoff: 1s, 2s
                     continue;
@@ -2877,7 +3164,17 @@ function App() {
                 commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
                 usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
                 circuit_id: row.CIRCUIT_ID,
-                loadedAt: Date.now()  // Timestamp for fade-in animation
+                loadedAt: Date.now(),  // Timestamp for fade-in animation
+                // Engineering: Location + customer impact
+                city: row.CITY, zip_code: row.ZIP_CODE, county: row.COUNTY,
+                service_address: row.SERVICE_ADDRESS, customer_name: row.CUSTOMER_NAME,
+                customer_segment: row.CUSTOMER_SEGMENT,
+                // Engineering: Use actual customer count from database
+                // Meters: actual count (1 for single-family, more for multi-family)
+                // Other assets: circuit-level customer count
+                connected_customers: row.CONNECTED_CUSTOMERS,
+                circuits_served: row.CIRCUITS_SERVED,
+                capacity_mva: row.CAPACITY_MVA, substation_name: row.SUBSTATION_NAME
               }));
             
             // Log filtering results to track viewport filtering effectiveness
@@ -3085,12 +3382,14 @@ function App() {
     const minLat = south - latRange;
     const maxLat = north + latRange;
     
-    const viewportFiltered = topology.filter(link => 
-      (link.from_longitude >= minLng && link.from_longitude <= maxLng &&
-       link.from_latitude >= minLat && link.from_latitude <= maxLat) ||
-      (link.to_longitude >= minLng && link.to_longitude <= maxLng &&
-       link.to_latitude >= minLat && link.to_latitude <= maxLat)
-    );
+    // Filter to viewport bounds only (data quality issue fixed in Snowflake - SYNTH-XFMR positions corrected)
+    const viewportFiltered = topology.filter(link => {
+      const inViewport = (link.from_longitude >= minLng && link.from_longitude <= maxLng &&
+         link.from_latitude >= minLat && link.from_latitude <= maxLat) ||
+        (link.to_longitude >= minLng && link.to_longitude <= maxLng &&
+         link.to_latitude >= minLat && link.to_latitude <= maxLat);
+      return inViewport;
+    });
     
     logger.log(`   🔗 Visible topology: ${viewportFiltered.length.toLocaleString()}/${topology.length.toLocaleString()} connections in viewport`);
     
@@ -3220,11 +3519,10 @@ function App() {
   // ENGINEERING ENHANCEMENT: Priority-based glow system
   // Communicates operational urgency through color, intensity, pulse speed
   const getGlowProperties = useCallback((asset: Asset) => {
-    const health = asset.health_score ?? asset.AVG_HEALTH_SCORE ?? asset.WORST_CIRCUIT_HEALTH ?? 75;
+    const health = asset.health_score ?? 75;
     
-    // CRITICAL FIX: Use worst-case load from Postgres (shows RED if ANY circuit critical)
-    // This fixes SUB-HOU-062 showing GREEN at 45.8% avg when one circuit is at 221%
-    const load = asset.WORST_CIRCUIT_LOAD ?? asset.load_percent ?? asset.AVG_LOAD_PERCENT ?? 50;
+    // Use load_percent for load status
+    const load = asset.load_percent ?? 50;
     
     // Intelligence layer zoom adaptation
     const glowScale = currentZoom < 10.8 ? 1.5 :  // Executive view - large regional glow
@@ -3272,59 +3570,7 @@ function App() {
     if (dataFetchedRef.current) return;
     dataFetchedRef.current = true;
     
-    const processData = (data: InitialDataResponse) => {
-      // LOD OPTIMIZATION: Assets may not be loaded initially (lazy loaded by zoom)
-      if (data.assets) {
-        const mappedAssets: Asset[] = data.assets.map((row: AssetRow) => ({
-          id: row.ASSET_ID, name: row.ASSET_NAME, type: row.ASSET_TYPE,
-          latitude: row.LATITUDE, longitude: row.LONGITUDE,
-          load_percent: row.LOAD_PERCENT, voltage: row.VOLTAGE, status: row.STATUS,
-          commissioned_date: row.COMMISSIONED_DATE, health_score: row.HEALTH_SCORE,
-          usage_kwh: row.USAGE_KWH, pole_height_ft: row.POLE_HEIGHT_FT,
-          circuit_id: row.CIRCUIT_ID
-        }));
-        
-        // Add substations from metro topology data if available (deduplicate)
-        // Enrich with real-time status data
-        const substations: Asset[] = data.metro ? data.metro
-          .map((row: MetroSubstationRow) => {
-            const status = substationStatusMap.get(row.SUBSTATION_ID);
-            return {
-              id: row.SUBSTATION_ID,
-              name: row.SUBSTATION_NAME || row.SUBSTATION_ID,
-              type: 'substation',
-              latitude: row.LATITUDE,
-              longitude: row.LONGITUDE,
-              load_percent: status?.load_percent ?? null,
-              voltage: row.VOLTAGE_KV ? `${row.VOLTAGE_KV} kV` : null,
-              status: status?.status ?? null,
-              commissioned_date: null,
-              health_score: status?.health_score ?? null,
-              usage_kwh: null,
-              pole_height_ft: null,
-              circuit_id: null
-            };
-          }) : [];
-        
-        // Deduplicate all assets by ID
-        const allAssets = [...mappedAssets, ...substations];
-        const deduped = Array.from(new Map(allAssets.map(a => [a.id, a])).values());
-        setAssets(deduped);
-      }
-      
-      if (data.weather) setWeather(data.weather);
-      if (data.metro) setMetroTopologyData(data.metro);
-      if (data.feeders) setFeederTopologyData(data.feeders);
-      if (data.serviceAreas) setServiceAreas(data.serviceAreas);
-      if (data.topology) {
-        setTopology(data.topology.map((row: AssetRow) => ({
-          from_asset_id: row.FROM_ASSET_ID, to_asset_id: row.TO_ASSET_ID,
-          connection_type: 'Distribution',
-          from_latitude: row.FROM_LAT, from_longitude: row.FROM_LON,
-          to_latitude: row.TO_LAT, to_longitude: row.TO_LON
-        })));
-      }
-    };
+    // Note: processData function removed - data is processed inline in loadInitial below
     
     const loadInitial = async () => {
       setIsLoadingData(true);
@@ -3363,7 +3609,7 @@ function App() {
           // Load substations from metro data immediately
           if (!substationsLoadedRef.current && initialData.metro.length > 0) {
             substationsLoadedRef.current = true;
-            const substations: Asset[] = initialData.metro.map((row: AssetRow) => ({
+            const substations: Asset[] = initialData.metro.map((row: MetroSubstationRow) => ({
               id: row.SUBSTATION_ID,
               name: row.SUBSTATION_NAME || row.SUBSTATION_ID,
               type: 'substation' as const,
@@ -3512,11 +3758,8 @@ function App() {
     const currentId = selectedAsset?.id || null;
     if (currentId !== prevSelectedAssetId.current) {
       prevSelectedAssetId.current = currentId;
-      setExpandedAssetCategories({
-        substations: false,
-        transformers: false,
-        poles: false
-      });
+      // Reset all expanded category states
+      setExpandedAssetCategories({});
     }
   }, [selectedAsset]);
   
@@ -3980,16 +4223,16 @@ function App() {
             id: area.SUBSTATION_ID,
             name: area.SUBSTATION_NAME || area.SUBSTATION_ID,
             type: 'substation',
-            latitude: area.CENTROID_LAT,
-            longitude: area.CENTROID_LON,
-            voltage: null,
-            status: null,
-            load_percent: null,
-            health_score: null,
-            commissioned_date: null,
-            usage_kwh: null,
-            pole_height_ft: null,
-            circuit_id: null
+            latitude: area.CENTROID_LAT ?? 0,
+            longitude: area.CENTROID_LON ?? 0,
+            voltage: undefined,
+            status: undefined,
+            load_percent: undefined,
+            health_score: undefined,
+            commissioned_date: undefined,
+            usage_kwh: undefined,
+            pole_height_ft: undefined,
+            circuit_id: undefined
           };
         }
         
@@ -4403,12 +4646,45 @@ function App() {
     visible: layersVisible.powerLines
   });
 
+  // Engineering: Cascade analysis layers for GridGuard integration
+  const { layers: cascadeLayers, controls: cascadeControls } = useCascadeLayers({
+    visible: layersVisible.cascadeAnalysis,
+    currentZoom,
+    animationTime: animationTimeRef.current,
+    onNodeClick: (node) => {
+      // When a cascade node is clicked, fly to it
+      setViewState(prev => ({
+        ...prev,
+        longitude: node.lon!,
+        latitude: node.lat!,
+        zoom: Math.max(prev.zoom, 13),
+        transitionDuration: 1000,
+        transitionInterpolator: new FlyToInterpolator()
+      }));
+    }
+  });
+
   const layers = useMemo(() => [
+    // =============================================================================
+    // PRODUCTION PATTERN: Water bodies rendered via MapLibre interleaving (NOT here)
+    // =============================================================================
+    // Water boundaries are added as native MapLibre layers via useEffect hook above,
+    // positioned BEFORE road layers in the basemap stack. This ensures proper z-ordering:
+    //   basemap water → OUR water boundaries → roads → buildings → labels → deck.gl layers
+    // 
+    // This solves the classic GIS problem where deck.gl layers render ABOVE the entire
+    // basemap, causing water polygons to obscure roads and infrastructure.
+    // See: "PRODUCTION PATTERN: MapLibre Basemap Layer Interleaving" section
+    // =============================================================================
+
     // Performance: Weather layer from independent hook
     ...weatherLayers,
 
     // Performance: Heatmap layer from independent hook
     ...heatmapLayers,
+
+    // Engineering: Cascade analysis layers (GridGuard integration)
+    ...cascadeLayers,
 
     // ZOOM-ADAPTIVE NETWORK TOPOLOGY: Three-tier hierarchical visualization
     // Metro view (<9): Service area polygons | Neighborhood (9-11.5): Distribution feeders | Street (>11.5): Full network
@@ -4695,6 +4971,8 @@ function App() {
             setClickPosition({ x: info.x, y: info.y });
             setHoveredAsset(null); // Clear hover when asset is selected
             setHoverPosition(null);
+            // Engineering: This is a PRIMARY click (from map), not secondary (from card)
+            setIsAssetCardSecondary(false);
           }
         }
       })] : []
@@ -4767,6 +5045,8 @@ function App() {
               setHoveredAsset(null); // Clear hover when asset is selected
               setHoverPosition(null);
               setClickPosition({ x: info.x, y: info.y });
+              // Engineering: This is a PRIMARY click (from map), not secondary (from card)
+              setIsAssetCardSecondary(false);
             }
           }
         },
@@ -4916,6 +5196,8 @@ function App() {
                 setSelectedAssets(new Set([info.object.id]));
                 setSelectedAssetPosition(null);
                 setClickPosition({ x: info.x, y: info.y });
+                // Engineering: This is a PRIMARY click (from map), not secondary (from card)
+                setIsAssetCardSecondary(false);
               }
             }
           },
@@ -5121,6 +5403,8 @@ function App() {
               setHoveredAsset(null);
               setHoverPosition(null);
               setClickPosition({ x: info.x, y: info.y });
+              // Engineering: This is a PRIMARY click (from map), not secondary (from card)
+              setIsAssetCardSecondary(false);
             }
           }
         },
@@ -5277,6 +5561,8 @@ function App() {
               setHoveredAsset(null);
               setHoverPosition(null);
               setClickPosition({ x: info.x, y: info.y });
+              // Engineering: This is a PRIMARY click (from map), not secondary (from card)
+              setIsAssetCardSecondary(false);
             }
           }
         },
@@ -5590,8 +5876,9 @@ function App() {
           mvt: {
             // Reduce coordinate precision for faster parsing
             coordinates: 'wgs84',
-            // Use workers for parsing
-            worker: true
+            // SPCS Fix: Disable workers - @loaders.gl tries to load workers from CDN (unpkg.com)
+            // which is blocked by SPCS Content Security Policy. Use inline parsing instead.
+            worker: false
           }
         },
         getFillColor: (f: GeoJSONFeature) => {
@@ -5771,122 +6058,368 @@ function App() {
       })
     ]; })() : []),
 
-    // Engineering: Vegetation Risk Layer - Beautiful tree visualization with risk-based styling
-    // Uses ScatterplotLayer for smooth rendering + glow effects for high-risk trees
+    // Engineering: Vegetation Risk Layer - Neara-inspired 3D Tree Visualization
+    // At low zoom: ScatterplotLayer for performance (2D markers)
+    // At high zoom: PolygonLayer extruded cylinders showing actual tree heights
+    // Risk-based coloring: Red (critical) → Amber (warning) → Yellow (monitor) → Green (safe)
     ...(layersVisible.vegetation && spatialData.vegetation.length > 0 ? (() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       type VegData = Record<string, any>;
       
-      // Separate high-risk trees for glow effect
-      const highRiskTrees = spatialData.vegetation.filter((d: VegData) => 
+      // Feature: Filter vegetation by selected risk levels
+      const filteredVegetation = spatialData.vegetation.filter((d: VegData) => {
+        const risk = d.risk_score || 0;
+        const riskLevel = d.risk_level;
+        // High risk: score > 0.6 OR critical/warning level
+        const isHigh = risk > 0.6 || riskLevel === 'critical' || riskLevel === 'warning';
+        // Medium risk: score 0.35-0.6 OR monitor level
+        const isMedium = (risk > 0.35 && risk <= 0.6) || riskLevel === 'monitor';
+        // Low risk: score <= 0.35 OR safe level (and not classified higher)
+        const isLow = (risk <= 0.35 && riskLevel !== 'monitor') || riskLevel === 'safe';
+        
+        return (vegetationRiskFilters.high && isHigh) ||
+               (vegetationRiskFilters.medium && isMedium) ||
+               (vegetationRiskFilters.low && isLow);
+      });
+      
+      // High zoom threshold for 3D view (when you can see individual trees clearly)
+      const use3DView = currentZoom > 14;
+      
+      // Separate high-risk trees for glow effect (from filtered set)
+      const highRiskTrees = filteredVegetation.filter((d: VegData) => 
         (d.risk_score || 0) > 0.6 || d.risk_level === 'critical' || d.risk_level === 'warning'
       );
       
+      // Helper: Get risk-based fill color
+      const getRiskColor = (d: VegData, alpha: number = 200): [number, number, number, number] => {
+        const risk = d.risk_score || 0;
+        const riskLevel = d.risk_level;
+        if (risk > 0.8 || riskLevel === 'critical') return [220, 38, 38, alpha];   // Bright red
+        if (risk > 0.6 || riskLevel === 'warning') return [251, 146, 60, alpha];   // Orange
+        if (risk > 0.35 || riskLevel === 'monitor') return [234, 179, 8, alpha];   // Amber
+        return [34, 197, 94, alpha];   // Green (safe)
+      };
+      
+      // Helper: Get tree size in meters based on canopy radius
+      const getTreeSize = (d: VegData): number => {
+        const canopyRadius = d.canopy_radius_m || (d.height_m || 10) * 0.35;
+        return Math.max(3, canopyRadius * 2);  // Diameter, minimum 3m
+      };
+
+      // Click and hover handlers (shared between 2D and 3D modes)
+      const handleTreeClick = (info: DeckPickInfo) => {
+        if (info.object) {
+          const d = info.object as VegData;
+          const lon = d.longitude || d.position?.[0];
+          const lat = d.latitude || d.position?.[1];
+          
+          // Architecture: Use PRE-COMPUTED risk data from the backend
+          // Risk is calculated in PostgreSQL materialized view using PostGIS spatial analysis
+          // No real-time API calls needed - data is already accurate
+          const vegetation: SpatialVegetation = {
+            id: d.id || `tree-${info.index}`,
+            type: 'vegetation',
+            species: d.species || d.subtype,
+            height_m: d.height_m,
+            canopy_height: d.canopy_height || (d.height_m ? d.height_m * 0.7 : undefined),
+            risk_score: d.risk_score,
+            proximity_risk: d.proximity_risk || d.risk_score,
+            risk_level: d.risk_level,
+            // Pre-computed from PostGIS materialized view
+            distance_to_line_m: d.distance_to_line_m,
+            nearest_line_id: d.nearest_line_id,
+            nearest_line_class: d.nearest_line_class,
+            // New fields from computed MV
+            fall_zone_m: d.fall_zone_m,
+            risk_explanation: d.risk_explanation,
+            nearest_asset_type: d.nearest_asset_type,
+            distance_to_asset_m: d.distance_to_asset_m,
+            // Data is pre-computed, always 'loaded'
+            line_data_status: d.distance_to_line_m != null ? 'loaded' : 'no_nearby_lines',
+            latitude: lat,
+            longitude: lon
+          };
+          setSelectedSpatialObject(vegetation);
+          setSpatialClickPosition({ x: info.x, y: info.y });
+          setSelectedSpatialPosition(null);
+          setSelectedAsset(null);
+          // Engineering: This is a PRIMARY click (from map), not secondary (from card)
+          setIsSpatialCardSecondary(false);
+        }
+      };
+
+      const handleTreeHover = (info: DeckPickInfo) => {
+        if (info.object) {
+          const d = info.object as VegData;
+          const vegetation: SpatialVegetation = {
+            id: d.id || `tree-${info.index}`,
+            type: 'vegetation',
+            species: d.species || d.subtype,
+            height_m: d.height_m,
+            risk_score: d.risk_score,
+            proximity_risk: d.proximity_risk || d.risk_score,
+            latitude: d.latitude || d.position?.[1],
+            longitude: d.longitude || d.position?.[0]
+          };
+          setHoveredSpatialObject(vegetation);
+          setSpatialHoverPosition({ x: info.x, y: info.y });
+        } else {
+          setHoveredSpatialObject(null);
+          setSpatialHoverPosition(null);
+        }
+      };
+
+      if (use3DView) {
+        // 3D VIEW: Neara-style extruded cylinders showing actual tree heights
+        // Uses 8-sided polygon (octagon) to approximate cylindrical tree trunks
+        return [
+          // Outer glow for high-risk trees (ground-level warning indicator)
+          new ScatterplotLayer({
+            id: 'vegetation-3d-glow',
+            data: highRiskTrees,
+            getPosition: (d: VegData) => d.position || [d.longitude, d.latitude],
+            getRadius: (d: VegData) => {
+              const canopyRadius = d.canopy_radius_m || 4;
+              return canopyRadius * 1.5;
+            },
+            getFillColor: (d: VegData) => {
+              const risk = d.risk_score || 0.7;
+              if (risk > 0.8 || d.risk_level === 'critical') return [220, 38, 38, 80];
+              return [251, 191, 36, 60];
+            },
+            radiusUnits: 'meters',
+            radiusMinPixels: 6,
+            radiusMaxPixels: 40,
+            pickable: false,
+            antialiasing: true
+          }),
+          // 3D extruded tree columns - shows actual tree heights!
+          new PolygonLayer({
+            id: 'vegetation-3d-trees',
+            data: filteredVegetation,
+            pickable: true,
+            extruded: true,
+            wireframe: false,
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            // Create octagonal cross-section for tree (approximates cylinder)
+            getPolygon: (d: VegData) => getPolygonShape(
+              d.longitude || d.position?.[0],
+              d.latitude || d.position?.[1],
+              getTreeSize(d),
+              8,  // Octagon
+              0
+            ),
+            // Height from data! This is the key Neara-like feature
+            getElevation: (d: VegData) => {
+              const height = d.height_m || 10;
+              return height * heightScale;
+            },
+            getFillColor: (d: VegData) => getRiskColor(d, 200),
+            getLineColor: (d: VegData) => {
+              // Darker outline matching fill color
+              const fill = getRiskColor(d, 255);
+              return [fill[0] * 0.6, fill[1] * 0.6, fill[2] * 0.6, 255] as [number, number, number, number];
+            },
+            elevationScale: 1,
+            lineWidthMinPixels: 1,
+            material: {
+              ambient: 0.35,
+              diffuse: 0.5,
+              shininess: 20,
+              specularColor: [50, 100, 50]
+            },
+            autoHighlight: true,
+            highlightColor: [255, 255, 100, 200],
+            onClick: handleTreeClick,
+            onHover: handleTreeHover,
+            updateTriggers: {
+              getElevation: heightScale
+            }
+          }),
+          // Canopy layer - lighter colored top for trees (suggests foliage)
+          new PolygonLayer({
+            id: 'vegetation-3d-canopy',
+            data: filteredVegetation,
+            pickable: false,
+            extruded: true,
+            wireframe: false,
+            coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+            // Slightly larger polygon for canopy spread
+            getPolygon: (d: VegData) => getPolygonShape(
+              d.longitude || d.position?.[0],
+              d.latitude || d.position?.[1],
+              getTreeSize(d) * 1.3,  // Canopy is wider than trunk
+              8,
+              Math.PI / 8  // Slight rotation offset
+            ),
+            // Canopy sits on top of trunk
+            getElevation: () => 3 * heightScale,  // Thin canopy layer
+            // Offset to sit on top of tree trunk
+            elevationScale: 1,
+            getFillColor: (d: VegData) => {
+              const base = getRiskColor(d, 150);
+              // Lighter, more saturated for foliage effect
+              return [
+                Math.min(255, base[0] + 30),
+                Math.min(255, base[1] + 50),
+                Math.min(255, base[2] + 20),
+                base[3]
+              ] as [number, number, number, number];
+            },
+            getLineColor: [0, 0, 0, 0],  // No outline on canopy
+            material: {
+              ambient: 0.6,
+              diffuse: 0.4,
+              shininess: 10
+            }
+          })
+        ];
+      } else {
+        // 2D VIEW: Fast scatterplot markers with glow effects (original implementation)
+        // At low zoom (<11), use tiny markers to avoid dominating the map with 50K trees
+        const isLowZoom = currentZoom < 11;
+        const isMediumZoom = currentZoom >= 11 && currentZoom <= 13;
+        
+        return [
+          // Outer glow for high-risk trees (only visible at higher zoom)
+          ...(!isLowZoom ? [new ScatterplotLayer({
+            id: 'vegetation-risk-glow',
+            data: highRiskTrees,
+            getPosition: (d: VegData) => d.position || [d.longitude, d.latitude],
+            getRadius: (d: VegData) => {
+              const risk = d.risk_score || 0.7;
+              const baseRadius = isMediumZoom ? 12 : 18;
+              return baseRadius * (0.8 + risk * 0.4);
+            },
+            getFillColor: (d: VegData) => {
+              const risk = d.risk_score || 0.7;
+              if (risk > 0.8 || d.risk_level === 'critical') return [220, 38, 38, 60];
+              return [251, 191, 36, 50];
+            },
+            radiusUnits: 'pixels',
+            radiusMinPixels: isMediumZoom ? 4 : 8,
+            radiusMaxPixels: isMediumZoom ? 18 : 35,
+            pickable: false,
+            antialiasing: true,
+            updateTriggers: {
+              getRadius: currentZoom
+            }
+          })] : []),
+          // Main tree markers with height-based size and risk-based coloring
+          new ScatterplotLayer({
+            id: 'vegetation-risk-markers',
+            data: filteredVegetation,
+            getPosition: (d: VegData) => d.position || [d.longitude, d.latitude],
+            getRadius: (d: VegData) => {
+              if (isLowZoom) {
+                // Tiny dots at low zoom - just show distribution pattern
+                return 1;
+              }
+              const height = d.height_m || 10;
+              const baseRadius = isMediumZoom ? 4 : 7;
+              return baseRadius * (0.6 + (height / 30) * 0.6);
+            },
+            getFillColor: (d: VegData) => getRiskColor(d, isLowZoom ? 150 : 200),
+            getLineColor: (d: VegData) => {
+              if (isLowZoom) return [0, 0, 0, 0]; // No stroke at low zoom
+              const fill = getRiskColor(d, 255);
+              return [fill[0] * 0.4, fill[1] * 0.4, fill[2] * 0.4, 255] as [number, number, number, number];
+            },
+            lineWidthMinPixels: isLowZoom ? 0 : 1,
+            stroked: !isLowZoom,
+            filled: true,
+            radiusUnits: 'pixels',
+            radiusMinPixels: isLowZoom ? 1 : (isMediumZoom ? 2 : 3),
+            radiusMaxPixels: isLowZoom ? 2 : (isMediumZoom ? 8 : 15),
+            pickable: !isLowZoom, // Disable picking at low zoom for performance
+            autoHighlight: !isLowZoom,
+            highlightColor: [255, 255, 100, 255],
+            onClick: handleTreeClick,
+            onHover: handleTreeHover,
+            updateTriggers: {
+              getRadius: currentZoom,
+              getFillColor: currentZoom,
+              getLineColor: currentZoom
+            }
+          })
+        ];
+      }
+    })() : []),
+
+    // Engineering: Visual links between selected vegetation and affected assets
+    ...(selectedSpatialObject?.type === 'vegetation' && layersVisible.vegetation ? (() => {
+      const veg = selectedSpatialObject as SpatialVegetation;
+      if (!veg.latitude || !veg.longitude) return [];
+      
+      // CRITICAL: Use consistent 100m radius for bidirectional relationships
+      const fallZone = (veg.height_m || 10) * 1.1;
+      const THREAT_RADIUS = 100; // Same as asset card & vegetation card
+      const searchRadius = THREAT_RADIUS;
+      
+      // Find nearby assets and create connection lines
+      const connectionLines = assets.filter(asset => {
+        if (!asset.latitude || !asset.longitude) return false;
+        const dLat = (asset.latitude - veg.latitude) * 111000;
+        const dLon = (asset.longitude - veg.longitude) * 111000 * Math.cos(veg.latitude * Math.PI / 180);
+        const distance = Math.sqrt(dLat * dLat + dLon * dLon);
+        return distance <= searchRadius;
+      }).map(asset => {
+        const dLat = (asset.latitude - veg.latitude) * 111000;
+        const dLon = (asset.longitude - veg.longitude) * 111000 * Math.cos(veg.latitude * Math.PI / 180);
+        const distance = Math.sqrt(dLat * dLat + dLon * dLon);
+        const inFallZone = distance <= fallZone;
+        return {
+          path: [[veg.longitude, veg.latitude], [asset.longitude, asset.latitude]],
+          distance,
+          inFallZone,
+          assetType: asset.type
+        };
+      }).slice(0, 10); // Limit to 10 connections for performance
+      
       return [
-        // Outer glow for high-risk trees (pulsing warning effect)
-        new ScatterplotLayer({
-          id: 'vegetation-risk-glow',
-          data: highRiskTrees,
-          getPosition: (d: VegData) => d.position || [d.longitude, d.latitude],
-          getRadius: (d: VegData) => {
-            const risk = d.risk_score || 0.7;
-            const baseRadius = currentZoom > 15 ? 12 : currentZoom > 13 ? 18 : 25;
-            return baseRadius * (0.8 + risk * 0.4);
-          },
-          getFillColor: (d: VegData) => {
-            const risk = d.risk_score || 0.7;
-            if (risk > 0.8 || d.risk_level === 'critical') return [220, 38, 38, 60];  // Red glow
-            return [251, 191, 36, 50];  // Amber glow
-          },
-          radiusUnits: 'pixels',
-          radiusMinPixels: 8,
-          radiusMaxPixels: 35,
+        // Connection lines from vegetation to nearby assets
+        new PathLayer({
+          id: 'vegetation-asset-links',
+          data: connectionLines,
+          getPath: (d: { path: number[][] }) => d.path,
+          getColor: (d: { inFallZone: boolean }) => d.inFallZone ? [239, 68, 68, 180] : [34, 197, 94, 120],
+          getWidth: (d: { inFallZone: boolean }) => d.inFallZone ? 3 : 2,
+          widthUnits: 'pixels',
+          widthMinPixels: 1,
+          widthMaxPixels: 5,
           pickable: false,
-          antialiasing: true,
-          updateTriggers: {
-            getRadius: currentZoom
-          }
+          getDashArray: [4, 4],
+          dashJustified: true,
+          extensions: [new PathStyleExtension({ dash: true })]
         }),
-        // Main tree markers with risk-based coloring
+        // Highlight ring around selected vegetation
         new ScatterplotLayer({
-          id: 'vegetation-risk-markers',
-          data: spatialData.vegetation,
-          getPosition: (d: VegData) => d.position || [d.longitude, d.latitude],
-          getRadius: (d: VegData) => {
-            const height = d.height_m || 10;
-            const baseRadius = currentZoom > 15 ? 5 : currentZoom > 13 ? 7 : 10;
-            // Taller trees appear slightly larger
-            return baseRadius * (0.6 + (height / 30) * 0.6);
-          },
-          getFillColor: (d: VegData) => {
-            const risk = d.risk_score || 0;
-            const riskLevel = d.risk_level;
-            // Risk-based color gradient: Red (critical) → Amber (warning) → Yellow (monitor) → Green (safe)
-            if (risk > 0.8 || riskLevel === 'critical') return [220, 38, 38, 220];   // Bright red
-            if (risk > 0.6 || riskLevel === 'warning') return [251, 146, 60, 210];   // Orange
-            if (risk > 0.35 || riskLevel === 'monitor') return [234, 179, 8, 200];   // Amber
-            return [34, 197, 94, 180];   // Green (safe)
-          },
-          getLineColor: (d: VegData) => {
-            const risk = d.risk_score || 0;
-            // Darker outline for visibility
-            if (risk > 0.6) return [100, 20, 20, 255];  // Dark red outline
-            if (risk > 0.35) return [120, 80, 0, 255];  // Dark amber outline
-            return [20, 80, 40, 255];  // Dark green outline
-          },
+          id: 'vegetation-selection-ring',
+          data: [veg],
+          getPosition: (d: SpatialVegetation) => [d.longitude, d.latitude],
+          getRadius: fallZone,
+          getFillColor: [0, 0, 0, 0],
+          getLineColor: [239, 68, 68, 150],
+          lineWidthMinPixels: 2,
+          lineWidthMaxPixels: 3,
+          stroked: true,
+          filled: false,
+          radiusUnits: 'meters',
+          pickable: false
+        }),
+        // Outer search radius ring
+        new ScatterplotLayer({
+          id: 'vegetation-search-ring',
+          data: [veg],
+          getPosition: (d: SpatialVegetation) => [d.longitude, d.latitude],
+          getRadius: searchRadius,
+          getFillColor: [0, 0, 0, 0],
+          getLineColor: [34, 197, 94, 80],
           lineWidthMinPixels: 1,
           stroked: true,
-          filled: true,
-          radiusUnits: 'pixels',
-          radiusMinPixels: 3,
-          radiusMaxPixels: 15,
-          pickable: true,
-          autoHighlight: true,
-          highlightColor: [255, 255, 100, 255],
-          onClick: (info: DeckPickInfo) => {
-            if (info.object) {
-              const d = info.object as VegData;
-              const vegetation: SpatialVegetation = {
-                id: d.id || `tree-${info.index}`,
-                type: 'vegetation',
-                species: d.species || d.subtype,
-                height_m: d.height_m,
-                canopy_height: d.canopy_height,
-                risk_score: d.risk_score,
-                proximity_risk: d.proximity_risk || d.risk_score,
-                distance_to_line_m: d.distance_to_line_m,
-                latitude: d.latitude || d.position?.[1],
-                longitude: d.longitude || d.position?.[0]
-              };
-              setSelectedSpatialObject(vegetation);
-              setSpatialClickPosition({ x: info.x, y: info.y });
-              setSelectedSpatialPosition(null);
-              setSelectedAsset(null);
-            }
-          },
-          onHover: (info: DeckPickInfo) => {
-            if (info.object) {
-              const d = info.object as VegData;
-              const vegetation: SpatialVegetation = {
-                id: d.id || `tree-${info.index}`,
-                type: 'vegetation',
-                species: d.species || d.subtype,
-                height_m: d.height_m,
-                risk_score: d.risk_score,
-                proximity_risk: d.proximity_risk || d.risk_score,
-                latitude: d.latitude || d.position?.[1],
-                longitude: d.longitude || d.position?.[0]
-              };
-              setHoveredSpatialObject(vegetation);
-              setSpatialHoverPosition({ x: info.x, y: info.y });
-            } else {
-              setHoveredSpatialObject(null);
-              setSpatialHoverPosition(null);
-            }
-          },
-          updateTriggers: {
-            getRadius: currentZoom
-          }
+          filled: false,
+          radiusUnits: 'meters',
+          pickable: false
         })
       ];
     })() : [])
@@ -5913,7 +6446,9 @@ function App() {
     heightScale,
     connectedAssets,
     assetConnectionCounts,
-    spatialData
+    spatialData,
+    selectedSpatialObject,  // Engineering: For vegetation-asset visual links
+    assets  // Engineering: For vegetation-asset proximity calculations
   ]);
 
   // Removed expensive console.log for performance
@@ -6527,6 +7062,30 @@ function App() {
                           </Stack>
                         </Box>
                       )}
+
+                      {/* Cascade Analysis Toggle */}
+                      <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.08)' }} />
+                      
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <IconButton 
+                          size="small"
+                          onClick={() => setLayersVisible({...layersVisible, cascadeAnalysis: !layersVisible.cascadeAnalysis})}
+                          sx={{ 
+                            color: layersVisible.cascadeAnalysis ? '#FF6B6B' : 'rgba(255,255,255,0.3)',
+                            '&:hover': { bgcolor: 'rgba(255, 107, 107, 0.1)' }
+                          }}
+                        >
+                          <Timeline sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Box sx={{ flex: 1 }}>
+                          <Typography variant="caption" sx={{ color: layersVisible.cascadeAnalysis ? '#FF6B6B' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                            Cascade Analysis
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                            ML risk simulation
+                          </Typography>
+                        </Box>
+                      </Box>
                         </Stack>
                       </Collapse>
                     </Stack>
@@ -6604,6 +7163,32 @@ function App() {
                                 {spatialLoading.powerLines ? 'Loading...' : `${spatialData.powerLines.length.toLocaleString()} segments`}
                               </Typography>
                             </Box>
+                            {/* Demo: Refresh button with query time */}
+                            <Tooltip title="Refresh from PostGIS" arrow placement="top">
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                {spatialQueryTime.powerLines !== null && !spatialLoading.powerLines && (
+                                  <Typography variant="caption" sx={{ color: '#22C55E', fontSize: 9, fontFamily: 'monospace' }}>
+                                    {spatialQueryTime.powerLines}ms
+                                  </Typography>
+                                )}
+                                <IconButton
+                                  size="small"
+                                  onClick={() => loadSpatialLayer('powerLines', viewState.zoom, true)}
+                                  disabled={spatialLoading.powerLines}
+                                  sx={{ 
+                                    p: 0.25,
+                                    color: spatialLoading.powerLines ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.5)',
+                                    '&:hover': { color: '#FBBF24', bgcolor: 'rgba(251, 191, 36, 0.1)' }
+                                  }}
+                                >
+                                  {spatialLoading.powerLines ? (
+                                    <CircularProgress size={14} sx={{ color: '#FBBF24' }} />
+                                  ) : (
+                                    <Refresh sx={{ fontSize: 14 }} />
+                                  )}
+                                </IconButton>
+                              </Box>
+                            </Tooltip>
                           </Box>
 
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
@@ -6623,10 +7208,137 @@ function App() {
                                 Vegetation Risk
                               </Typography>
                               <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
-                                {spatialLoading.vegetation ? 'Loading...' : `${spatialData.vegetation.length.toLocaleString()} risk points`}
+                                {spatialLoading.vegetation ? 'Loading...' : `${filteredVegetationCount.toLocaleString()} / ${spatialData.vegetation.length.toLocaleString()} showing`}
                               </Typography>
                             </Box>
+                            {/* Demo: Refresh button with query time */}
+                            <Tooltip title="Refresh from PostGIS" arrow placement="top">
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                {spatialQueryTime.vegetation !== null && !spatialLoading.vegetation && (
+                                  <Typography variant="caption" sx={{ color: '#22C55E', fontSize: 9, fontFamily: 'monospace' }}>
+                                    {spatialQueryTime.vegetation}ms
+                                  </Typography>
+                                )}
+                                <IconButton
+                                  size="small"
+                                  onClick={() => loadSpatialLayer('vegetation', undefined, true)}
+                                  disabled={spatialLoading.vegetation}
+                                  sx={{ 
+                                    p: 0.25,
+                                    color: spatialLoading.vegetation ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.5)',
+                                    '&:hover': { color: '#22C55E', bgcolor: 'rgba(34, 197, 94, 0.1)' }
+                                  }}
+                                >
+                                  {spatialLoading.vegetation ? (
+                                    <CircularProgress size={14} sx={{ color: '#22C55E' }} />
+                                  ) : (
+                                    <Refresh sx={{ fontSize: 14 }} />
+                                  )}
+                                </IconButton>
+                              </Box>
+                            </Tooltip>
                           </Box>
+
+                          {/* Feature: Vegetation Risk Level Toggles */}
+                          {layersVisible.vegetation && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, pl: 4, py: 0.25 }}>
+                              <Chip
+                                label="High"
+                                size="small"
+                                onClick={() => setVegetationRiskFilters(prev => ({ ...prev, high: !prev.high }))}
+                                sx={{
+                                  height: 18,
+                                  fontSize: 9,
+                                  fontWeight: 600,
+                                  bgcolor: vegetationRiskFilters.high ? 'rgba(239, 68, 68, 0.3)' : 'rgba(255,255,255,0.05)',
+                                  color: vegetationRiskFilters.high ? '#EF4444' : 'rgba(255,255,255,0.4)',
+                                  border: `1px solid ${vegetationRiskFilters.high ? '#EF4444' : 'rgba(255,255,255,0.1)'}`,
+                                  '&:hover': { bgcolor: 'rgba(239, 68, 68, 0.2)' },
+                                  cursor: 'pointer'
+                                }}
+                              />
+                              <Chip
+                                label="Med"
+                                size="small"
+                                onClick={() => setVegetationRiskFilters(prev => ({ ...prev, medium: !prev.medium }))}
+                                sx={{
+                                  height: 18,
+                                  fontSize: 9,
+                                  fontWeight: 600,
+                                  bgcolor: vegetationRiskFilters.medium ? 'rgba(234, 179, 8, 0.3)' : 'rgba(255,255,255,0.05)',
+                                  color: vegetationRiskFilters.medium ? '#EAB308' : 'rgba(255,255,255,0.4)',
+                                  border: `1px solid ${vegetationRiskFilters.medium ? '#EAB308' : 'rgba(255,255,255,0.1)'}`,
+                                  '&:hover': { bgcolor: 'rgba(234, 179, 8, 0.2)' },
+                                  cursor: 'pointer'
+                                }}
+                              />
+                              <Chip
+                                label="Low"
+                                size="small"
+                                onClick={() => setVegetationRiskFilters(prev => ({ ...prev, low: !prev.low }))}
+                                sx={{
+                                  height: 18,
+                                  fontSize: 9,
+                                  fontWeight: 600,
+                                  bgcolor: vegetationRiskFilters.low ? 'rgba(34, 197, 94, 0.3)' : 'rgba(255,255,255,0.05)',
+                                  color: vegetationRiskFilters.low ? '#22C55E' : 'rgba(255,255,255,0.4)',
+                                  border: `1px solid ${vegetationRiskFilters.low ? '#22C55E' : 'rgba(255,255,255,0.1)'}`,
+                                  '&:hover': { bgcolor: 'rgba(34, 197, 94, 0.2)' },
+                                  cursor: 'pointer'
+                                }}
+                              />
+                            </Box>
+                          )}
+
+                          <Tooltip title="Actual water bodies (rivers, streams, ponds) from OSM data - NOT flood zones" arrow placement="left">
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 0.5 }}>
+                            <IconButton 
+                              size="small"
+                              onClick={() => setLayersVisible({...layersVisible, waterBodies: !layersVisible.waterBodies})}
+                              disabled={spatialLoading.waterBodies}
+                              sx={{ 
+                                color: layersVisible.waterBodies ? '#38BDF8' : 'rgba(255,255,255,0.3)',
+                                '&:hover': { bgcolor: 'rgba(56, 189, 248, 0.1)' }
+                              }}
+                            >
+                              <Water sx={{ fontSize: 18 }} />
+                            </IconButton>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="caption" sx={{ color: layersVisible.waterBodies ? '#38BDF8' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
+                                Water Bodies
+                              </Typography>
+                              <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
+                                {spatialLoading.waterBodies ? 'Loading...' : `${spatialData.waterBodies.length.toLocaleString()} features`}
+                              </Typography>
+                            </Box>
+                            {/* Demo: Refresh button with query time */}
+                            <Tooltip title="Refresh from PostGIS (synced from Snowflake)" arrow placement="top">
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                {spatialQueryTime.waterBodies !== null && !spatialLoading.waterBodies && (
+                                  <Typography variant="caption" sx={{ color: '#22C55E', fontSize: 9, fontFamily: 'monospace' }}>
+                                    {spatialQueryTime.waterBodies}ms
+                                  </Typography>
+                                )}
+                                <IconButton
+                                  size="small"
+                                  onClick={() => loadSpatialLayer('waterBodies', undefined, true)}
+                                  disabled={spatialLoading.waterBodies}
+                                  sx={{ 
+                                    p: 0.25,
+                                    color: spatialLoading.waterBodies ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.5)',
+                                    '&:hover': { color: '#38BDF8', bgcolor: 'rgba(56, 189, 248, 0.1)' }
+                                  }}
+                                >
+                                  {spatialLoading.waterBodies ? (
+                                    <CircularProgress size={14} sx={{ color: '#38BDF8' }} />
+                                  ) : (
+                                    <Refresh sx={{ fontSize: 14 }} />
+                                  )}
+                                </IconButton>
+                              </Box>
+                            </Tooltip>
+                          </Box>
+                          </Tooltip>
                         </Stack>
                       </Collapse>
                     </Stack>
@@ -6788,8 +7500,32 @@ function App() {
                     renderWorldCopies={false}
                     attributionControl={false}
                     interactive={false}
+                    onLoad={(evt) => {
+                      // Production: Capture map ref for basemap layer interleaving
+                      mapRef.current = evt.target;
+                      setMapLoaded(true);  // CRITICAL: Trigger useEffect for water layer interleaving
+                      logger.log('🗺️ # MapLibre instance captured, mapLoaded=true - water layer interleaving ready');
+                    }}
                   />
                 </DeckGL>
+
+                {/* Engineering: Cascade Analysis Panel - Stays on map for geographic context */}
+                <CascadeControlPanel
+                  scenarios={cascadeControls.scenarios}
+                  cascadeResult={cascadeControls.state.cascadeResult}
+                  highRiskNodes={cascadeControls.state.highRiskNodes}
+                  riskPredictions={cascadeControls.state.riskPredictions}
+                  isSimulating={cascadeControls.state.isSimulating}
+                  isLoadingPredictions={cascadeControls.state.isLoadingPredictions}
+                  onSimulate={cascadeControls.simulateCascade}
+                  onClear={cascadeControls.clearCascade}
+                  onLoadHighRisk={cascadeControls.loadHighRiskNodes}
+                  onLoadPredictions={cascadeControls.loadRiskPredictions}
+                  visible={layersVisible.cascadeAnalysis}
+                  onToggleVisibility={() => setLayersVisible(prev => ({ ...prev, cascadeAnalysis: !prev.cascadeAnalysis }))}
+                  focusedWave={cascadeControls.state.focusedWave}
+                  onFocusWave={cascadeControls.setFocusedWave}
+                />
 
                 {/* Pinned Asset Cards - OPTIMIZED: translate3d GPU acceleration, pointer-events optimization */}
                 {pinnedAssets.map((pinned) => {
@@ -7782,46 +8518,63 @@ function App() {
                 {/* Selected Asset Panel (Active/Unpinned) */}
                 {selectedAsset && clickPosition && !pinnedAssets.some(p => p.asset.id === selectedAsset.id) && (() => {
                   // Engineering: Intelligent positioning to ensure full info card visibility
+                  // CRITICAL: Card must NEVER obscure the asset it represents
                   const CARD_WIDTH = 380;
-                  const CARD_HEIGHT = 700; // Increased estimate for scrollability
-                  const MARGIN = 20;
-                  const EDGE_THRESHOLD = 60; // Increased threshold for better edge detection
+                  const CARD_HEIGHT = 700;
+                  const KEEP_CLEAR_ZONE = 80; // Minimum distance from click point to card edge
+                  const CARD_GAP = 12;
                   
-                  // Detect proximity to screen edges with viewport awareness
                   const viewportWidth = window.innerWidth;
                   const viewportHeight = window.innerHeight;
-                  const nearRight = clickPosition.x + CARD_WIDTH + EDGE_THRESHOLD > viewportWidth;
-                  const nearBottom = clickPosition.y + CARD_HEIGHT + EDGE_THRESHOLD > viewportHeight;
-                  const nearLeft = clickPosition.x < EDGE_THRESHOLD;
-                  const nearTop = clickPosition.y < EDGE_THRESHOLD;
                   
-                  // Smart positioning with corner case handling
+                  // Engineering: Position card so clicked item remains visible
+                  // Prefer RIGHT side of click, fall back to LEFT if near right edge
+                  const bothCardsOpen = selectedSpatialObject !== null && spatialClickPosition !== null;
+                  const SPATIAL_CARD_WIDTH = 340;
+                  
                   let cardLeft: number;
                   let cardTop: number;
                   
-                  // Horizontal positioning
-                  if (nearRight && !nearLeft) {
-                    cardLeft = Math.max(10, clickPosition.x - CARD_WIDTH - MARGIN);
-                  } else if (nearLeft) {
-                    cardLeft = Math.min(clickPosition.x + MARGIN, viewportWidth - CARD_WIDTH - 10);
+                  // Determine best side to place card (prioritize keeping asset visible)
+                  const spaceOnRight = viewportWidth - clickPosition.x - KEEP_CLEAR_ZONE;
+                  const spaceOnLeft = clickPosition.x - KEEP_CLEAR_ZONE;
+                  
+                  if (spaceOnRight >= CARD_WIDTH + 10) {
+                    // Enough space on right - place card there, keeping clear zone
+                    cardLeft = clickPosition.x + KEEP_CLEAR_ZONE;
+                  } else if (spaceOnLeft >= CARD_WIDTH + 10) {
+                    // Use left side
+                    cardLeft = clickPosition.x - KEEP_CLEAR_ZONE - CARD_WIDTH;
                   } else {
-                    cardLeft = Math.min(clickPosition.x + MARGIN, viewportWidth - CARD_WIDTH - 10);
+                    // Tight space - place on whichever side has more room
+                    if (spaceOnRight > spaceOnLeft) {
+                      cardLeft = viewportWidth - CARD_WIDTH - 10;
+                    } else {
+                      cardLeft = 10;
+                    }
                   }
                   
-                  // Vertical positioning
-                  if (nearBottom && !nearTop) {
-                    cardTop = Math.max(10, clickPosition.y - CARD_HEIGHT - MARGIN);
-                  } else if (nearTop) {
-                    cardTop = Math.min(clickPosition.y + MARGIN, viewportHeight - CARD_HEIGHT - 10);
-                  } else {
-                    cardTop = Math.min(clickPosition.y + MARGIN, viewportHeight - CARD_HEIGHT - 10);
+                  // Vertical: align top of card with click, but keep within bounds
+                  // Offset slightly above the click point so asset is visible
+                  cardTop = Math.max(80, Math.min(clickPosition.y - 60, viewportHeight - CARD_HEIGHT - 10));
+                  
+                  // If both cards are open and this is secondary, offset to avoid overlap with primary
+                  if (bothCardsOpen && isAssetCardSecondary && !selectedAssetPosition) {
+                    // This asset card was opened from a vegetation card
+                    // Position it to the RIGHT of the spatial card (which is near spatialClickPosition)
+                    const spatialCardLeft = spatialClickPosition.x + KEEP_CLEAR_ZONE;
+                    cardLeft = Math.min(spatialCardLeft + SPATIAL_CARD_WIDTH + CARD_GAP, viewportWidth - CARD_WIDTH - 10);
+                    if (cardLeft + CARD_WIDTH > viewportWidth - 10) {
+                      cardLeft = Math.max(10, spatialCardLeft - CARD_WIDTH - CARD_GAP - SPATIAL_CARD_WIDTH);
+                    }
+                    cardTop = Math.max(80, Math.min(spatialClickPosition.y - 60, viewportHeight - CARD_HEIGHT - 10));
                   }
                   
-                  // Ensure card stays within bounds
+                  // Final bounds check
                   cardLeft = Math.max(10, Math.min(cardLeft, viewportWidth - CARD_WIDTH - 10));
-                  cardTop = Math.max(10, Math.min(cardTop, viewportHeight - 200)); // Ensure at least 200px visible
+                  cardTop = Math.max(10, Math.min(cardTop, viewportHeight - 200));
                   
-                  // Use stored position if being dragged, otherwise use calculated position
+                  // Use stored position if being dragged
                   if (selectedAssetPosition) {
                     cardLeft = selectedAssetPosition.x;
                     cardTop = selectedAssetPosition.y;
@@ -8804,6 +9557,121 @@ function App() {
                           </Box>
                         )}
 
+                        {/* Engineering: Location Context - Asset-type appropriate display */}
+                        {selectedAsset.type !== 'aggregate' && (selectedAsset.city || selectedAsset.service_address) && (
+                          <Box sx={{ 
+                            p: 1.5, 
+                            bgcolor: 'rgba(59, 130, 246, 0.08)', 
+                            borderRadius: 1,
+                            border: '1px solid rgba(59, 130, 246, 0.2)'
+                          }}>
+                            <Stack direction="row" spacing={1} alignItems="center" mb={1}>
+                              <MyLocation sx={{ fontSize: 14, color: '#3B82F6' }} />
+                              <Typography variant="caption" fontWeight={600} color="#3B82F6">
+                                LOCATION
+                              </Typography>
+                            </Stack>
+                            
+                            {/* Meters: Show actual customer address */}
+                            {selectedAsset.type === 'meter' && selectedAsset.service_address && (
+                              <Box mb={0.5}>
+                                <Typography variant="body2" fontWeight={600}>
+                                  {selectedAsset.service_address}
+                                </Typography>
+                              </Box>
+                            )}
+                            
+                            {/* City, ZIP for all asset types */}
+                            {(selectedAsset.city || selectedAsset.zip_code) && (
+                              <Typography variant="body2" color="text.secondary">
+                                {[selectedAsset.city, selectedAsset.zip_code].filter(Boolean).join(', ')}
+                              </Typography>
+                            )}
+                            
+                            {/* County for jurisdictional context */}
+                            {selectedAsset.county && (
+                              <Typography variant="caption" color="text.secondary">
+                                {selectedAsset.county} County
+                              </Typography>
+                            )}
+                          </Box>
+                        )}
+
+                        {/* Engineering: Customer Impact - Critical for priority assessment */}
+                        {selectedAsset.type !== 'aggregate' && selectedAsset.connected_customers && (
+                          <Box sx={{ 
+                            p: 1.5, 
+                            bgcolor: selectedAsset.connected_customers > 1000 ? 'rgba(239, 68, 68, 0.08)' :
+                                     selectedAsset.connected_customers > 100 ? 'rgba(251, 191, 36, 0.08)' : 'rgba(34, 197, 94, 0.08)',
+                            borderRadius: 1,
+                            border: `1px solid ${selectedAsset.connected_customers > 1000 ? 'rgba(239, 68, 68, 0.2)' :
+                                     selectedAsset.connected_customers > 100 ? 'rgba(251, 191, 36, 0.2)' : 'rgba(34, 197, 94, 0.2)'}`
+                          }}>
+                            <Stack direction="row" spacing={1} alignItems="center" mb={1}>
+                              <Groups sx={{ fontSize: 14, color: selectedAsset.connected_customers > 1000 ? '#EF4444' :
+                                           selectedAsset.connected_customers > 100 ? '#FBBF24' : '#22C55E' }} />
+                              <Typography variant="caption" fontWeight={600} color={
+                                selectedAsset.connected_customers > 1000 ? '#EF4444' :
+                                selectedAsset.connected_customers > 100 ? '#FBBF24' : '#22C55E'
+                              }>
+                                CUSTOMER IMPACT
+                              </Typography>
+                            </Stack>
+                            
+                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                              <Typography variant="body2" color="text.secondary">
+                                {selectedAsset.type === 'meter' ? 'Customer' :
+                                 selectedAsset.type === 'transformer' ? 'Customers Served' :
+                                 selectedAsset.type === 'substation' ? 'Customers on Circuits' :
+                                 'Circuit Customers'}
+                              </Typography>
+                              <Typography variant="h6" fontWeight={700} sx={{ 
+                                color: selectedAsset.connected_customers > 1000 ? '#EF4444' :
+                                       selectedAsset.connected_customers > 100 ? '#FBBF24' : '#22C55E'
+                              }}>
+                                {selectedAsset.connected_customers.toLocaleString()}
+                              </Typography>
+                            </Stack>
+                            
+                            {/* Substation-specific: circuits served */}
+                            {selectedAsset.type === 'substation' && selectedAsset.circuits_served && (
+                              <Stack direction="row" justifyContent="space-between" alignItems="center" mt={0.5}>
+                                <Typography variant="body2" color="text.secondary">Circuits Served</Typography>
+                                <Typography variant="body2" fontWeight={600} color="#3B82F6">
+                                  {selectedAsset.circuits_served}
+                                </Typography>
+                              </Stack>
+                            )}
+                            
+                            {/* Meter: Show customer name if available */}
+                            {selectedAsset.type === 'meter' && selectedAsset.customer_name && (
+                              <Box mt={1} pt={1} sx={{ borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                                <Typography variant="caption" color="text.secondary">Customer</Typography>
+                                <Typography variant="body2" fontWeight={500}>
+                                  {selectedAsset.customer_name}
+                                </Typography>
+                                {selectedAsset.customer_segment && (
+                                  <Chip 
+                                    label={selectedAsset.customer_segment} 
+                                    size="small" 
+                                    sx={{ mt: 0.5, height: 18, fontSize: 9 }}
+                                  />
+                                )}
+                              </Box>
+                            )}
+                            
+                            {/* Substation: Show capacity */}
+                            {selectedAsset.type === 'substation' && selectedAsset.capacity_mva && (
+                              <Stack direction="row" justifyContent="space-between" alignItems="center" mt={0.5}>
+                                <Typography variant="body2" color="text.secondary">Capacity</Typography>
+                                <Typography variant="body2" fontWeight={600} color="#8B5CF6">
+                                  {selectedAsset.capacity_mva.toFixed(0)} MVA
+                                </Typography>
+                              </Stack>
+                            )}
+                          </Box>
+                        )}
+
                         {selectedAsset.type !== 'aggregate' && (
                           <Box>
                             <Typography variant="caption" color="text.secondary">Coordinates</Typography>
@@ -9022,6 +9890,160 @@ function App() {
                             </Box>
                           );
                         })()}
+
+                        {/* Engineering: Vegetation Risks Section - Show nearby vegetation threats */}
+                        {selectedAsset.type !== 'aggregate' && layersVisible.vegetation && spatialData.vegetation.length > 0 && (() => {
+                          // Find vegetation within threat range of this asset
+                          const threatRadius = 100; // 100m threat radius
+                          const nearbyVegetation = spatialData.vegetation.filter((veg: Record<string, unknown>) => {
+                            const vegLat = (veg.latitude || (veg.position as number[])?.[1]) as number;
+                            const vegLon = (veg.longitude || (veg.position as number[])?.[0]) as number;
+                            if (!vegLat || !vegLon || !selectedAsset.latitude || !selectedAsset.longitude) return false;
+                            const dLat = (vegLat - selectedAsset.latitude) * 111000;
+                            const dLon = (vegLon - selectedAsset.longitude) * 111000 * Math.cos(selectedAsset.latitude * Math.PI / 180);
+                            const distance = Math.sqrt(dLat * dLat + dLon * dLon);
+                            return distance <= threatRadius;
+                          }).map((veg: Record<string, unknown>) => {
+                            const vegLat = (veg.latitude || (veg.position as number[])?.[1]) as number;
+                            const vegLon = (veg.longitude || (veg.position as number[])?.[0]) as number;
+                            const dLat = (vegLat - selectedAsset.latitude) * 111000;
+                            const dLon = (vegLon - selectedAsset.longitude) * 111000 * Math.cos(selectedAsset.latitude * Math.PI / 180);
+                            const distance = Math.sqrt(dLat * dLat + dLon * dLon);
+                            const height = (veg.height_m as number) || 10;
+                            const fallZone = height * 1.1;
+                            const inFallZone = distance <= fallZone;
+                            return { ...veg, distance, inFallZone, height };
+                          }).sort((a, b) => (b.risk_score as number || 0) - (a.risk_score as number || 0)).slice(0, 8);
+                          
+                          const criticalCount = nearbyVegetation.filter(v => v.inFallZone || (v.risk_score as number || 0) > 0.7).length;
+                          
+                          if (nearbyVegetation.length === 0) return null;
+                          
+                          return (
+                            <Box>
+                              <Box 
+                                sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+                                onClick={() => setExpandedSections(prev => ({ ...prev, vegetation: !prev.vegetation }))}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Park sx={{ fontSize: 16, color: criticalCount > 0 ? '#EF4444' : '#22C55E' }} />
+                                  <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                                    VEGETATION RISKS
+                                  </Typography>
+                                  {criticalCount > 0 && (
+                                    <Chip 
+                                      label={`${criticalCount} critical`}
+                                      size="small"
+                                      sx={{ height: 16, fontSize: 9, bgcolor: 'rgba(239, 68, 68, 0.2)', color: '#EF4444' }}
+                                    />
+                                  )}
+                                </Stack>
+                                <Stack direction="row" spacing={0.5} alignItems="center">
+                                  <Typography variant="caption" color="#22C55E" fontWeight={600}>
+                                    {nearbyVegetation.length}
+                                  </Typography>
+                                  <IconButton size="small">
+                                    {expandedSections.vegetation ? <ExpandLess sx={{ fontSize: 14 }} /> : <ExpandMore sx={{ fontSize: 14 }} />}
+                                  </IconButton>
+                                </Stack>
+                              </Box>
+                              
+                              <Collapse in={expandedSections.vegetation}>
+                                <Stack spacing={0.5} mt={1}>
+                                  <Box sx={{ 
+                                    maxHeight: 160, 
+                                    overflowY: 'auto',
+                                    border: '1px solid rgba(34, 197, 94, 0.2)',
+                                    borderRadius: 1,
+                                    '&::-webkit-scrollbar': { width: 4 },
+                                    '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(34, 197, 94, 0.3)', borderRadius: 2 }
+                                  }}>
+                                    {nearbyVegetation.map((veg, idx) => {
+                                      const risk = (veg.risk_score as number) || 0;
+                                      const riskColor = veg.inFallZone || risk > 0.7 ? '#EF4444' : 
+                                                       risk > 0.4 ? '#FBBF24' : '#22C55E';
+                                      return (
+                                        <Box 
+                                          key={veg.id as string || idx}
+                                          onClick={() => {
+                                            const vegObj: SpatialVegetation = {
+                                              id: (veg.id as string) || `veg-${idx}`,
+                                              type: 'vegetation',
+                                              species: veg.species as string,
+                                              height_m: veg.height as number,
+                                              risk_score: veg.risk_score as number,
+                                              risk_level: veg.risk_level as 'critical' | 'warning' | 'monitor' | 'safe',
+                                              distance_to_line_m: veg.distance_to_line_m as number,
+                                              nearest_line_id: veg.nearest_line_id as string,
+                                              nearest_line_voltage_kv: veg.nearest_line_voltage_kv as number,
+                                              latitude: (veg.latitude || (veg.position as number[])?.[1]) as number,
+                                              longitude: (veg.longitude || (veg.position as number[])?.[0]) as number
+                                            };
+                                            setSelectedSpatialObject(vegObj);
+                                            setSpatialClickPosition(clickPosition);
+                                            // Engineering: Mark as secondary card to enable side-by-side positioning
+                                            setIsSpatialCardSecondary(true);
+                                            setSelectedSpatialPosition(null); // Reset drag position
+                                          }}
+                                          sx={{ 
+                                            p: 1,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 1,
+                                            cursor: 'pointer',
+                                            borderBottom: idx < nearbyVegetation.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                                            bgcolor: veg.inFallZone ? 'rgba(239, 68, 68, 0.08)' : 'transparent',
+                                            '&:hover': { bgcolor: 'rgba(34, 197, 94, 0.1)' },
+                                            transition: 'background-color 0.15s'
+                                          }}
+                                        >
+                                          {/* Risk indicator */}
+                                          <Box sx={{ 
+                                            width: 24, height: 24, 
+                                            borderRadius: '50%', 
+                                            bgcolor: `${riskColor}20`,
+                                            border: `2px solid ${riskColor}`,
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            flexShrink: 0
+                                          }}>
+                                            <Park sx={{ fontSize: 12, color: riskColor }} />
+                                          </Box>
+                                          
+                                          {/* Veg info */}
+                                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                                            <Typography sx={{ 
+                                              fontSize: 10, 
+                                              fontWeight: 600, 
+                                              color: 'rgba(255,255,255,0.9)',
+                                              textTransform: 'capitalize'
+                                            }}>
+                                              {(veg.species as string) || 'Unknown species'}
+                                            </Typography>
+                                            <Typography sx={{ fontSize: 9, color: 'rgba(255,255,255,0.5)' }}>
+                                              {veg.height?.toFixed(1)}m tall • {(risk * 100).toFixed(0)}% risk
+                                            </Typography>
+                                          </Box>
+                                          
+                                          {/* Distance + fall zone indicator */}
+                                          <Box sx={{ textAlign: 'right', flexShrink: 0 }}>
+                                            <Typography sx={{ fontSize: 11, fontWeight: 700, color: riskColor }}>
+                                              {veg.distance.toFixed(0)}m
+                                            </Typography>
+                                            {veg.inFallZone && (
+                                              <Typography sx={{ fontSize: 8, color: '#EF4444', fontWeight: 600 }}>
+                                                IN FALL ZONE
+                                              </Typography>
+                                            )}
+                                          </Box>
+                                        </Box>
+                                      );
+                                    })}
+                                  </Box>
+                                </Stack>
+                              </Collapse>
+                            </Box>
+                          );
+                        })()}
                       </Stack>
                       </Paper>
                     </Fade>
@@ -9030,22 +10052,58 @@ function App() {
 
                 {/* Selected Spatial Object Info Card - Buildings, Power Lines, Vegetation */}
                 {selectedSpatialObject && spatialClickPosition && (() => {
+                  // Engineering: Position card to NEVER obscure the item it represents
                   const CARD_WIDTH = 340;
-                  const CARD_HEIGHT = 450;
-                  const MARGIN = 20;
+                  const CARD_HEIGHT = 500;
+                  const KEEP_CLEAR_ZONE = 80; // Minimum distance from click to card edge
+                  const CARD_GAP = 12;
+                  const ASSET_CARD_WIDTH = 380;
                   
                   const viewportWidth = window.innerWidth;
                   const viewportHeight = window.innerHeight;
-                  const nearRight = spatialClickPosition.x + CARD_WIDTH + MARGIN > viewportWidth;
-                  const nearBottom = spatialClickPosition.y + CARD_HEIGHT + MARGIN > viewportHeight;
                   
-                  let cardLeft = nearRight ? Math.max(10, spatialClickPosition.x - CARD_WIDTH - MARGIN) : spatialClickPosition.x + MARGIN;
-                  let cardTop = nearBottom ? Math.max(10, spatialClickPosition.y - CARD_HEIGHT - MARGIN) : spatialClickPosition.y + MARGIN;
+                  const bothCardsOpen = selectedAsset !== null && clickPosition !== null;
                   
+                  let cardLeft: number;
+                  let cardTop: number;
+                  
+                  // Determine best side (prefer RIGHT, fall back to LEFT)
+                  const spaceOnRight = viewportWidth - spatialClickPosition.x - KEEP_CLEAR_ZONE;
+                  const spaceOnLeft = spatialClickPosition.x - KEEP_CLEAR_ZONE;
+                  
+                  if (spaceOnRight >= CARD_WIDTH + 10) {
+                    cardLeft = spatialClickPosition.x + KEEP_CLEAR_ZONE;
+                  } else if (spaceOnLeft >= CARD_WIDTH + 10) {
+                    cardLeft = spatialClickPosition.x - KEEP_CLEAR_ZONE - CARD_WIDTH;
+                  } else {
+                    if (spaceOnRight > spaceOnLeft) {
+                      cardLeft = viewportWidth - CARD_WIDTH - 10;
+                    } else {
+                      cardLeft = 10;
+                    }
+                  }
+                  
+                  // Vertical: offset above click so item remains visible
+                  cardTop = Math.max(80, Math.min(spatialClickPosition.y - 60, viewportHeight - CARD_HEIGHT - 10));
+                  
+                  // If secondary card (opened from asset card), position adjacent to asset card
+                  if (bothCardsOpen && isSpatialCardSecondary && !selectedSpatialPosition) {
+                    // Asset card is at clickPosition + KEEP_CLEAR_ZONE
+                    const assetCardLeft = clickPosition.x + KEEP_CLEAR_ZONE;
+                    // Place spatial card to the LEFT of asset card
+                    cardLeft = Math.max(10, assetCardLeft - CARD_WIDTH - CARD_GAP);
+                    if (cardLeft < 10) {
+                      // Not enough space on left, try right of asset card
+                      cardLeft = Math.min(assetCardLeft + ASSET_CARD_WIDTH + CARD_GAP, viewportWidth - CARD_WIDTH - 10);
+                    }
+                    cardTop = Math.max(80, Math.min(clickPosition.y - 60, viewportHeight - CARD_HEIGHT - 10));
+                  }
+                  
+                  // Final bounds check
                   cardLeft = Math.max(10, Math.min(cardLeft, viewportWidth - CARD_WIDTH - 10));
                   cardTop = Math.max(10, Math.min(cardTop, viewportHeight - 150));
                   
-                  // Use stored position if being dragged, otherwise use calculated position
+                  // Use stored position if being dragged
                   if (selectedSpatialPosition) {
                     cardLeft = selectedSpatialPosition.x;
                     cardTop = selectedSpatialPosition.y;
@@ -9101,28 +10159,28 @@ function App() {
                         <Box 
                           className="spatial-drag-handle"
                           sx={{ 
-                            p: 2, 
+                            p: 1.5, 
                             borderBottom: '1px solid rgba(255,255,255,0.1)',
                             background: `linear-gradient(135deg, ${borderColor}15 0%, transparent 100%)`,
                             cursor: isDragging ? 'grabbing' : 'grab',
                           }}
                         >
-                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                              {selectedSpatialObject.type === 'building' && <Business sx={{ color: borderColor, fontSize: 28 }} />}
-                              {selectedSpatialObject.type === 'power_line' && <ElectricalServices sx={{ color: borderColor, fontSize: 28 }} />}
-                              {selectedSpatialObject.type === 'vegetation' && <Park sx={{ color: borderColor, fontSize: 28 }} />}
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              {selectedSpatialObject.type === 'building' && <Business sx={{ color: borderColor, fontSize: 26 }} />}
+                              {selectedSpatialObject.type === 'power_line' && <ElectricalServices sx={{ color: borderColor, fontSize: 26 }} />}
+                              {selectedSpatialObject.type === 'vegetation' && <Park sx={{ color: borderColor, fontSize: 26 }} />}
                               <Box>
                                 <Typography variant="h6" sx={{ 
                                   fontWeight: 700, 
-                                  fontSize: 16, 
+                                  fontSize: 15, 
                                   color: borderColor,
                                   lineHeight: 1.2
                                 }}>
                                   {selectedSpatialObject.type === 'building' ? 'Building Footprint' :
                                    selectedSpatialObject.type === 'power_line' ? 'Power Line' : 'Vegetation Risk'}
                                 </Typography>
-                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 10 }}>
+                                <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9 }}>
                                   PostGIS Spatial Layer
                                 </Typography>
                               </Box>
@@ -9168,14 +10226,14 @@ function App() {
                               bgcolor: `${borderColor}20`,
                               color: borderColor,
                               fontWeight: 700,
-                              fontSize: 10,
-                              height: 22
+                              fontSize: 9,
+                              height: 20
                             }}
                           />
                         </Box>
                         
                         {/* Content - scrollable container for nested scrolling */}
-                        <Stack spacing={2} sx={{ p: 2, flex: 1, overflowY: 'auto' }}>
+                        <Stack spacing={1.25} sx={{ p: 1.25, flex: 1, overflowY: 'auto' }}>
                           {/* Building Info Card */}
                           {selectedSpatialObject.type === 'building' && (() => {
                             const bldg = selectedSpatialObject as SpatialBuilding;
@@ -9237,6 +10295,39 @@ function App() {
                                     <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Address</Typography>
                                     <Typography variant="body2" sx={{ fontSize: 12 }}>
                                       {bldg.address}
+                                    </Typography>
+                                  </Box>
+                                )}
+                                {/* Engineering: Location context for buildings */}
+                                {(bldg.city || bldg.zip_code) && (
+                                  <Box sx={{ 
+                                    p: 1, 
+                                    bgcolor: 'rgba(59, 130, 246, 0.08)', 
+                                    borderRadius: 1,
+                                    border: '1px solid rgba(59, 130, 246, 0.2)'
+                                  }}>
+                                    <Stack direction="row" spacing={0.5} alignItems="center" mb={0.5}>
+                                      <LocationOn sx={{ fontSize: 12, color: '#3B82F6' }} />
+                                      <Typography variant="caption" fontWeight={600} color="#3B82F6" sx={{ fontSize: 9 }}>
+                                        LOCATION
+                                      </Typography>
+                                    </Stack>
+                                    <Typography variant="body2" sx={{ fontSize: 11 }}>
+                                      {[bldg.city, bldg.zip_code].filter(Boolean).join(', ')}
+                                    </Typography>
+                                    {bldg.county && (
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9 }}>
+                                        {bldg.county} County
+                                      </Typography>
+                                    )}
+                                  </Box>
+                                )}
+                                {/* Coordinates for field navigation */}
+                                {bldg.latitude && bldg.longitude && (
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Coordinates</Typography>
+                                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.6)' }}>
+                                      {bldg.latitude.toFixed(6)}, {bldg.longitude.toFixed(6)}
                                     </Typography>
                                   </Box>
                                 )}
@@ -9456,71 +10547,267 @@ function App() {
                             );
                           })()}
 
-                          {/* Vegetation Info Card */}
+                          {/* Vegetation Info Card - Engineering: Compact layout with affected assets */}
                           {selectedSpatialObject.type === 'vegetation' && (() => {
                             const veg = selectedSpatialObject as SpatialVegetation;
                             const risk = veg.risk_score || veg.proximity_risk || 0;
+                            const riskColor = risk > 0.7 ? '#EF4444' : risk > 0.4 ? '#FBBF24' : '#22C55E';
+                            
+                            // Architecture: Use PRE-COMPUTED fall_zone_m from PostGIS materialized view
+                            // fall_zone_m = height_m + canopy_radius_m (how far tree can reach if it falls)
+                            // Fallback to height * 1.3 only if pre-computed value is missing
+                            const fallZone = veg.fall_zone_m || (veg.height_m || 10) * 1.3;
+                            const THREAT_RADIUS = 100; // Same as asset card - ensures bidirectional consistency
+                            const searchRadius = THREAT_RADIUS;
+                            const nearbyAssets = assets.filter(asset => {
+                              if (!asset.latitude || !asset.longitude || !veg.latitude || !veg.longitude) return false;
+                              const dLat = (asset.latitude - veg.latitude) * 111000; // ~111km per degree
+                              const dLon = (asset.longitude - veg.longitude) * 111000 * Math.cos(veg.latitude * Math.PI / 180);
+                              const distance = Math.sqrt(dLat * dLat + dLon * dLon);
+                              return distance <= searchRadius;
+                            }).map(asset => {
+                              const dLat = (asset.latitude - veg.latitude) * 111000;
+                              const dLon = (asset.longitude - veg.longitude) * 111000 * Math.cos(veg.latitude * Math.PI / 180);
+                              const distance = Math.sqrt(dLat * dLat + dLon * dLon);
+                              // Priority: within fall zone = IN FALL ZONE, within 2x = NEAR, else beyond
+                              const priority = distance <= fallZone ? 'critical' : distance <= fallZone * 2 ? 'near' : 'beyond';
+                              const priorityLabel = distance <= fallZone ? 'IN ZONE' : distance <= fallZone * 2 ? 'NEAR' : 'BEYOND';
+                              return { ...asset, distance, priority, priorityLabel };
+                            }).sort((a, b) => a.distance - b.distance).slice(0, 10);
+                            
                             return (
                               <>
-                                <Box>
-                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>ID</Typography>
-                                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.8)' }}>
-                                    {veg.id}
-                                  </Typography>
-                                </Box>
-                                <Box sx={{ 
-                                  p: 2, 
-                                  bgcolor: risk > 0.7 ? 'rgba(239, 68, 68, 0.15)' : risk > 0.4 ? 'rgba(251, 191, 36, 0.15)' : 'rgba(34, 197, 94, 0.15)',
-                                  borderRadius: 2,
-                                  border: `1px solid ${risk > 0.7 ? 'rgba(239, 68, 68, 0.3)' : risk > 0.4 ? 'rgba(251, 191, 36, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`
-                                }}>
-                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Risk Assessment</Typography>
-                                  <Typography variant="h4" sx={{ 
-                                    color: risk > 0.7 ? '#EF4444' : risk > 0.4 ? '#FBBF24' : '#22C55E', 
-                                    fontWeight: 800,
-                                    fontSize: 32,
-                                    lineHeight: 1
-                                  }}>
-                                    {(risk * 100).toFixed(0)}%
-                                  </Typography>
-                                  <Typography variant="caption" sx={{ 
-                                    color: risk > 0.7 ? '#EF4444' : risk > 0.4 ? '#FBBF24' : '#22C55E',
-                                    fontWeight: 600
-                                  }}>
-                                    {risk > 0.7 ? 'HIGH RISK' : risk > 0.4 ? 'MODERATE RISK' : 'LOW RISK'}
-                                  </Typography>
-                                </Box>
-                                <Box sx={{ display: 'flex', gap: 3 }}>
-                                  {(veg.height_m || veg.canopy_height) && (
-                                    <Box sx={{ flex: 1 }}>
-                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Tree Height</Typography>
-                                      <Typography variant="h6" sx={{ color: '#22C55E', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
-                                        {veg.height_m || veg.canopy_height}m
-                                      </Typography>
-                                    </Box>
-                                  )}
-                                  {veg.distance_to_line_m && (
-                                    <Box sx={{ flex: 1 }}>
-                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Distance to Line</Typography>
-                                      <Typography variant="h6" sx={{ color: '#FBBF24', fontWeight: 800, fontSize: 20, lineHeight: 1 }}>
-                                        {veg.distance_to_line_m.toFixed(1)}m
-                                      </Typography>
-                                    </Box>
-                                  )}
-                                </Box>
-                                {veg.species && (
-                                  <Box>
-                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Species</Typography>
-                                    <Typography variant="body2" sx={{ fontSize: 13, textTransform: 'capitalize' }}>
-                                      {veg.species}
+                                {/* Compact ID + Coordinates row */}
+                                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                  <Box sx={{ flex: 1 }}>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 8, textTransform: 'uppercase', fontWeight: 600 }}>ID</Typography>
+                                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.7)' }}>
+                                      {veg.id?.slice(0, 16)}...
                                     </Typography>
                                   </Box>
-                                )}
+                                  <Box sx={{ textAlign: 'right' }}>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 8, textTransform: 'uppercase', fontWeight: 600 }}>Coords</Typography>
+                                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.6)' }}>
+                                      {veg.latitude?.toFixed(5)}, {veg.longitude?.toFixed(5)}
+                                    </Typography>
+                                  </Box>
+                                </Box>
+                                
+                                {/* Tree Characteristics - 3 column grid */}
+                                <Box sx={{ 
+                                  display: 'grid', 
+                                  gridTemplateColumns: '1fr 1fr 1fr', 
+                                  gap: 1,
+                                  p: 0.75,
+                                  bgcolor: 'rgba(255,255,255,0.03)',
+                                  borderRadius: 1,
+                                  border: '1px solid rgba(255,255,255,0.08)'
+                                }}>
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600 }}>Species</Typography>
+                                    <Typography sx={{ color: '#22C55E', fontWeight: 700, fontSize: 13, textTransform: 'capitalize' }}>
+                                      {veg.species || 'Unknown'}
+                                    </Typography>
+                                  </Box>
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600 }}>Height</Typography>
+                                    <Typography sx={{ color: '#3B82F6', fontWeight: 700, fontSize: 13 }}>{veg.height_m?.toFixed(1) || '?'}m</Typography>
+                                  </Box>
+                                  <Box>
+                                    <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600 }}>Fall Zone</Typography>
+                                    <Typography sx={{ color: '#F97316', fontWeight: 700, fontSize: 13 }}>{fallZone.toFixed(1)}m</Typography>
+                                  </Box>
+                                </Box>
+                                
+                                {/* Engineering: Risk Assessment - compact */}
+                                <Box sx={{ 
+                                  p: 1, 
+                                  bgcolor: `${riskColor}15`,
+                                  borderRadius: 1,
+                                  border: `1px solid ${riskColor}30`
+                                }}>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                                    <Box>
+                                      <Typography variant="h4" sx={{ color: riskColor, fontWeight: 800, fontSize: 26, lineHeight: 1 }}>
+                                        {(risk * 100).toFixed(0)}%
+                                      </Typography>
+                                      <Typography variant="caption" sx={{ color: riskColor, fontWeight: 600, fontSize: 9 }}>
+                                        {risk > 0.7 ? 'HIGH RISK' : risk > 0.4 ? 'MODERATE' : 'LOW RISK'}
+                                      </Typography>
+                                    </Box>
+                                    <Divider orientation="vertical" flexItem sx={{ bgcolor: 'rgba(255,255,255,0.1)' }} />
+                                    {/* Risk explanation from PostGIS */}
+                                    <Box sx={{ flex: 1 }}>
+                                      {veg.risk_explanation ? (
+                                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+                                          {veg.risk_level === 'critical' ? (
+                                            <ElectricBolt sx={{ fontSize: 18, color: '#EF4444', mt: 0.25 }} />
+                                          ) : veg.risk_level === 'warning' ? (
+                                            <ElectricBolt sx={{ fontSize: 18, color: '#FBBF24', mt: 0.25 }} />
+                                          ) : veg.risk_level === 'safe' ? (
+                                            <CheckCircle sx={{ fontSize: 18, color: '#22C55E', mt: 0.25 }} />
+                                          ) : (
+                                            <Warning sx={{ fontSize: 18, color: '#F97316', mt: 0.25 }} />
+                                          )}
+                                          <Box>
+                                            <Typography sx={{ 
+                                              color: veg.risk_level === 'critical' ? '#EF4444' : 
+                                                     veg.risk_level === 'warning' ? '#FBBF24' : 
+                                                     veg.risk_level === 'safe' ? '#22C55E' : '#F97316',
+                                              fontWeight: 700, 
+                                              fontSize: 11, 
+                                              lineHeight: 1.2,
+                                              textTransform: 'uppercase'
+                                            }}>
+                                              {veg.risk_level === 'critical' ? 'POWER LINE ENCROACHMENT' :
+                                               veg.risk_level === 'warning' ? 'APPROACHING FALL ZONE' :
+                                               veg.risk_level === 'monitor' ? 'ASSET PROXIMITY' : 'ADEQUATE CLEARANCE'}
+                                            </Typography>
+                                            <Typography sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 10, lineHeight: 1.3 }}>
+                                              {veg.risk_explanation}
+                                            </Typography>
+                                          </Box>
+                                        </Box>
+                                      ) : (
+                                        <Typography sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 10 }}>
+                                          No risk data
+                                        </Typography>
+                                      )}
+                                    </Box>
+                                  </Box>
+                                  
+                                  {/* Proximity details - compact single line */}
+                                  {veg.nearest_line_id && (
+                                    <Typography sx={{ 
+                                      color: 'rgba(255,255,255,0.5)', 
+                                      fontSize: 9, 
+                                      mt: 0.75, 
+                                      pt: 0.75, 
+                                      borderTop: '1px solid rgba(255,255,255,0.1)' 
+                                    }}>
+                                      Line: <span style={{ fontFamily: 'monospace', color: '#FBBF24' }}>{veg.nearest_line_id.slice(0, 8)}...</span>
+                                      {' '}at <span style={{ color: '#3B82F6', fontWeight: 600 }}>{veg.distance_to_line_m?.toFixed(1)}m</span>
+                                      {veg.nearest_asset_type && (
+                                        <> · {veg.nearest_asset_type}: <span style={{ color: '#3B82F6', fontWeight: 600 }}>{veg.distance_to_asset_m?.toFixed(1)}m</span></>
+                                      )}
+                                    </Typography>
+                                  )}
+                                </Box>
+                                
+                                {/* Engineering: Nearby Assets Section */}
                                 <Box>
-                                  <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, textTransform: 'uppercase', fontWeight: 600, letterSpacing: 0.5 }}>Coordinates</Typography>
-                                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.6)' }}>
-                                    {veg.latitude?.toFixed(6)}, {veg.longitude?.toFixed(6)}
-                                  </Typography>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                                    <Stack direction="row" spacing={0.5} alignItems="center">
+                                      <Warning sx={{ fontSize: 14, color: riskColor }} />
+                                      <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.7)', fontSize: 10, fontWeight: 600, textTransform: 'uppercase' }}>
+                                        Nearby Assets ({nearbyAssets.length})
+                                      </Typography>
+                                    </Stack>
+                                    <Stack direction="row" spacing={0.5}>
+                                      <Chip 
+                                        label={`${fallZone.toFixed(0)}m fall`}
+                                        size="small"
+                                        sx={{ height: 16, fontSize: 8, bgcolor: 'rgba(239, 68, 68, 0.2)', color: '#EF4444' }}
+                                      />
+                                      <Chip 
+                                        label={`${THREAT_RADIUS}m radius`}
+                                        size="small"
+                                        sx={{ height: 16, fontSize: 8, bgcolor: 'rgba(59, 130, 246, 0.2)', color: '#3B82F6' }}
+                                      />
+                                    </Stack>
+                                  </Box>
+                                  
+                                  {nearbyAssets.length > 0 ? (
+                                    <Box sx={{ 
+                                      maxHeight: 140, 
+                                      overflowY: 'auto',
+                                      border: '1px solid rgba(255,255,255,0.1)',
+                                      borderRadius: 1,
+                                      '&::-webkit-scrollbar': { width: 4 },
+                                      '&::-webkit-scrollbar-thumb': { bgcolor: 'rgba(255,255,255,0.2)', borderRadius: 2 }
+                                    }}>
+                                      {nearbyAssets.map((asset, idx) => {
+                                        const priorityColor = asset.priority === 'critical' ? '#EF4444' : 
+                                                            asset.priority === 'near' ? '#FBBF24' : '#22C55E';
+                                        const typeColor = asset.type === 'substation' ? '#00C8FF' :
+                                                         asset.type === 'transformer' ? '#EC4899' :
+                                                         asset.type === 'pole' ? '#8880ff' : '#9333EA';
+                                        return (
+                                          <Box 
+                                            key={asset.id}
+                                            onClick={() => {
+                                              setSelectedAsset(asset);
+                                              setClickPosition(spatialClickPosition);
+                                              // Engineering: Mark as secondary card to enable side-by-side positioning
+                                              setIsAssetCardSecondary(true);
+                                              setSelectedAssetPosition(null); // Reset drag position
+                                            }}
+                                            sx={{ 
+                                              p: 1,
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              gap: 1,
+                                              cursor: 'pointer',
+                                              borderBottom: idx < nearbyAssets.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                                              bgcolor: asset.priority === 'critical' ? 'rgba(239, 68, 68, 0.08)' : 'transparent',
+                                              '&:hover': { bgcolor: 'rgba(255,255,255,0.05)' },
+                                              transition: 'background-color 0.15s'
+                                            }}
+                                          >
+                                            {/* Priority indicator bar */}
+                                            <Box sx={{ width: 3, height: 28, bgcolor: priorityColor, borderRadius: 1, flexShrink: 0 }} />
+                                            
+                                            {/* Asset type icon */}
+                                            <Box sx={{ 
+                                              width: 24, height: 24, 
+                                              borderRadius: '50%', 
+                                              bgcolor: `${typeColor}20`,
+                                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                              flexShrink: 0
+                                            }}>
+                                              {asset.type === 'substation' && <ElectricBolt sx={{ fontSize: 12, color: typeColor }} />}
+                                              {asset.type === 'transformer' && <Assessment sx={{ fontSize: 12, color: typeColor }} />}
+                                              {asset.type === 'pole' && <Engineering sx={{ fontSize: 12, color: typeColor }} />}
+                                              {asset.type === 'meter' && <Speed sx={{ fontSize: 12, color: typeColor }} />}
+                                            </Box>
+                                            
+                                            {/* Asset info */}
+                                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                                              <Typography sx={{ 
+                                                fontSize: 11, 
+                                                fontWeight: 600, 
+                                                color: 'rgba(255,255,255,0.9)',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                              }}>
+                                                {asset.name}
+                                              </Typography>
+                                              <Typography sx={{ fontSize: 9, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase' }}>
+                                                {asset.type}
+                                              </Typography>
+                                            </Box>
+                                            
+                                            {/* Distance */}
+                                            <Box sx={{ textAlign: 'right', flexShrink: 0 }}>
+                                              <Typography sx={{ fontSize: 11, fontWeight: 700, color: priorityColor }}>
+                                                {asset.distance.toFixed(0)}m
+                                              </Typography>
+                                              <Typography sx={{ fontSize: 8, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase' }}>
+                                                {asset.priorityLabel}
+                                              </Typography>
+                                            </Box>
+                                          </Box>
+                                        );
+                                      })}
+                                    </Box>
+                                  ) : (
+                                    <Box sx={{ p: 1.5, bgcolor: 'rgba(34, 197, 94, 0.1)', borderRadius: 1, textAlign: 'center' }}>
+                                      <Typography sx={{ fontSize: 11, color: '#22C55E' }}>
+                                        No assets within fall zone
+                                      </Typography>
+                                    </Box>
+                                  )}
                                 </Box>
                               </>
                             );
@@ -10235,7 +11522,7 @@ function App() {
             </>
           </Box>
 
-          {/* Other Tabs - Tab-specific skeleton loaders */}
+          {/* Other Tabs - Tab-specific content */}
           {currentTab > 0 && (
             <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', p: 4, gap: 3, overflow: 'auto' }}>
               <Typography variant="h4" sx={{ color: '#29B5E8', fontWeight: 300, mb: 1 }}>
@@ -10244,7 +11531,7 @@ function App() {
               
               {/* Tab-specific layouts */}
               {currentTab === 1 && (
-                // Network Topology - Graph visualization skeleton
+                // Network Topology - Placeholder (future: interactive network graph)
                 <Box sx={{ display: 'flex', gap: 3, height: '100%' }}>
                   <Card sx={{ flex: 2, bgcolor: 'rgba(41, 181, 232, 0.03)', border: '1px solid rgba(41, 181, 232, 0.1)' }}>
                     <CardContent sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 2 }}>

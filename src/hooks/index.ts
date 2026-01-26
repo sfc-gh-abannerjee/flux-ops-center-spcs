@@ -32,3 +32,5 @@ export {
 } from './useLayers';
 
 export type { WeatherLayerProps, HeatmapLayerProps, PowerLineGlowProps } from './useLayers';
+
+export { useCascadeLayers } from './useCascadeLayers';

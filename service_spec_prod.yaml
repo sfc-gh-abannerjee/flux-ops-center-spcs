@@ -1,7 +1,7 @@
 spec:
   containers:
-  - name: frontend
-    image: /si_demos/applications/flux_ops_center_repo/flux_ops_center:latest
+  - name: flux-ops-center
+    image: /si_demos/applications/flux_ops_center_repo/flux-ops-center:20260122_semantic_v4
     env:
       SNOWFLAKE_WAREHOUSE: SI_DEMO_WH
       VITE_POSTGRES_HOST: <your_postgres_host>
@@ -9,6 +9,13 @@ spec:
       VITE_POSTGRES_DATABASE: postgres
       VITE_POSTGRES_USER: application
       VITE_POSTGRES_PASSWORD: <REDACTED_PASSWORD>
+    resources:
+      limits:
+        memory: 28Gi
+        cpu: "6"
+      requests:
+        memory: 0.5Gi
+        cpu: "0.5"
   endpoints:
   - name: ui
     port: 8080

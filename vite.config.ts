@@ -30,7 +30,15 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
-    include: ['@deck.gl/core', '@deck.gl/layers', '@deck.gl/react']
+    include: [
+      '@deck.gl/core',
+      '@deck.gl/layers',
+      '@deck.gl/react',
+      '@deck.gl/extensions',
+      '@deck.gl/geo-layers',
+      '@deck.gl/aggregation-layers',
+      'maplibre-gl'
+    ]
   },
   build: {
     // Performance: Manual chunk splitting for optimal loading
@@ -43,19 +51,15 @@ export default defineConfig({
           // Mapping libraries - large but stable
           'vendor-maplibre': ['maplibre-gl'],
           // deck.gl ecosystem - core visualization engine
+          // NOTE: Do NOT include @loaders.gl here - it has circular deps that break when chunked
           'vendor-deckgl': [
             '@deck.gl/core',
             '@deck.gl/layers',
             '@deck.gl/react',
             '@deck.gl/geo-layers',
             '@deck.gl/aggregation-layers',
-            '@deck.gl/mesh-layers'
-          ],
-          // Loaders - only needed for specific data formats
-          'vendor-loaders': [
-            '@loaders.gl/core',
-            '@loaders.gl/mvt',
-            '@loaders.gl/gltf'
+            '@deck.gl/mesh-layers',
+            '@deck.gl/extensions'
           ],
           // Charting - lazy loaded with ChatDrawer
           'vendor-charts': ['vega', 'vega-lite', 'vega-embed', 'react-vega'],
