@@ -1,0 +1,29 @@
+spec:
+  containers:
+    - name: gnn-trainer
+      image: /SI_DEMOS/ML_DEMO/ML_IMAGES/gnn-cascade-trainer:latest
+      env:
+        SNOWFLAKE_WAREHOUSE: SI_DEMO_WH
+        SNOWFLAKE_DATABASE: SI_DEMOS
+        SNOWFLAKE_SCHEMA: CASCADE_ANALYSIS
+      resources:
+        requests:
+          nvidia.com/gpu: 1
+          cpu: 4
+          memory: 16Gi
+        limits:
+          nvidia.com/gpu: 1
+          cpu: 8
+          memory: 32Gi
+      volumeMounts:
+        - name: model-artifacts
+          mountPath: /app/models
+  endpoints:
+    - name: status
+      port: 8000
+      public: true
+  volumes:
+    - name: model-artifacts
+      source: "@SI_DEMOS.CASCADE_ANALYSIS.MODEL_ARTIFACTS"
+      uid: 1000
+      gid: 1000

@@ -1,0 +1,75 @@
+# ==============================================================================
+# Production: GPU-based GNN Training Container for Snowflake SPCS
+# ==============================================================================
+# 
+# This Dockerfile builds a production-grade container for training Graph Neural
+# Networks (GNNs) for cascade failure prediction on Snowflake SPCS GPU compute pools.
+#
+# Base: NVIDIA Official PyG Container (includes PyTorch + PyTorch Geometric pre-built)
+# This is the NVIDIA-recommended approach for PyG on GPU
+#
+# Target: Snowflake SPCS GPU_NV_S compute pool (NVIDIA A10G)
+# ==============================================================================
+
+# Use NVIDIA's official PyG container - guaranteed to work with GPU
+# This container has PyTorch, PyTorch Geometric, and all CUDA dependencies pre-built
+FROM nvcr.io/nvidia/pyg:24.01-py3
+
+LABEL maintainer="Snowflake #Team"
+LABEL description="GNN Cascade Failure Model Training - NVIDIA PyG Container"
+LABEL version="2.1"
+LABEL snowflake.spcs.gpu="true"
+
+# ==============================================================================
+# Environment Configuration
+# ==============================================================================
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PIP_NO_CACHE_DIR=1
+
+# ==============================================================================
+# Snowflake Dependencies
+# ==============================================================================
+# Install Snowflake packages on top of the NVIDIA PyG base
+RUN pip install --no-cache-dir \
+    "snowflake-snowpark-python[pandas]>=1.20.0" \
+    "snowflake-ml-python>=1.6.0" \
+    "snowflake-connector-python[pandas]>=3.10.0"
+
+# ==============================================================================
+# FastAPI for Status Monitoring Endpoint
+# ==============================================================================
+RUN pip install --no-cache-dir \
+    fastapi \
+    uvicorn[standard] \
+    httpx
+
+# ==============================================================================
+# Working Directory Setup
+# ==============================================================================
+WORKDIR /app
+
+# Create directories for models and logs
+RUN mkdir -p /app/models /app/logs
+
+# ==============================================================================
+# Copy Application Code
+# ==============================================================================
+COPY train_gnn_model.py /app/
+COPY run_training.py /app/
+
+# ==============================================================================
+# Health Check & Networking
+# ==============================================================================
+# Expose status monitoring port
+EXPOSE 8000
+
+# Health check via FastAPI endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# ==============================================================================
+# Entrypoint
+# ==============================================================================
+# Default command runs the training service
+CMD ["python", "run_training.py"]
