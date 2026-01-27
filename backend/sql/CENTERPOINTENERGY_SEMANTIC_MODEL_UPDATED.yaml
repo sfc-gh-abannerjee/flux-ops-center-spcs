@@ -1,0 +1,4040 @@
+name: CENTERPOINTENERGY_SEMANTIC_MODEL
+description: |-
+  Grid Operations utility operations analytics focused on SUMMER PEAK PERIODS (July-August).
+  
+  Data Coverage:
+  - AMI Interval Readings: 7.1B rows (Jul-Aug 2024, Jul-Aug 2025) - 15-minute smart meter data
+  - Monthly Aggregates: 2.4M rows for YoY summer comparison
+  - Transformer Thermal Stress: 211M hourly records (summer months only)
+  - SAP Work Orders: 250K records (Jul-Aug 2025 only)
+  - Weather: Hourly data for Jul-Aug 2023, 2024, 2025
+  - ERCOT Load: Full year data (2023-2025) for seasonal context
+  
+  Scale: 596K meters, 91K transformers, 686K customers, 73 circuits
+  
+  NOTE: This dataset is designed for SUMMER PEAK ANALYSIS. Primary data exists only for July-August periods.
+  For queries outside summer months, ERCOT_LOAD_UNIFIED provides year-round context.
+tables:
+  - name: AMI_READINGS_ENHANCED
+    synonyms:
+      - AMI_READINGS
+      - INTERVAL_READINGS
+      - METER_READINGS
+    description: Enhanced AMI readings with voltage sag events, outage tracking, and anomaly detection for grid reliability analysis
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: AMI_READINGS_FINAL
+    dimensions:
+      - name: METER_ID
+        description: Unique meter identifier
+        expr: METER_ID
+        data_type: VARCHAR(16777216)
+      - name: OUTAGE_CAUSE
+        synonyms:
+          - outage reason
+          - outage type
+        description: Root cause of outage (TRANSFORMER_OVERLOAD, EQUIPMENT_FAULT, etc)
+        expr: OUTAGE_CAUSE
+        data_type: VARCHAR(20)
+      - name: OUTAGE_ID
+        description: Outage event identifier if meter experienced outage
+        expr: OUTAGE_ID
+        data_type: VARCHAR(16777216)
+      - name: SAG_TYPE
+        synonyms:
+          - sag cause
+          - voltage sag type
+        description: Type of voltage sag (TRANSFORMER_OVERLOAD, EQUIPMENT_FAULT, AGING_EQUIPMENT)
+        expr: SAG_TYPE
+        data_type: VARCHAR(20)
+      - name: VOLTAGE_SAG_EVENT_ID
+        description: Voltage sag event identifier if meter experienced voltage sag
+        expr: VOLTAGE_SAG_EVENT_ID
+        data_type: VARCHAR(16777216)
+    time_dimensions:
+      - name: TIMESTAMP
+        description: 15-minute interval timestamp
+        expr: TIMESTAMP
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: POWER_FACTOR
+        description: Power factor measurement
+        expr: POWER_FACTOR
+        data_type: NUMBER(23,2)
+        access_modifier: public_access
+      - name: USAGE_KWH
+        description: Original energy usage in kWh (15-minute interval)
+        expr: USAGE_KWH
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: USAGE_KWH_ADJUSTED
+        synonyms:
+          - actual usage
+          - adjusted usage
+        description: Adjusted usage (0 during outages)
+        expr: USAGE_KWH_ADJUSTED
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: VOLTAGE
+        description: Voltage reading adjusted for sags (NULL during outages)
+        expr: VOLTAGE
+        data_type: NUMBER(23,0)
+        access_modifier: public_access
+      - name: VOLTAGE_DROP_AMOUNT
+        synonyms:
+          - sag magnitude
+          - voltage drop
+        description: Voltage reduction amount during sag events (volts)
+        expr: VOLTAGE_DROP_AMOUNT
+        data_type: NUMBER(2,0)
+        access_modifier: public_access
+    filters:
+      - name: CRITICAL_VOLTAGE_SAG
+        synonyms:
+          - major sag event
+          - severe voltage drop
+        description: Voltage sag events with >5V drop
+        expr: VOLTAGE_DROP_AMOUNT > 5
+      - name: LOW_POWER_FACTOR
+        synonyms:
+          - poor power quality
+          - reactive power issues
+        description: Intervals with power factor below 0.9
+        expr: POWER_FACTOR < 0.9
+      - name: LOW_VOLTAGE_INCIDENTS
+        synonyms:
+          - sub-standard voltage
+          - voltage violations
+        description: Intervals with voltage below ANSI C84.1 minimum (114V)
+        expr: VOLTAGE < 114
+      - name: OUTAGE_INTERVALS
+        synonyms:
+          - outage affected
+          - power interruption
+        description: Intervals during outage events
+        expr: OUTAGE_ID IS NOT NULL
+      - name: VALID_READINGS_ONLY
+        synonyms:
+          - clean data
+          - non-outage intervals
+        description: Exclude intervals affected by outages
+        expr: OUTAGE_ID IS NULL
+      - name: VOLTAGE_SAG_EVENTS
+        synonyms:
+          - sag incidents
+          - voltage sags
+        description: Intervals with voltage sag events
+        expr: VOLTAGE_SAG_EVENT_ID IS NOT NULL
+    metrics:
+      - name: ACTIVE_METER_COUNT
+        description: Count of distinct meters reporting in period
+        expr: COUNT(DISTINCT METER_ID)
+        access_modifier: public_access
+      - name: AVG_INTERVAL_KWH
+        description: Average kWh per 15-minute interval
+        expr: AVG(USAGE_KWH_ADJUSTED)
+        access_modifier: public_access
+      - name: AVG_POWER_FACTOR
+        description: Average power factor across all readings
+        expr: AVG(POWER_FACTOR)
+        access_modifier: public_access
+      - name: AVG_VOLTAGE_ACROSS_READINGS
+        description: Average voltage across all interval readings
+        expr: AVG(VOLTAGE)
+        access_modifier: public_access
+      - name: AVG_VOLTAGE_DROP
+        description: Average voltage drop during sag events
+        expr: AVG(CASE WHEN VOLTAGE_DROP_AMOUNT > 0 THEN VOLTAGE_DROP_AMOUNT ELSE NULL END)
+        access_modifier: public_access
+      - name: DAILY_KWH_TOTAL
+        description: Total daily energy consumption aggregated from intervals
+        expr: SUM(USAGE_KWH_ADJUSTED) * 4
+        access_modifier: public_access
+      - name: INTERVALS_PER_METER
+        description: Average intervals per meter (data completeness indicator)
+        expr: COUNT(*) / NULLIF(COUNT(DISTINCT METER_ID), 0)
+        access_modifier: public_access
+      - name: LOST_KWH_DUE_TO_OUTAGES
+        description: Energy not delivered due to outages (usage_kwh minus adjusted)
+        expr: SUM(USAGE_KWH - USAGE_KWH_ADJUSTED)
+        access_modifier: public_access
+      - name: LOW_POWER_FACTOR_COUNT
+        description: Count of intervals with power factor below 0.9
+        expr: COUNT_IF(POWER_FACTOR < 0.9)
+        access_modifier: public_access
+      - name: LOW_VOLTAGE_INCIDENT_COUNT
+        description: Count of intervals with voltage below 114V (ANSI C84.1 minimum)
+        expr: COUNT_IF(VOLTAGE < 114)
+        access_modifier: public_access
+      - name: METERS_WITH_OUTAGES
+        description: Count of distinct meters experiencing outages
+        expr: COUNT_IF(OUTAGE_ID IS NOT NULL)
+        access_modifier: public_access
+      - name: OUTAGE_INTERVAL_COUNT
+        description: Count of intervals affected by outages
+        expr: COUNT_IF(OUTAGE_ID IS NOT NULL)
+        access_modifier: public_access
+      - name: PEAK_INTERVAL_KWH
+        description: Maximum kWh recorded in any single 15-min interval
+        expr: MAX(USAGE_KWH_ADJUSTED)
+        access_modifier: public_access
+      - name: TOTAL_INTERVAL_COUNT
+        description: Total count of 15-minute interval readings
+        expr: COUNT(*)
+        access_modifier: public_access
+      - name: TOTAL_INTERVAL_KWH
+        description: Total kWh across all 15-minute intervals
+        expr: SUM(USAGE_KWH_ADJUSTED)
+        access_modifier: public_access
+      - name: VOLTAGE_SAG_INCIDENT_COUNT
+        description: Count of intervals with voltage sag events
+        expr: COUNT_IF(VOLTAGE_SAG_EVENT_ID IS NOT NULL)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - METER_ID
+        - TIMESTAMP
+  - name: BUILDING_METER_ASSOCIATIONS
+    synonyms:
+      - BUILDING_ASSIGNMENTS
+      - BUILDING_MATCHES
+      - METER_BUILDING_LINKS
+    description: Meter-to-building associations with classification confidence enabling spatial analytics and building-type energy analysis. Links meters to physical buildings using HCAD ground truth (62% at 98% confidence) and ML inference (35% at 88.5% confidence)
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: METER_BUILDING_MATCHES
+    dimensions:
+      - name: BUILDING_CATEGORY
+        synonyms:
+          - building class
+          - normalized building type
+        description: Case-insensitive building type (accepts 'Commercial', 'commercial', or 'COMMERCIAL')
+        expr: LOWER(BUILDING_TYPE)
+        data_type: VARCHAR(16777216)
+      - name: BUILDING_ID
+        description: Unique building footprint identifier from OSM/Overture Maps
+        expr: BUILDING_ID
+        data_type: VARCHAR(16777216)
+      - name: BUILDING_NAME
+        description: Building name if available from OSM data
+        expr: BUILDING_NAME
+        data_type: VARCHAR(16777216)
+      - name: BUILDING_TYPE
+        synonyms:
+          - building category
+          - building classification
+          - property type
+        description: Building classification from OSM taxonomy (house, apartments, commercial, industrial, office, retail, warehouse, school, hospital, etc.)
+        expr: BUILDING_TYPE
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - house
+          - apartments
+          - commercial
+          - industrial
+          - office
+          - retail
+          - warehouse
+          - school
+          - hospital
+          - church
+      - name: DATA_SOURCE
+        synonyms:
+          - classification source
+          - data origin
+          - match source
+        description: 'Source of building classification: HCAD_GROUND_TRUTH_20260103 (62% at 98% confidence) or INFERENCE_PHASE1_20260103 (35% at 88.5% confidence)'
+        expr: DATA_SOURCE
+        data_type: VARCHAR(100)
+        sample_values:
+          - HCAD_GROUND_TRUTH_20260103
+          - INFERENCE_PHASE1_20260103
+      - name: METER_ID
+        description: Unique meter identifier linked to building
+        expr: METER_ID
+        data_type: VARCHAR(16777216)
+      - name: RN
+        synonyms:
+          - match rank
+          - priority
+          - ranking
+        description: Priority ranking for meters associated with multiple buildings (1=best match, 2=second best, etc.)
+        expr: RN
+        data_type: NUMBER(18,0)
+    facts:
+      - name: CONFIDENCE_SCORE
+        synonyms:
+          - classification confidence
+          - confidence percentage
+          - match confidence
+        description: Classification confidence score (0-100). HCAD ground truth averages 98%, ML inference averages 88.5%
+        expr: CONFIDENCE_SCORE
+        data_type: NUMBER(3,0)
+        access_modifier: public_access
+      - name: DISTANCE_METERS
+        synonyms:
+          - meter distance
+          - proximity
+        description: Distance from meter to building centroid in meters
+        expr: DISTANCE_METERS
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: HEIGHT_METERS
+        description: Building height in meters
+        expr: HEIGHT_METERS
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: NUM_FLOORS
+        description: Number of floors in building
+        expr: NUM_FLOORS
+        data_type: NUMBER(38,0)
+        access_modifier: public_access
+    filters:
+      - name: BEST_MATCH_ONLY
+        synonyms:
+          - primary match
+          - top match
+        description: Only the best match for meters associated with multiple buildings
+        expr: RN = 1
+      - name: COMMERCIAL_BUILDINGS
+        synonyms:
+          - business buildings
+          - commercial properties
+        description: Commercial building types (commercial, office, retail, warehouse)
+        expr: BUILDING_TYPE IN ('commercial', 'office', 'retail', 'warehouse')
+      - name: HIGH_CONFIDENCE_MATCHES
+        synonyms:
+          - hcad ground truth
+          - verified matches
+        description: Matches from HCAD ground truth with high confidence (98% avg)
+        expr: DATA_SOURCE = 'HCAD_GROUND_TRUTH_20260103'
+      - name: INDUSTRIAL_BUILDINGS
+        synonyms:
+          - factories
+          - industrial properties
+        description: Industrial building types
+        expr: BUILDING_TYPE = 'industrial'
+      - name: INFERENCE_MATCHES
+        synonyms:
+          - inferred matches
+          - ml matches
+        description: Matches from ML inference phase 1 (88.5% avg confidence)
+        expr: DATA_SOURCE = 'INFERENCE_PHASE1_20260103'
+      - name: MULTI_FAMILY_RESIDENTIAL
+        synonyms:
+          - apartments
+          - multi-unit buildings
+        description: Multi-family residential buildings (apartments, duplex)
+        expr: BUILDING_TYPE IN ('apartments', 'duplex', 'dormitory')
+      - name: RESIDENTIAL_BUILDINGS
+        synonyms:
+          - houses
+          - residential properties
+        description: Residential building types (house, apartments, residential, duplex, terrace)
+        expr: BUILDING_TYPE IN ('house', 'apartments', 'residential', 'duplex', 'terrace', 'semidetached_house')
+    metrics:
+      - name: AVG_BUILDING_HEIGHT
+        description: Average building height in meters
+        expr: AVG(HEIGHT_METERS)
+        access_modifier: public_access
+      - name: AVG_CONFIDENCE_SCORE
+        description: Average classification confidence across all matches
+        expr: AVG(CONFIDENCE_SCORE)
+        access_modifier: public_access
+      - name: AVG_METER_BUILDING_DISTANCE
+        description: Average distance from meters to their associated buildings in meters
+        expr: AVG(DISTANCE_METERS)
+        access_modifier: public_access
+      - name: COMMERCIAL_BUILDING_COUNT
+        description: Count of commercial buildings (commercial, office, retail, warehouse)
+        expr: COUNT(DISTINCT CASE WHEN BUILDING_TYPE IN ('commercial', 'office', 'retail', 'warehouse') THEN BUILDING_ID END)
+        access_modifier: public_access
+      - name: HIGH_CONFIDENCE_MATCH_COUNT
+        synonyms:
+          - ground truth count
+          - hcad match count
+        description: Count of high-confidence HCAD ground truth matches (98% avg confidence)
+        expr: COUNT_IF(DATA_SOURCE = 'HCAD_GROUND_TRUTH_20260103')
+        access_modifier: public_access
+      - name: INDUSTRIAL_BUILDING_COUNT
+        description: Count of industrial buildings
+        expr: COUNT(DISTINCT CASE WHEN BUILDING_TYPE = 'industrial' THEN BUILDING_ID END)
+        access_modifier: public_access
+      - name: INFERENCE_MATCH_COUNT
+        synonyms:
+          - inferred match count
+          - ml match count
+        description: Count of ML-inferred matches (88.5% avg confidence)
+        expr: COUNT_IF(DATA_SOURCE = 'INFERENCE_PHASE1_20260103')
+        access_modifier: public_access
+      - name: RESIDENTIAL_BUILDING_COUNT
+        description: Count of residential buildings (house, apartments, residential)
+        expr: COUNT(DISTINCT CASE WHEN BUILDING_TYPE IN ('house', 'apartments', 'residential', 'duplex', 'terrace', 'semidetached_house') THEN BUILDING_ID END)
+        access_modifier: public_access
+      - name: TOTAL_BUILDING_ASSOCIATIONS
+        description: Total count of meter-building associations
+        expr: COUNT(*)
+        access_modifier: public_access
+      - name: UNIQUE_BUILDINGS_MATCHED
+        description: Count of distinct buildings with meter associations
+        expr: COUNT(DISTINCT BUILDING_ID)
+        access_modifier: public_access
+      - name: UNIQUE_METERS_WITH_BUILDINGS
+        description: Count of distinct meters with building associations
+        expr: COUNT(DISTINCT METER_ID)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - METER_ID
+        - BUILDING_ID
+  - name: CIRCUIT_METADATA
+    synonyms:
+      - CIRCUIT_INFO
+      - CIRCUITS
+      - DISTRIBUTION_CIRCUITS
+    description: Circuit metadata with transformer and meter counts, voltage levels, and geographic boundaries for distribution planning
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: CIRCUIT_METADATA
+    dimensions:
+      - name: CIRCUIT_ID
+        description: Circuit identifier
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: CIRCUIT_NAME
+        synonyms:
+          - circuit
+          - distribution circuit
+          - feeder name
+        description: Circuit name in utility standard format (Substation Name Ckt-NN), identifying the source substation and circuit number
+        expr: CIRCUIT_NAME
+        data_type: VARCHAR(16777216)
+      - name: SUBSTATION_ID
+        description: Parent substation
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+    facts:
+      - name: AVG_LATITUDE
+        description: Average latitude
+        expr: AVG_LATITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: AVG_LONGITUDE
+        description: Average longitude
+        expr: AVG_LONGITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: METER_COUNT
+        description: Meter count on circuit
+        expr: METER_COUNT
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: TRANSFORMER_COUNT
+        description: Transformer count on circuit
+        expr: TRANSFORMER_COUNT
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: VOLTAGE_LEVEL_KV
+        description: Circuit voltage level (kV)
+        expr: VOLTAGE_LEVEL_KV
+        data_type: NUMBER(4,2)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - CIRCUIT_ID
+  - name: CIRCUIT_VEGETATION_RISK
+    synonyms:
+      - circuit tree risk
+      - tree hazard by circuit
+      - vegetation risk
+    description: Circuit-level vegetation risk scores from Overture Maps tree proximity analysis. Links to CIRCUIT_METADATA for risk prioritization and outage correlation.
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: CIRCUIT_VEGETATION_RISK
+    dimensions:
+      - name: CIRCUIT_ID
+        description: Circuit identifier (foreign key to CIRCUIT_METADATA)
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: CIRCUIT_RISK_LEVEL
+        synonyms:
+          - circuit vegetation level
+          - overall risk
+          - risk category
+        description: Overall circuit vegetation risk classification (CRITICAL, HIGH, MODERATE, LOW, MINIMAL)
+        expr: CIRCUIT_RISK_LEVEL
+        data_type: VARCHAR(8)
+        sample_values:
+          - CRITICAL
+          - HIGH
+          - MODERATE
+          - LOW
+          - MINIMAL
+      - name: FEEDER_ID
+        description: Feeder identifier for hierarchical grouping
+        expr: FEEDER_ID
+        data_type: VARCHAR(16777216)
+      - name: SUBSTATION_ID
+        description: Parent substation identifier
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+    facts:
+      - name: AFFECTED_TRANSFORMERS
+        synonyms:
+          - at risk transformers
+          - vegetation exposed transformers
+        description: Count of transformers with vegetation risk on this circuit
+        expr: AFFECTED_TRANSFORMERS
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: AVG_RISK_SCORE
+        synonyms:
+          - average vegetation risk
+          - mean risk score
+        description: Average vegetation risk score across all trees near circuit (0-100 scale)
+        expr: AVG_RISK_SCORE
+        data_type: NUMBER(22,1)
+        access_modifier: public_access
+      - name: CRITICAL_TREES
+        synonyms:
+          - critical proximity trees
+          - immediate hazard trees
+        description: Count of trees within 5 meters of power lines (immediate strike risk)
+        expr: CRITICAL_TREES
+        data_type: NUMBER(13,0)
+        access_modifier: public_access
+      - name: HIGH_RISK_TREES
+        description: Count of trees in high-risk proximity to circuit (including critical + high)
+        expr: HIGH_RISK_TREES
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: HIGH_TREES
+        synonyms:
+          - high proximity trees
+        description: Count of trees 5-10 meters from power lines
+        expr: HIGH_TREES
+        data_type: NUMBER(13,0)
+        access_modifier: public_access
+      - name: MAX_RISK_SCORE
+        synonyms:
+          - peak risk
+          - worst case risk
+        description: Maximum vegetation risk score on circuit (identifies hot spots)
+        expr: MAX_RISK_SCORE
+        data_type: NUMBER(3,0)
+        access_modifier: public_access
+      - name: MODERATE_TREES
+        description: Count of trees 10-20 meters from power lines
+        expr: MODERATE_TREES
+        data_type: NUMBER(13,0)
+        access_modifier: public_access
+    filters:
+      - name: CRITICAL_VEG_RISK_CIRCUITS
+        synonyms:
+          - critical vegetation circuits
+          - highest priority vegetation
+        description: Circuits with CRITICAL vegetation risk classification
+        expr: CIRCUIT_RISK_LEVEL = 'CRITICAL'
+      - name: HAS_CRITICAL_TREES
+        synonyms:
+          - critical proximity trees
+          - immediate tree hazards
+        description: Circuits with any trees within 5 meters of lines
+        expr: CRITICAL_TREES > 0
+      - name: HIGH_VEG_RISK_CIRCUITS
+        synonyms:
+          - high risk vegetation
+          - priority vegetation circuits
+        description: Circuits with HIGH or CRITICAL vegetation risk
+        expr: CIRCUIT_RISK_LEVEL IN ('CRITICAL', 'HIGH')
+    metrics:
+      - name: AVG_CRITICAL_TREES_PER_CIRCUIT
+        description: Average critical-proximity trees per circuit
+        expr: AVG(CRITICAL_TREES)
+        access_modifier: public_access
+      - name: AVG_VEGETATION_RISK_SCORE
+        description: Average vegetation risk score across all circuits
+        expr: AVG(AVG_RISK_SCORE)
+        access_modifier: public_access
+      - name: CRITICAL_CIRCUIT_COUNT
+        synonyms:
+          - critical risk circuits
+          - highest priority circuits
+        description: Count of circuits classified as CRITICAL vegetation risk
+        expr: COUNT_IF(CIRCUIT_RISK_LEVEL = 'CRITICAL')
+        access_modifier: public_access
+      - name: HIGH_RISK_CIRCUIT_COUNT
+        description: Count of circuits classified as HIGH vegetation risk
+        expr: COUNT_IF(CIRCUIT_RISK_LEVEL = 'HIGH')
+        access_modifier: public_access
+      - name: TOTAL_AFFECTED_TRANSFORMERS
+        description: Total transformers with vegetation risk exposure
+        expr: SUM(AFFECTED_TRANSFORMERS)
+        access_modifier: public_access
+      - name: TOTAL_CIRCUIT_COUNT
+        description: Count of circuits with vegetation risk data
+        expr: COUNT(DISTINCT CIRCUIT_ID)
+        access_modifier: public_access
+      - name: TOTAL_CRITICAL_TREES
+        synonyms:
+          - critical tree count
+          - total immediate hazards
+        description: Total count of trees within 5m of power lines across all circuits
+        expr: SUM(CRITICAL_TREES)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - CIRCUIT_ID
+  - name: CUSTOMERS_MASTER_DATA
+    synonyms:
+      - CUSTOMER_DATA
+      - CUSTOMER_MASTER
+      - CUSTOMERS
+    description: Customer master data with demographic info and meter associations linking customers to grid infrastructure
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: CUSTOMERS_MASTER_DATA
+    dimensions:
+      - name: ACCOUNT_STATUS
+        description: Account status
+        expr: ACCOUNT_STATUS
+        data_type: VARCHAR(6)
+      - name: CITY
+        description: City
+        expr: CITY
+        data_type: VARCHAR(100)
+      - name: CUSTOMER_ID
+        description: Customer identifier
+        expr: CUSTOMER_ID
+        data_type: VARCHAR(16777216)
+      - name: CUSTOMER_SEGMENT
+        description: Customer segment (RESIDENTIAL/COMMERCIAL/INDUSTRIAL)
+        expr: CUSTOMER_SEGMENT
+        data_type: VARCHAR(14)
+      - name: FULL_NAME
+        description: Customer full name
+        expr: FULL_NAME
+        data_type: VARCHAR(16777216)
+      - name: PRIMARY_METER_ID
+        description: Primary meter for customer
+        expr: PRIMARY_METER_ID
+        data_type: VARCHAR(16777216)
+      - name: SERVICE_ADDRESS
+        description: Service address
+        expr: SERVICE_ADDRESS
+        data_type: VARCHAR(16777216)
+      - name: SERVICE_COUNTY
+        description: Service county
+        expr: SERVICE_COUNTY
+        data_type: VARCHAR(16777216)
+    primary_key:
+      columns:
+        - CUSTOMER_ID
+  - name: CUSTOMER_OUTAGE_EVENTS
+    description: Customer-level power outage events exploded from transformer outages, supporting Customer 360 storm resilience analytics with individual customer tracking, outage history, and restoration metrics for both storm and thermal events
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: CUSTOMER_OUTAGE_EVENTS
+    dimensions:
+      - name: BUILDING_ID
+        description: Building identifier for property-level aggregation
+        expr: BUILDING_ID
+        data_type: VARCHAR(16777216)
+      - name: CITY
+        description: City where customer is located
+        expr: CITY
+        data_type: VARCHAR(100)
+      - name: COUNTY_NAME
+        description: County name for geographic aggregation (Harris, Galveston, Brazoria, etc.)
+        expr: COUNTY_NAME
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - HARRIS
+          - GALVESTON
+          - BRAZORIA
+          - CHAMBERS
+          - FORT BEND
+          - MONTGOMERY
+          - LIBERTY
+      - name: CUSTOMER_METER_ID
+        synonyms:
+          - customer meter
+          - meter id
+          - meter number
+        description: Customer meter identifier (proxy for customer ID in utility systems where 1 meter = 1 customer)
+        expr: CUSTOMER_METER_ID
+        data_type: VARCHAR(16777216)
+      - name: CUSTOMER_NAME
+        synonyms:
+          - account holder
+          - customer
+          - name
+        description: Customer full name for personalized outage tracking and notifications
+        expr: CUSTOMER_NAME
+        data_type: VARCHAR(16777216)
+      - name: CUSTOMER_OUTAGE_ID
+        description: Unique identifier for each customer outage event
+        expr: CUSTOMER_OUTAGE_ID
+        data_type: VARCHAR(16777216)
+        unique: true
+      - name: CUSTOMER_SEGMENT_ID
+        description: Customer segment classification (RESIDENTIAL, COMMERCIAL, INDUSTRIAL)
+        expr: CUSTOMER_SEGMENT_ID
+        data_type: VARCHAR(11)
+        sample_values:
+          - RESIDENTIAL
+          - COMMERCIAL
+          - INDUSTRIAL
+      - name: OUTAGE_CATEGORY
+        description: High-level outage category (STORM or THERMAL)
+        expr: OUTAGE_CATEGORY
+        data_type: VARCHAR(20)
+        sample_values:
+          - STORM
+          - THERMAL
+      - name: OUTAGE_CAUSE
+        description: Root cause of outage (STORM_DAMAGE_HURRICANE, STORM_DAMAGE_TROPICAL, STORM_DAMAGE_THUNDERSTORM, or thermal overload causes)
+        expr: OUTAGE_CAUSE
+        data_type: VARCHAR(25)
+        sample_values:
+          - STORM_DAMAGE_HURRICANE
+          - STORM_DAMAGE_TROPICAL
+          - STORM_DAMAGE_THUNDERSTORM
+          - THERMAL_OVERLOAD
+      - name: OUTAGE_TYPE
+        description: Detailed outage type (HURRICANE, TROPICAL_STORM, SEVERE_THUNDERSTORM, or THERMAL_OVERLOAD)
+        expr: OUTAGE_TYPE
+        data_type: VARCHAR(16777216)
+        sample_values:
+          - HURRICANE
+          - TROPICAL_STORM
+          - SEVERE_THUNDERSTORM
+          - THERMAL_OVERLOAD
+      - name: SUBSTATION_ID
+        description: Parent substation for operational zone analysis
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_ID
+        description: Transformer that serves this customer
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_OUTAGE_ID
+        description: Parent transformer outage identifier that caused this customer outage
+        expr: TRANSFORMER_OUTAGE_ID
+        data_type: VARCHAR(16777216)
+      - name: WEATHER_EVENT_ID
+        description: Weather event identifier. Currently all NULL in this dataset so use OUTAGE_TYPE for storm analysis instead.
+        expr: WEATHER_EVENT_ID
+        data_type: VARCHAR(16777216)
+      - name: ZIP_CODE
+        description: ZIP code for customer location
+        expr: ZIP_CODE
+        data_type: VARCHAR(16777216)
+    time_dimensions:
+      - name: OUTAGE_END_TIME
+        description: Timestamp when customer power was restored
+        expr: OUTAGE_END_TIME
+        data_type: TIMESTAMP_NTZ(9)
+      - name: OUTAGE_START_TIME
+        description: Timestamp when customer lost power
+        expr: OUTAGE_START_TIME
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: OUTAGE_DURATION_MINUTES
+        description: Duration of customer outage in minutes (for regulatory SAIDI calculations and service credit billing)
+        expr: OUTAGE_DURATION_MINUTES
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+        default_aggregation: sum
+    unique_keys:
+      - columns:
+          - CUSTOMER_OUTAGE_ID
+  - name: ENERGY_BURDEN_ANALYSIS
+    synonyms:
+      - CUSTOMER AFFORDABILITY
+      - ENERGY AFFORDABILITY ANALYSIS
+      - METER ENERGY BURDEN
+    description: Meter-level energy burden analysis with year-over-year comparison to 2024 baseline showing burden trends by customer segment
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: ENERGY_BURDEN_ANALYSIS
+    dimensions:
+      - name: BURDEN_CLASSIFICATION
+        synonyms:
+          - affordability status
+          - burden level
+        description: Energy burden classification (SEVERE, HIGH, MODERATE, LOW)
+        expr: BURDEN_CLASSIFICATION
+        data_type: VARCHAR(21)
+      - name: BURDEN_LEVEL
+        synonyms:
+          - affordability level
+          - burden category
+          - burden status
+        description: Case-insensitive burden classification (accepts 'severe', 'Severe', or 'SEVERE')
+        expr: INITCAP(BURDEN_CLASSIFICATION)
+        data_type: VARCHAR(63)
+      - name: CITY
+        description: City where meter is located
+        expr: CITY
+        data_type: VARCHAR(100)
+      - name: COUNTY
+        synonyms:
+          - county normalized
+          - county uppercase
+        description: Case-insensitive county name (accepts 'galveston', 'Galveston', or 'GALVESTON')
+        expr: UPPER(COUNTY_NAME)
+        data_type: VARCHAR(50331648)
+      - name: COUNTY_NAME
+        synonyms:
+          - county
+          - service area
+        description: County where meter is located
+        expr: COUNTY_NAME
+        data_type: VARCHAR(16777216)
+      - name: ENERGY_BURDEN_RISK_FLAG
+        synonyms:
+          - at risk flag
+          - high burden flag
+        description: Flag indicating customer at risk for energy burden issues
+        expr: ENERGY_BURDEN_RISK_FLAG
+        data_type: BOOLEAN
+      - name: HIGH_USAGE_FLAG
+        description: Flag indicating abnormally high energy usage
+        expr: HIGH_USAGE_FLAG
+        data_type: BOOLEAN
+      - name: HOUSING_THERMAL_QUALITY
+        synonyms:
+          - housing quality
+          - thermal efficiency
+        description: Housing thermal quality rating (POOR, FAIR, GOOD, EXCELLENT)
+        expr: HOUSING_THERMAL_QUALITY
+        data_type: VARCHAR(27)
+      - name: INCOME_CLASSIFICATION
+        synonyms:
+          - income bracket
+          - income level
+        description: Customer income classification (LOW_INCOME, MODERATE_INCOME, MIDDLE_INCOME, HIGH_INCOME)
+        expr: INCOME_CLASSIFICATION
+        data_type: VARCHAR(19)
+      - name: LOW_INCOME_FLAG
+        description: Flag indicating low-income customer
+        expr: LOW_INCOME_FLAG
+        data_type: BOOLEAN
+      - name: METER_ID
+        description: Meter identifier
+        expr: METER_ID
+        data_type: VARCHAR(16777216)
+      - name: MONTH
+        description: Month of burden measurement
+        expr: MONTH
+        data_type: NUMBER(2,0)
+      - name: OLD_HOUSING_FLAG
+        description: Flag indicating older housing with poor thermal efficiency
+        expr: OLD_HOUSING_FLAG
+        data_type: BOOLEAN
+      - name: TRANSFORMER_ID
+        description: Transformer identifier
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+      - name: YEAR
+        description: Year of burden measurement
+        expr: YEAR
+        data_type: NUMBER(4,0)
+      - name: ZIP_CODE
+        synonyms:
+          - postal code
+          - zip
+        description: ZIP code of meter location
+        expr: ZIP_CODE
+        data_type: NUMBER(38,0)
+      - name: IS_MASTER_METER
+        synonyms:
+          - master meter flag
+          - multi-tenant meter
+        description: Flag indicating meter serves multiple tenants (apartments, commercial buildings). Exclude from individual household burden analysis.
+        expr: IS_MASTER_METER
+        data_type: BOOLEAN
+      - name: BURDEN_CLASSIFICATION_REFINED
+        synonyms:
+          - adjusted burden
+          - refined burden level
+        description: Burden classification that excludes master meters - use for individual household analysis
+        expr: BURDEN_CLASSIFICATION_REFINED
+        data_type: VARCHAR(25)
+    time_dimensions:
+      - name: USAGE_MONTH
+        description: Month timestamp of usage
+        expr: USAGE_MONTH
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: ANNUAL_ENERGY_BURDEN_PCT
+        description: Annual energy cost as percentage of income
+        expr: ANNUAL_ENERGY_BURDEN_PCT
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: AVG_LMP
+        description: Average LMP price for the month
+        expr: AVG_LMP
+        data_type: NUMBER(26,7)
+        access_modifier: public_access
+      - name: BURDEN_2024_BASELINE
+        description: Energy burden baseline from 2024 for comparison
+        expr: BURDEN_2024_BASELINE
+        data_type: 'NULL'
+        access_modifier: public_access
+      - name: BURDEN_CHANGE_VS_2024_PCT
+        description: Change in energy burden vs 2024 baseline (%)
+        expr: BURDEN_CHANGE_VS_2024_PCT
+        data_type: 'NULL'
+        access_modifier: public_access
+      - name: CBG_MEDIAN_INCOME
+        description: Census block group median income
+        expr: CBG_MEDIAN_INCOME
+        data_type: NUMBER(33,0)
+        access_modifier: public_access
+      - name: ESTIMATED_MONTHLY_BILL_USD
+        description: Estimated monthly electricity bill ($)
+        expr: ESTIMATED_MONTHLY_BILL_USD
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: MONTHLY_KWH
+        description: Monthly energy usage (kWh)
+        expr: MONTHLY_KWH
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: THERMAL_LOAD_MULTIPLIER
+        description: Housing thermal efficiency multiplier
+        expr: THERMAL_LOAD_MULTIPLIER
+        data_type: NUMBER(3,2)
+        access_modifier: public_access
+    filters:
+      - name: HIGH_BURDEN_METERS
+        synonyms:
+          - affordability challenged
+          - high energy burden
+          - severe burden
+        description: Meters with severe or high energy burden classification (>6% of income)
+        expr: BURDEN_CLASSIFICATION IN ('Severe', 'High')
+      - name: HIGH_USAGE_OUTLIERS
+        synonyms:
+          - abnormal usage
+          - high consumption anomaly
+        description: Customers with abnormally high energy usage patterns
+        expr: HIGH_USAGE_FLAG = TRUE
+      - name: LOW_INCOME_CUSTOMERS
+        synonyms:
+          - disadvantaged customers
+          - income qualified customers
+          - low income households
+        description: Customers flagged as low-income households eligible for assistance programs
+        expr: LOW_INCOME_FLAG = TRUE
+      - name: OLD_INEFFICIENT_HOUSING
+        synonyms:
+          - old homes
+          - poor housing quality
+          - thermal inefficiency
+        description: Customers in housing with poor thermal efficiency
+        expr: OLD_HOUSING_FLAG = TRUE AND HOUSING_THERMAL_QUALITY = 'POOR'
+      - name: SUMMER_2025
+        synonyms:
+          - 2025 summer peak
+          - current summer season
+          - this summer
+        description: July-August 2025 summer peak period
+        expr: YEAR = 2025 AND MONTH IN (7, 8)
+      - name: VULNERABLE_CUSTOMERS
+        synonyms:
+          - at risk customers
+          - crisis customers
+          - vulnerable households
+        description: Low-income customers with severe or high energy burden
+        expr: LOW_INCOME_FLAG = TRUE AND BURDEN_CLASSIFICATION IN ('Severe', 'High')
+      - name: WORSENING_BURDEN
+        synonyms:
+          - deteriorating affordability
+          - increasing burden
+        description: Customers with >5% energy burden increase vs 2024 baseline
+        expr: BURDEN_CHANGE_VS_2024_PCT > 5
+      - name: INDIVIDUAL_HOUSEHOLDS_ONLY
+        synonyms:
+          - exclude master meters
+          - single household
+        description: Exclude multi-tenant master meters for individual household analysis
+        expr: IS_MASTER_METER = FALSE
+    metrics:
+      - name: AVG_BURDEN_CHANGE_VS_2024_PCT
+        description: Average percentage change in energy burden vs 2024 baseline
+        expr: AVG(BURDEN_CHANGE_VS_2024_PCT)
+        access_modifier: public_access
+      - name: AVG_CUSTOMER_BILL
+        description: Average monthly bill per customer
+        expr: AVG(ESTIMATED_MONTHLY_BILL_USD)
+        access_modifier: public_access
+      - name: AVG_CUSTOMER_KWH
+        description: Average monthly kWh consumption per customer
+        expr: AVG(MONTHLY_KWH)
+        access_modifier: public_access
+      - name: AVG_ENERGY_BURDEN_PCT
+        description: Average annual energy burden as percentage of household income
+        expr: AVG(ANNUAL_ENERGY_BURDEN_PCT)
+        access_modifier: public_access
+      - name: AVG_LMP_PRICE
+        description: Average locational marginal price ($/MWh)
+        expr: AVG(AVG_LMP)
+        access_modifier: public_access
+      - name: HIGH_BURDEN_CUSTOMER_COUNT
+        description: Count of customers with high energy burden (6-10% of income)
+        expr: COUNT_IF(BURDEN_CLASSIFICATION = 'High')
+        access_modifier: public_access
+      - name: HIGH_USAGE_CUSTOMER_COUNT
+        description: Count of customers with abnormally high usage
+        expr: COUNT_IF(HIGH_USAGE_FLAG = TRUE)
+        access_modifier: public_access
+      - name: IMPROVING_BURDEN_COUNT
+        description: Count of customers with >5% burden decrease vs 2024
+        expr: COUNT_IF(BURDEN_CHANGE_VS_2024_PCT < -5)
+        access_modifier: public_access
+      - name: LOW_INCOME_CUSTOMER_COUNT
+        description: Count of customers flagged as low-income households
+        expr: COUNT_IF(LOW_INCOME_FLAG = TRUE)
+        access_modifier: public_access
+      - name: MEDIAN_CUSTOMER_BILL
+        description: Median monthly bill (50th percentile)
+        expr: MEDIAN(ESTIMATED_MONTHLY_BILL_USD)
+        access_modifier: public_access
+      - name: MEDIAN_CUSTOMER_KWH
+        description: Median monthly consumption (50th percentile)
+        expr: MEDIAN(MONTHLY_KWH)
+        access_modifier: public_access
+      - name: MEDIAN_ENERGY_BURDEN_PCT
+        description: Median energy burden percentage
+        expr: MEDIAN(ANNUAL_ENERGY_BURDEN_PCT)
+        access_modifier: public_access
+      - name: OLD_HOUSING_CUSTOMER_COUNT
+        description: Count of customers in old/inefficient housing
+        expr: COUNT_IF(OLD_HOUSING_FLAG = TRUE)
+        access_modifier: public_access
+      - name: SEVERE_BURDEN_CUSTOMER_COUNT
+        description: Count of customers with severe energy burden (>10% of income)
+        expr: COUNT_IF(BURDEN_CLASSIFICATION = 'Severe')
+        access_modifier: public_access
+      - name: TOTAL_CUSTOMER_COUNT
+        description: Total count of distinct customers
+        expr: COUNT(DISTINCT METER_ID)
+        access_modifier: public_access
+      - name: TOTAL_ENERGY_CONSUMPTION_KWH
+        description: Total monthly energy consumption across all customers
+        expr: SUM(MONTHLY_KWH)
+        access_modifier: public_access
+      - name: TOTAL_MONTHLY_REVENUE
+        description: Total estimated monthly revenue from customer bills
+        expr: SUM(ESTIMATED_MONTHLY_BILL_USD)
+        access_modifier: public_access
+      - name: VULNERABLE_CUSTOMER_COUNT
+        description: Count of low-income customers with severe/high burden
+        expr: COUNT_IF(LOW_INCOME_FLAG = TRUE AND BURDEN_CLASSIFICATION IN ('Severe', 'High'))
+        access_modifier: public_access
+      - name: WEIGHTED_AVG_PRICE_PER_KWH
+        description: Revenue-weighted average price per kilowatt-hour
+        expr: SUM(ESTIMATED_MONTHLY_BILL_USD) / NULLIF(SUM(MONTHLY_KWH), 0)
+        access_modifier: public_access
+      - name: WORSENING_BURDEN_COUNT
+        description: Count of customers with >5% burden increase vs 2024
+        expr: COUNT_IF(BURDEN_CHANGE_VS_2024_PCT > 5)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - METER_ID
+        - YEAR
+        - MONTH
+  - name: ENERGY_BURDEN_TRENDS
+    synonyms:
+      - AFFORDABILITY TRENDS
+      - COST BURDEN
+      - ENERGY BURDEN
+    description: Historical energy cost burden analysis by customer segment and building type
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: ENERGY_BURDEN_TRENDS
+    dimensions:
+      - name: BUILDING_TYPE
+        synonyms:
+          - building category
+          - property type
+        description: Building type (SINGLE_FAMILY_HOME, MULTIFAMILY_APARTMENT, etc)
+        expr: BUILDING_TYPE
+        data_type: VARCHAR(16777216)
+      - name: BURDEN_CATEGORY
+        synonyms:
+          - affordability category
+          - burden level
+        description: Energy burden category (HIGH_BURDEN, MODERATE_BURDEN, NORMAL_BURDEN)
+        expr: BURDEN_CATEGORY
+        data_type: VARCHAR(21)
+      - name: CUSTOMER_SEGMENT_ID
+        synonyms:
+          - customer segment
+          - income segment
+        description: Customer income segment identifier
+        expr: CUSTOMER_SEGMENT_ID
+        data_type: VARCHAR(11)
+      - name: MONTH
+        description: Month of cost measurement
+        expr: MONTH
+        data_type: NUMBER(2,0)
+      - name: YEAR
+        description: Year of cost measurement
+        expr: YEAR
+        data_type: NUMBER(4,0)
+    time_dimensions:
+      - name: COST_MONTH
+        description: Month timestamp for cost calculation
+        expr: COST_MONTH
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: ANNUAL_ENERGY_BURDEN_PCT
+        description: Energy cost as percentage of annual income
+        expr: ANNUAL_ENERGY_BURDEN_PCT
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: AVG_KWH_PER_METER
+        description: Average kWh per meter
+        expr: AVG_KWH_PER_METER
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: AVG_LMP_PRICE
+        description: Average LMP price for this period
+        expr: AVG_LMP_PRICE
+        data_type: NUMBER(38,2)
+        access_modifier: public_access
+      - name: ESTIMATED_ANNUAL_INCOME
+        description: Estimated annual income for this segment
+        expr: ESTIMATED_ANNUAL_INCOME
+        data_type: NUMBER(38,0)
+        access_modifier: public_access
+      - name: ESTIMATED_COST_DOLLARS
+        description: Estimated monthly cost in dollars
+        expr: ESTIMATED_COST_DOLLARS
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: METERS_IN_SEGMENT
+        description: Number of meters in this segment
+        expr: METERS_IN_SEGMENT
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: TOTAL_KWH_USED
+        description: Total energy used by segment (kWh)
+        expr: TOTAL_KWH_USED
+        data_type: FLOAT
+        access_modifier: public_access
+  - name: EQUIPMENT_STRESS_TRENDS_HISTORICAL
+    synonyms:
+      - EQUIPMENT STRESS
+      - TRANSFORMER HISTORY
+      - TRANSFORMER STRESS TRENDS
+    description: Historical transformer stress patterns showing multi-year summer load trends
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: EQUIPMENT_STRESS_TRENDS_HISTORICAL
+    dimensions:
+      - name: TRANSFORMER_ID
+        description: Unique transformer identifier
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+      - name: YEAR
+        description: Year of stress measurement
+        expr: YEAR
+        data_type: NUMBER(4,0)
+    facts:
+      - name: INSTALL_YEAR
+        description: Year transformer was installed
+        expr: INSTALL_YEAR
+        data_type: NUMBER(4,0)
+        access_modifier: public_access
+      - name: RATED_KVA
+        description: Transformer rated capacity (kVA)
+        expr: RATED_KVA
+        data_type: NUMBER(4,0)
+        access_modifier: public_access
+      - name: SUMMER_AVG_LOAD
+        description: Average summer load (kWh)
+        expr: SUMMER_AVG_LOAD
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: SUMMER_CRITICAL_HOURS
+        description: Hours of critical stress in summer (>100% load factor)
+        expr: SUMMER_CRITICAL_HOURS
+        data_type: NUMBER(30,0)
+        access_modifier: public_access
+      - name: SUMMER_HIGH_STRESS_HOURS
+        description: Hours of high stress in summer (80-100% load factor)
+        expr: SUMMER_HIGH_STRESS_HOURS
+        data_type: NUMBER(30,0)
+        access_modifier: public_access
+      - name: SUMMER_PEAK_LOAD
+        description: Peak summer load (kWh)
+        expr: SUMMER_PEAK_LOAD
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: TRANSFORMER_AGE_YEARS
+        description: Transformer age in years
+        expr: TRANSFORMER_AGE_YEARS
+        data_type: NUMBER(5,0)
+        access_modifier: public_access
+  - name: ERCOT_LMP_UNIFIED
+    synonyms:
+      - ELECTRICITY PRICES
+      - ERCOT PRICING
+      - LMP
+    description: Unified ERCOT locational marginal pricing data for Houston zone (Aug 2024 + Jul-Aug 2025)
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: ERCOT_LMP_UNIFIED
+    dimensions:
+      - name: MONTH
+        description: Month of pricing data
+        expr: MONTH
+        data_type: NUMBER(2,0)
+      - name: SOURCE
+        description: 'Data source: HISTORICAL or PRODUCTION'
+        expr: SOURCE
+        data_type: VARCHAR(10)
+      - name: YEAR
+        description: Year of pricing data
+        expr: YEAR
+        data_type: NUMBER(4,0)
+    time_dimensions:
+      - name: TIMESTAMP_UTC
+        description: Hourly timestamp of pricing data
+        expr: TIMESTAMP_UTC
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: LMP_CONGESTION
+        description: Congestion component of LMP ($/MWh)
+        expr: LMP_CONGESTION
+        data_type: NUMBER(3,0)
+        access_modifier: public_access
+      - name: LMP_ENERGY
+        description: Energy component of locational marginal price ($/MWh)
+        expr: LMP_ENERGY
+        data_type: NUMBER(6,1)
+        access_modifier: public_access
+      - name: LMP_LOSS
+        description: Loss component of LMP ($/MWh)
+        expr: LMP_LOSS
+        data_type: NUMBER(3,1)
+        access_modifier: public_access
+      - name: LMP_TOTAL
+        description: Total locational marginal price ($/MWh)
+        expr: LMP_TOTAL
+        data_type: NUMBER(8,1)
+        access_modifier: public_access
+  - name: ERCOT_LOAD_UNIFIED
+    synonyms:
+      - ERCOT HISTORICAL LOAD
+      - ERCOT LOAD
+      - GRID LOAD
+    description: Unified ERCOT load data spanning 2023-2025 for year-over-year trend analysis
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: ERCOT_LOAD_UNIFIED
+    dimensions:
+      - name: MONTH
+        description: Month of load measurement
+        expr: MONTH
+        data_type: NUMBER(38,0)
+      - name: SOURCE
+        description: 'Data source: HISTORICAL or PRODUCTION'
+        expr: SOURCE
+        data_type: VARCHAR(10)
+      - name: YEAR
+        description: Year of load measurement
+        expr: YEAR
+        data_type: NUMBER(38,0)
+    time_dimensions:
+      - name: TIMESTAMP_UTC
+        description: Hourly timestamp of load measurement
+        expr: TIMESTAMP_UTC
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: ERCOT_TOTAL_MW
+        description: Total ERCOT load in megawatts
+        expr: ERCOT_TOTAL_MW
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: HOUSTON_SHARE_PCT
+        description: Houston's percentage of total ERCOT load
+        expr: HOUSTON_SHARE_PCT
+        data_type: FLOAT
+        access_modifier: public_access
+    filters:
+      - name: CRITICAL_LOAD_CONDITIONS
+        synonyms:
+          - critical demand
+          - extreme load
+        description: Hours with ERCOT load exceeding 70 GW
+        expr: ERCOT_TOTAL_MW > 70000
+      - name: HIGH_LOAD_CONDITIONS
+        synonyms:
+          - high demand
+          - peak load
+        description: Hours with ERCOT load exceeding 60 GW
+        expr: ERCOT_TOTAL_MW > 60000
+      - name: HISTORICAL_DATA_ONLY
+        description: Filter to 2023-2024 historical data
+        expr: SOURCE = 'HISTORICAL'
+      - name: PEAK_DEMAND_HOURS
+        synonyms:
+          - high demand period
+          - peak hours
+        description: Peak demand hours (2-7 PM Central Time)
+        expr: HOUR(TIMESTAMP_UTC) BETWEEN 14 AND 19
+      - name: PRODUCTION_DATA_ONLY
+        description: Filter to 2025 production data
+        expr: SOURCE = 'PRODUCTION'
+      - name: SUMMER_MONTHS
+        synonyms:
+          - peak season
+          - summer season
+        description: Summer months (June, July, August)
+        expr: MONTH IN (6, 7, 8)
+    metrics:
+      - name: AVG_ERCOT_LOAD_MW
+        description: Average ERCOT grid load
+        expr: AVG(ERCOT_TOTAL_MW)
+        access_modifier: public_access
+      - name: AVG_HOUSTON_SHARE_PCT
+        description: Average Houston Metro share of total ERCOT load
+        expr: AVG(HOUSTON_SHARE_PCT)
+        access_modifier: public_access
+      - name: HOURLY_RECORD_COUNT
+        description: Count of hourly load records in period
+        expr: COUNT(*)
+        access_modifier: public_access
+      - name: HOURS_ABOVE_60GW
+        description: Count of hours with load exceeding 60 GW
+        expr: COUNT_IF(ERCOT_TOTAL_MW > 60000)
+        access_modifier: public_access
+      - name: HOURS_ABOVE_70GW
+        description: Count of hours with load exceeding 70 GW (critical threshold)
+        expr: COUNT_IF(ERCOT_TOTAL_MW > 70000)
+        access_modifier: public_access
+      - name: HOUSTON_LOAD_CONTRIBUTION_MW
+        description: Estimated Houston contribution to ERCOT load
+        expr: SUM(ERCOT_TOTAL_MW * HOUSTON_SHARE_PCT / 100.0)
+        access_modifier: public_access
+      - name: LOAD_FACTOR_PCT
+        description: Grid load factor (average/peak utilization)
+        expr: (AVG(ERCOT_TOTAL_MW) * 100.0) / NULLIF(MAX(ERCOT_TOTAL_MW), 0)
+        access_modifier: public_access
+      - name: LOAD_RANGE_MW
+        description: Load range (peak minus minimum)
+        expr: MAX(ERCOT_TOTAL_MW) - MIN(ERCOT_TOTAL_MW)
+        access_modifier: public_access
+      - name: MIN_LOAD_MW
+        description: Minimum recorded grid load in period
+        expr: MIN(ERCOT_TOTAL_MW)
+        access_modifier: public_access
+      - name: PEAK_LOAD_MW
+        description: Maximum recorded grid load in period
+        expr: MAX(ERCOT_TOTAL_MW)
+        access_modifier: public_access
+      - name: TOTAL_ERCOT_LOAD_MW
+        description: Total ERCOT grid load in megawatts
+        expr: SUM(ERCOT_TOTAL_MW)
+        access_modifier: public_access
+  - name: GRID_POLES_INFRASTRUCTURE
+    synonyms:
+      - POLE_INFRASTRUCTURE
+      - POLES
+      - UTILITY_POLES
+    description: Grid pole infrastructure with health scores, equipment attachments, and topology links to transformers/circuits/substations
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: GRID_POLES_INFRASTRUCTURE
+    dimensions:
+      - name: CIRCUIT_ID
+        description: Circuit
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: CONDITION_STATUS
+        synonyms:
+          - physical status
+          - pole condition
+          - structural condition
+        description: Structural condition assessment (Good/Fair/Poor based on health score)
+        expr: CONDITION_STATUS
+        data_type: VARCHAR(4)
+      - name: POLE_CLASS
+        description: Pole class
+        expr: POLE_CLASS
+        data_type: VARCHAR(10)
+      - name: POLE_ID
+        description: Pole identifier
+        expr: POLE_ID
+        data_type: VARCHAR(16777216)
+      - name: POLE_MATERIAL
+        description: Pole material
+        expr: POLE_MATERIAL
+        data_type: VARCHAR(20)
+      - name: POLE_SOURCE
+        synonyms:
+          - data source
+          - pole origin
+        description: Data source origin (OSM_VERIFIED for field-verified poles, SYNTHETIC_HARRIS/SYNTHETIC_V2 for computationally generated poles)
+        expr: POLE_SOURCE
+        data_type: VARCHAR(16)
+      - name: SUBSTATION_ID
+        description: Substation
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_ID
+        description: Transformer
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+    facts:
+      - name: ATTACHMENT_COUNT
+        description: Attachment count
+        expr: ATTACHMENT_COUNT
+        data_type: NUMBER(2,0)
+        access_modifier: public_access
+      - name: HEALTH_SCORE
+        synonyms:
+          - integrity score
+          - pole health
+        description: Overall health score (0-100) based on structural integrity
+        expr: HEALTH_SCORE
+        data_type: NUMBER(8,2)
+        access_modifier: public_access
+      - name: INSTALLED_EQUIPMENT_COUNT
+        description: Equipment count
+        expr: INSTALLED_EQUIPMENT_COUNT
+        data_type: NUMBER(2,0)
+        access_modifier: public_access
+      - name: LATITUDE
+        description: Latitude
+        expr: LATITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: LOAD_UTILIZATION_PCT
+        synonyms:
+          - pole load
+          - utilization
+        description: Load utilization percentage
+        expr: LOAD_UTILIZATION_PCT
+        data_type: NUMBER(2,0)
+        access_modifier: public_access
+      - name: LONGITUDE
+        description: Longitude
+        expr: LONGITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: POLE_HEIGHT_FT
+        description: Pole height (ft)
+        expr: POLE_HEIGHT_FT
+        data_type: NUMBER(20,0)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - POLE_ID
+  - name: GRID_RELIABILITY_METRICS
+    synonyms:
+      - GRID_PERFORMANCE
+      - RELIABILITY_METRICS
+      - SAIDI_SAIFI
+    description: Monthly grid reliability metrics including SAIDI, SAIFI, and CAIDI for regulatory reporting and performance tracking
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: GRID_RELIABILITY_METRICS
+    time_dimensions:
+      - name: REPORT_MONTH
+        expr: REPORT_MONTH
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: AFFECTED_CUSTOMERS
+        synonyms:
+          - customers impacted
+          - outage customers
+        description: Number of customers affected by outages
+        expr: AFFECTED_CUSTOMERS
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: CAIDI_AVG_OUTAGE_DURATION_MINUTES
+        synonyms:
+          - CAIDI
+          - customer average interruption duration index
+        description: Customer Average Interruption Duration Index - average outage duration when interrupted
+        expr: CAIDI_AVG_OUTAGE_DURATION_MINUTES
+        data_type: NUMBER(38,2)
+        access_modifier: public_access
+      - name: SAIDI_MINUTES_PER_CUSTOMER
+        synonyms:
+          - average outage duration
+          - SAIDI
+          - system average interruption duration index
+        description: System Average Interruption Duration Index - average minutes of outage per customer
+        expr: SAIDI_MINUTES_PER_CUSTOMER
+        data_type: NUMBER(38,2)
+        access_modifier: public_access
+      - name: SAIFI_INTERRUPTIONS_PER_CUSTOMER
+        synonyms:
+          - average interruption frequency
+          - SAIFI
+          - system average interruption frequency index
+        description: System Average Interruption Frequency Index - average interruptions per customer
+        expr: SAIFI_INTERRUPTIONS_PER_CUSTOMER
+        data_type: NUMBER(38,4)
+        access_modifier: public_access
+      - name: TOTAL_CUSTOMERS
+        synonyms:
+          - customer count
+          - service territory
+        description: Total customers in service territory
+        expr: TOTAL_CUSTOMERS
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: TOTAL_INTERRUPTIONS
+        synonyms:
+          - interruption events
+          - outage count
+        description: Total number of interruption events
+        expr: TOTAL_INTERRUPTIONS
+        data_type: NUMBER(30,0)
+        access_modifier: public_access
+      - name: TOTAL_OUTAGE_MINUTES
+        synonyms:
+          - cumulative outage time
+          - total downtime
+        description: Total outage minutes across all customers
+        expr: TOTAL_OUTAGE_MINUTES
+        data_type: NUMBER(38,0)
+        access_modifier: public_access
+  - name: HOUSTON_WEATHER_HOURLY
+    synonyms:
+      - CLIMATE
+      - WEATHER
+      - WEATHER DATA
+    description: Hourly weather data for Houston enriched with wind speed and precipitation from WeatherSource marketplace
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: HOUSTON_WEATHER_HOURLY
+    dimensions:
+      - name: WEATHER_DATE
+        description: Date of weather observation
+        expr: WEATHER_DATE
+        data_type: DATE
+    time_dimensions:
+      - name: TIMESTAMP_UTC
+        description: Hourly timestamp of weather observation
+        expr: TIMESTAMP_UTC
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: HUMIDITY_PCT
+        description: Humidity percentage
+        expr: HUMIDITY_PCT
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: MAX_WIND_SPEED_DAILY_MPH
+        description: Daily maximum wind speed in miles per hour
+        expr: MAX_WIND_SPEED_DAILY_MPH
+        data_type: NUMBER(4,1)
+        access_modifier: public_access
+      - name: PRECIPITATION_INCHES
+        description: Hourly precipitation in inches
+        expr: PRECIPITATION_INCHES
+        data_type: NUMBER(16,3)
+        access_modifier: public_access
+      - name: TEMP_F
+        description: Temperature in Fahrenheit
+        expr: TEMP_F
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: WIND_SPEED_MPH
+        description: Hourly wind speed in miles per hour
+        expr: WIND_SPEED_MPH
+        data_type: FLOAT
+        access_modifier: public_access
+  - name: METER_INFRASTRUCTURE
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: METER_INFRASTRUCTURE
+    dimensions:
+      - name: CIRCUIT_ID
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: CITY
+        expr: CITY
+        data_type: VARCHAR(100)
+      - name: COUNTY
+        synonyms:
+          - county normalized
+          - county uppercase
+        description: Case-insensitive county name (accepts 'galveston', 'Galveston', or 'GALVESTON')
+        expr: UPPER(COUNTY_NAME)
+        data_type: VARCHAR(50331648)
+      - name: COUNTY_NAME
+        expr: COUNTY_NAME
+        data_type: VARCHAR(16777216)
+      - name: METER_ID
+        expr: METER_ID
+        data_type: VARCHAR(16777216)
+      - name: SUBSTATION_ID
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(50)
+      - name: TRANSFORMER_ID
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+      - name: ZIP_CODE
+        synonyms:
+          - postal code
+          - zip
+        description: ZIP code of meter location
+        expr: ZIP_CODE
+        data_type: VARCHAR(16777216)
+    facts:
+      - name: METER_LATITUDE
+        expr: METER_LATITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: METER_LONGITUDE
+        expr: METER_LONGITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: POLE_LATITUDE
+        expr: POLE_LATITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: POLE_LONGITUDE
+        expr: POLE_LONGITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - METER_ID
+  - name: OUTAGE_EVENTS
+    synonyms:
+      - INTERRUPTIONS
+      - OUTAGES
+      - POWER_OUTAGES
+    description: Power outage events escalated from severe voltage sags with customer impact and duration tracking
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: OUTAGE_EVENTS
+    dimensions:
+      - name: CAUSED_BY_SAG_EVENT_ID
+        synonyms:
+          - root cause event
+          - source voltage sag
+        description: Voltage sag event ID that caused this outage
+        expr: CAUSED_BY_SAG_EVENT_ID
+        data_type: VARCHAR(16777216)
+      - name: CIRCUIT_ID
+        description: Affected circuit identifier
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: FEEDER_ID
+        description: Affected feeder identifier
+        expr: FEEDER_ID
+        data_type: VARCHAR(16777216)
+      - name: OUTAGE_CAUSE
+        synonyms:
+          - outage reason
+          - root cause
+        description: Root cause type (TRANSFORMER_OVERLOAD, EQUIPMENT_FAULT, etc)
+        expr: OUTAGE_CAUSE
+        data_type: VARCHAR(20)
+      - name: OUTAGE_ID
+        description: Unique outage event identifier
+        expr: OUTAGE_ID
+        data_type: VARCHAR(16777216)
+      - name: SUBSTATION_ID
+        description: Parent substation identifier
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_ID
+        description: Affected transformer identifier
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+    time_dimensions:
+      - name: OUTAGE_END_TIME
+        description: Outage end timestamp
+        expr: OUTAGE_END_TIME
+        data_type: TIMESTAMP_NTZ(9)
+      - name: OUTAGE_START_TIME
+        description: Outage start timestamp
+        expr: OUTAGE_START_TIME
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: OUTAGE_DURATION_MINUTES
+        synonyms:
+          - interruption duration
+          - outage length
+        description: Outage duration in minutes
+        expr: OUTAGE_DURATION_MINUTES
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: VOLTAGE_DROP_AMOUNT
+        description: Voltage drop of preceding voltage sag
+        expr: VOLTAGE_DROP_AMOUNT
+        data_type: NUMBER(2,0)
+        access_modifier: public_access
+    filters:
+      - name: AGING_EQUIPMENT_OUTAGES
+        synonyms:
+          - end of life events
+          - old equipment failures
+        description: Outages attributed to aging equipment
+        expr: OUTAGE_CAUSE = 'AGING_EQUIPMENT'
+      - name: EQUIPMENT_FAULT_OUTAGES
+        synonyms:
+          - equipment failures
+          - hardware faults
+        description: Outages caused by equipment faults
+        expr: OUTAGE_CAUSE = 'EQUIPMENT_FAULT'
+      - name: EXTENDED_OUTAGES
+        synonyms:
+          - long duration outages
+          - prolonged interruptions
+        description: Outages lasting longer than 4 hours
+        expr: OUTAGE_DURATION_MINUTES > 240
+      - name: MAJOR_OUTAGES
+        synonyms:
+          - high customer impact
+          - large scale outages
+        description: Outages affecting more than 100 customers
+        expr: AFFECTED_CUSTOMERS > 100
+      - name: OVERLOAD_OUTAGES
+        synonyms:
+          - capacity exceeded
+          - transformer overload events
+        description: Outages caused by transformer overloads
+        expr: OUTAGE_CAUSE = 'TRANSFORMER_OVERLOAD'
+      - name: SEVERE_VOLTAGE_SAG_OUTAGES
+        synonyms:
+          - critical sag outages
+          - major voltage drop events
+        description: Outages caused by voltage sag >10V
+        expr: VOLTAGE_DROP_AMOUNT > 10
+      - name: VOLTAGE_SAG_PRECIPITATED
+        synonyms:
+          - sag caused interruptions
+          - voltage related outages
+        description: Outages preceded by voltage sag events
+        expr: CAUSED_BY_SAG_EVENT_ID IS NOT NULL
+    metrics:
+      - name: AVG_RESTORATION_TIME_MINUTES
+        description: Average time to restore power across all events
+        expr: AVG(OUTAGE_DURATION_MINUTES)
+        access_modifier: public_access
+      - name: AVG_VOLTAGE_DROP_CAUSING_OUTAGE
+        description: Average voltage drop that precipitated outages
+        expr: AVG(CASE WHEN VOLTAGE_DROP_AMOUNT > 0 THEN VOLTAGE_DROP_AMOUNT ELSE NULL END)
+        access_modifier: public_access
+      - name: DISTINCT_CIRCUITS_AFFECTED
+        description: Count of distinct circuits experiencing outages
+        expr: COUNT(DISTINCT CIRCUIT_ID)
+        access_modifier: public_access
+      - name: DISTINCT_TRANSFORMERS_AFFECTED
+        description: Count of distinct transformers involved in outages
+        expr: COUNT(DISTINCT TRANSFORMER_ID)
+        access_modifier: public_access
+      - name: MAX_OUTAGE_DURATION
+        description: Longest outage duration in period
+        expr: MAX(OUTAGE_DURATION_MINUTES)
+        access_modifier: public_access
+      - name: MEDIAN_RESTORATION_TIME
+        description: Median restoration time (50th percentile)
+        expr: MEDIAN(OUTAGE_DURATION_MINUTES)
+        access_modifier: public_access
+      - name: OUTAGE_EVENTS_BY_CAUSE
+        description: Count of outages grouped by root cause
+        expr: COUNT(*)
+        access_modifier: public_access
+      - name: SEVERE_SAG_OUTAGES
+        description: Count of outages caused by voltage sag >10V
+        expr: COUNT_IF(VOLTAGE_DROP_AMOUNT > 10)
+        access_modifier: public_access
+      - name: TOTAL_OUTAGE_COUNT
+        description: Total number of outage events
+        expr: COUNT(OUTAGE_ID)
+        access_modifier: public_access
+      - name: TOTAL_OUTAGE_DURATION_HOURS
+        description: Total customer-hours of outages (sum of all event durations)
+        expr: SUM(OUTAGE_DURATION_MINUTES) / 60.0
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - OUTAGE_ID
+  - name: REVENUE_ANOMALY_DETECTION
+    synonyms:
+      - BILLING ANOMALIES
+      - REVENUE ANOMALIES
+      - USAGE ANOMALIES
+    description: Revenue and usage anomaly detection with year-over-year pricing comparison against 2024 baseline
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: REVENUE_ANOMALY_DETECTION
+    dimensions:
+      - name: IS_PRICING_ANOMALY_VS_2024
+        synonyms:
+          - pricing anomaly
+          - revenue anomaly vs baseline
+        description: Flag indicating pricing anomaly compared to 2024 baseline
+        expr: IS_PRICING_ANOMALY_VS_2024
+        data_type: BOOLEAN
+      - name: IS_USAGE_ANOMALY
+        synonyms:
+          - abnormal usage
+          - usage anomaly flag
+        description: Flag indicating statistical usage anomaly
+        expr: IS_USAGE_ANOMALY
+        data_type: BOOLEAN
+      - name: METER_ID
+        description: Meter identifier
+        expr: METER_ID
+        data_type: VARCHAR(16777216)
+      - name: MONTH
+        description: Month of reading
+        expr: MONTH
+        data_type: NUMBER(2,0)
+      - name: READING_DATE
+        description: Date of meter reading
+        expr: READING_DATE
+        data_type: DATE
+      - name: YEAR
+        description: Year of reading
+        expr: YEAR
+        data_type: NUMBER(4,0)
+    facts:
+      - name: AVG_DAILY_KWH
+        description: Average daily kWh for this meter
+        expr: AVG_DAILY_KWH
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: AVG_VOLTAGE
+        description: Average voltage for the day
+        expr: AVG_VOLTAGE
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+      - name: BASELINE_AVG_REVENUE
+        description: Baseline average revenue from 2024
+        expr: BASELINE_AVG_REVENUE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: DAILY_KWH
+        description: Daily energy usage (kWh)
+        expr: DAILY_KWH
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: DAILY_REVENUE
+        description: Daily revenue estimate ($)
+        expr: DAILY_REVENUE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: OUTAGE_COUNT
+        description: Number of outages on this date
+        expr: OUTAGE_COUNT
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: REVENUE_CHANGE_PCT_VS_2024
+        description: Revenue change percentage vs 2024 baseline
+        expr: REVENUE_CHANGE_PCT_VS_2024
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: STDDEV_DAILY_KWH
+        description: Standard deviation of daily usage
+        expr: STDDEV_DAILY_KWH
+        data_type: FLOAT
+        access_modifier: public_access
+    filters:
+      - name: ANY_ANOMALY
+        synonyms:
+          - any outlier
+          - flagged meters
+        description: Meters with either pricing or usage anomalies
+        expr: IS_PRICING_ANOMALY_VS_2024 = TRUE OR IS_USAGE_ANOMALY = TRUE
+      - name: MULTIPLE_OUTAGES
+        synonyms:
+          - frequent outages
+          - recurring outages
+        description: Meters with multiple outage incidents
+        expr: OUTAGE_COUNT > 2
+      - name: OUTAGE_AFFECTED_METERS
+        synonyms:
+          - meters with outages
+          - outage impacted
+        description: Meters that experienced outages in the period
+        expr: OUTAGE_COUNT > 0
+      - name: PRICING_ANOMALIES
+        synonyms:
+          - price outliers
+          - pricing exceptions
+          - unusual pricing
+        description: Meters flagged with pricing anomalies vs 2024 baseline
+        expr: IS_PRICING_ANOMALY_VS_2024 = TRUE
+      - name: SIGNIFICANT_REVENUE_DECREASE
+        synonyms:
+          - high revenue drop
+          - major revenue decline
+        description: Meters with >20% revenue decrease vs 2024
+        expr: REVENUE_CHANGE_PCT_VS_2024 < -20
+      - name: SIGNIFICANT_REVENUE_INCREASE
+        synonyms:
+          - high revenue change
+          - major revenue growth
+        description: Meters with >20% revenue increase vs 2024
+        expr: REVENUE_CHANGE_PCT_VS_2024 > 20
+      - name: USAGE_ANOMALIES
+        synonyms:
+          - abnormal usage
+          - unusual consumption
+          - usage outliers
+        description: Meters with abnormal usage patterns
+        expr: IS_USAGE_ANOMALY = TRUE
+    metrics:
+      - name: ANOMALY_RATE_PCT
+        description: Percentage of meters flagged with any anomaly
+        expr: (COUNT_IF(IS_PRICING_ANOMALY_VS_2024 OR IS_USAGE_ANOMALY) * 100.0) / NULLIF(COUNT(DISTINCT METER_ID), 0)
+        access_modifier: public_access
+      - name: AVG_DAILY_KWH_PER_METER
+        description: Average daily kWh per meter
+        expr: AVG(DAILY_KWH)
+        access_modifier: public_access
+      - name: AVG_DAILY_REVENUE_PER_METER
+        description: Average daily revenue per meter
+        expr: AVG(DAILY_REVENUE)
+        access_modifier: public_access
+      - name: AVG_REVENUE_CHANGE_PCT
+        description: Average percentage change in revenue vs 2024 baseline
+        expr: AVG(REVENUE_CHANGE_PCT_VS_2024)
+        access_modifier: public_access
+      - name: AVG_VOLTAGE_ACROSS_METERS
+        description: Average voltage across all meter readings
+        expr: AVG(AVG_VOLTAGE)
+        access_modifier: public_access
+      - name: LOW_VOLTAGE_INCIDENT_COUNT
+        description: Count of days with average voltage below 114V
+        expr: COUNT_IF(AVG_VOLTAGE < 114)
+        access_modifier: public_access
+      - name: METERS_WITH_OUTAGES
+        description: Count of distinct meters experiencing outages in period
+        expr: COUNT_IF(OUTAGE_COUNT > 0)
+        access_modifier: public_access
+      - name: METERS_WITH_REVENUE_DECREASE
+        description: Count of meters with revenue decrease vs 2024
+        expr: COUNT_IF(REVENUE_CHANGE_PCT_VS_2024 < 0)
+        access_modifier: public_access
+      - name: METERS_WITH_REVENUE_INCREASE
+        description: Count of meters with revenue increase vs 2024
+        expr: COUNT_IF(REVENUE_CHANGE_PCT_VS_2024 > 0)
+        access_modifier: public_access
+      - name: PRICING_ANOMALY_COUNT
+        description: Count of meters with pricing anomalies vs 2024 baseline
+        expr: COUNT_IF(IS_PRICING_ANOMALY_VS_2024 = TRUE)
+        access_modifier: public_access
+      - name: TOTAL_ANOMALY_COUNT
+        description: Count of meters with any anomaly (pricing or usage)
+        expr: COUNT_IF(IS_PRICING_ANOMALY_VS_2024 = TRUE OR IS_USAGE_ANOMALY = TRUE)
+        access_modifier: public_access
+      - name: TOTAL_DAILY_KWH
+        description: Total daily energy consumption
+        expr: SUM(DAILY_KWH)
+        access_modifier: public_access
+      - name: TOTAL_DAILY_REVENUE
+        description: Total daily revenue across all meters
+        expr: SUM(DAILY_REVENUE)
+        access_modifier: public_access
+      - name: TOTAL_OUTAGE_INCIDENTS
+        description: Total count of outage incidents across all meters and dates
+        expr: SUM(OUTAGE_COUNT)
+        access_modifier: public_access
+      - name: USAGE_ANOMALY_COUNT
+        description: Count of meters with usage anomalies
+        expr: COUNT_IF(IS_USAGE_ANOMALY = TRUE)
+        access_modifier: public_access
+  - name: REVENUE_HISTORICAL_BASELINE
+    synonyms:
+      - HISTORICAL PRICING
+      - PRICING TRENDS
+      - REVENUE BASELINE
+    description: Monthly baseline for revenue and pricing trends across historical periods
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: REVENUE_HISTORICAL_BASELINE
+    dimensions:
+      - name: MONTH
+        description: Month of pricing data
+        expr: MONTH
+        data_type: NUMBER(2,0)
+      - name: YEAR
+        description: Year of pricing data
+        expr: YEAR
+        data_type: NUMBER(4,0)
+    facts:
+      - name: HOURLY_PRICE_POINTS
+        description: Number of hourly price observations
+        expr: HOURLY_PRICE_POINTS
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: MAX_LMP
+        description: Maximum LMP in the month ($/MWh)
+        expr: MAX_LMP
+        data_type: NUMBER(8,1)
+        access_modifier: public_access
+      - name: MIN_LMP
+        description: Minimum LMP in the month ($/MWh)
+        expr: MIN_LMP
+        data_type: NUMBER(8,1)
+        access_modifier: public_access
+      - name: STDDEV_LMP
+        description: Standard deviation of LMP in the month
+        expr: STDDEV_LMP
+        data_type: FLOAT
+        access_modifier: public_access
+    metrics:
+      - name: AVG_LMP
+        description: Average LMP for the month
+        expr: AVG(AVG_LMP)
+        access_modifier: public_access
+  - name: STORM_OUTAGE_IMPACT_ANALYSIS
+    synonyms:
+      - STORM EVENTS
+      - STORM IMPACT
+      - WEATHER OUTAGES
+    description: Storm and weather event impact analysis with historical correlation baseline
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: STORM_OUTAGE_IMPACT_ANALYSIS
+    dimensions:
+      - name: EVENT_CLASSIFICATION
+        synonyms:
+          - event severity
+          - storm severity
+        description: Event classification (Major/Significant/Moderate/Minor Storm Event)
+        expr: EVENT_CLASSIFICATION
+        data_type: VARCHAR(17)
+      - name: EVENT_TYPE
+        synonyms:
+          - storm type
+          - weather type
+        description: Type of weather event
+        expr: EVENT_TYPE
+        data_type: VARCHAR(19)
+      - name: LOCATION_AREA
+        description: Geographic location of event
+        expr: LOCATION_AREA
+        data_type: VARCHAR(17)
+      - name: MONTH
+        description: Month of event
+        expr: MONTH
+        data_type: NUMBER(2,0)
+      - name: OUTAGE_VS_HISTORICAL
+        synonyms:
+          - historical comparison
+          - vs baseline
+        description: Outage count vs historical average (ABOVE/BELOW/WITHIN_HISTORICAL_RANGE)
+        expr: OUTAGE_VS_HISTORICAL
+        data_type: VARCHAR(23)
+      - name: REPORTABLE_TO_PUC_FLAG
+        synonyms:
+          - PUC reportable
+          - regulatory reporting required
+        description: Flag indicating event requires PUC reporting (>10K customers)
+        expr: REPORTABLE_TO_PUC_FLAG
+        data_type: BOOLEAN
+      - name: WEATHER_EVENT_ID
+        description: Weather event identifier
+        expr: WEATHER_EVENT_ID
+        data_type: VARCHAR(50)
+      - name: YEAR
+        description: Year of event
+        expr: YEAR
+        data_type: NUMBER(4,0)
+    time_dimensions:
+      - name: EVENT_HOUR
+        description: Hour of weather event
+        expr: EVENT_HOUR
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: AVG_WEATHER_IMPACT
+        description: Average weather impact factor
+        expr: AVG_WEATHER_IMPACT
+        data_type: NUMBER(21,7)
+        access_modifier: public_access
+      - name: HISTORICAL_AVG_OUTAGES_FOR_THIS_WEATHER
+        description: Historical average outages for this weather category
+        expr: HISTORICAL_AVG_OUTAGES_FOR_THIS_WEATHER
+        data_type: NUMBER(36,6)
+        access_modifier: public_access
+      - name: OUTAGES_DURING_EVENT
+        description: Number of outages during weather event
+        expr: OUTAGES_DURING_EVENT
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: PRECIPITATION_INCHES
+        description: Precipitation during event (inches)
+        expr: PRECIPITATION_INCHES
+        data_type: NUMBER(3,1)
+        access_modifier: public_access
+      - name: SEVERITY_LEVEL
+        description: Weather event severity level
+        expr: SEVERITY_LEVEL
+        data_type: NUMBER(2,0)
+        access_modifier: public_access
+      - name: TOTAL_CREWS_DEPLOYED
+        description: Total crews deployed for restoration
+        expr: TOTAL_CREWS_DEPLOYED
+        data_type: NUMBER(14,0)
+        access_modifier: public_access
+      - name: TOTAL_CUSTOMERS_AFFECTED
+        description: Total customers affected by outages
+        expr: TOTAL_CUSTOMERS_AFFECTED
+        data_type: NUMBER(16,0)
+        access_modifier: public_access
+      - name: TOTAL_SAIDI_MINUTES
+        description: Total SAIDI minutes accumulated
+        expr: TOTAL_SAIDI_MINUTES
+        data_type: NUMBER(27,6)
+        access_modifier: public_access
+      - name: WIND_SPEED_MPH
+        description: Wind speed during event (mph)
+        expr: WIND_SPEED_MPH
+        data_type: NUMBER(3,0)
+        access_modifier: public_access
+  - name: SUBSTATIONS
+    synonyms:
+      - SUBSTATION_INFO
+      - SUBSTATION_MASTER
+    description: Substation infrastructure with capacity, location, operational status, and critical infrastructure flags for transmission planning
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: SUBSTATIONS
+    dimensions:
+      - name: CRITICAL_INFRASTRUCTURE_FLAG
+        description: Critical infrastructure flag
+        expr: CRITICAL_INFRASTRUCTURE_FLAG
+        data_type: BOOLEAN
+      - name: OPERATIONAL_STATUS
+        description: Operational status
+        expr: OPERATIONAL_STATUS
+        data_type: VARCHAR(11)
+      - name: REGION
+        description: Region
+        expr: REGION
+        data_type: VARCHAR(13)
+      - name: SUBSTATION_ID
+        description: Substation identifier
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16)
+      - name: SUBSTATION_NAME
+        description: Substation name
+        expr: SUBSTATION_NAME
+        data_type: VARCHAR(16777216)
+      - name: SUBSTATION_TYPE
+        description: Substation type
+        expr: SUBSTATION_TYPE
+        data_type: VARCHAR(12)
+      - name: VOLTAGE_LEVEL
+        description: Voltage level
+        expr: VOLTAGE_LEVEL
+        data_type: VARCHAR(6)
+    facts:
+      - name: CAPACITY_MVA
+        description: Substation capacity (MVA)
+        expr: CAPACITY_MVA
+        data_type: NUMBER(6,0)
+        access_modifier: public_access
+      - name: CURRENT_LOAD_MW
+        description: Current load (MW)
+        expr: CURRENT_LOAD_MW
+        data_type: NUMBER(8,2)
+        access_modifier: public_access
+      - name: DISTANCE_FROM_COAST_MILE
+        description: Distance from coast (miles)
+        expr: DISTANCE_FROM_COAST_MILE
+        data_type: NUMBER(27,1)
+        access_modifier: public_access
+      - name: LATITUDE
+        description: Latitude
+        expr: LATITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: LOAD_FACTOR_PCT
+        description: Load factor (%)
+        expr: LOAD_FACTOR_PCT
+        data_type: NUMBER(5,2)
+        access_modifier: public_access
+      - name: LONGITUDE
+        description: Longitude
+        expr: LONGITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: PEAK_LOAD_MW
+        description: Peak load (MW)
+        expr: PEAK_LOAD_MW
+        data_type: NUMBER(8,2)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - SUBSTATION_ID
+  - name: SUMMER_LOAD_YOY_COMPARISON
+    synonyms:
+      - SUMMER COMPARISON
+      - SUMMER LOAD TRENDS
+      - YOY LOAD
+    description: Year-over-year comparison of summer (July-August) load patterns across 2023-2025
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: SUMMER_LOAD_YOY_COMPARISON
+    dimensions:
+      - name: YEAR
+        description: Year of summer period
+        expr: YEAR
+        data_type: NUMBER(38,0)
+    facts:
+      - name: AVG_HOUSTON_SHARE_PCT
+        description: Average Houston share of ERCOT load (%)
+        expr: AVG_HOUSTON_SHARE_PCT
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: SUMMER_HOURLY_RECORDS
+        description: Number of hourly records in summer period
+        expr: SUMMER_HOURLY_RECORDS
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+    filters:
+      - name: HIGH_LOAD_SUMMER
+        synonyms:
+          - high demand summer
+          - peak summer load
+        description: Summers with average load exceeding 63 GW
+        expr: AVG_SUMMER_LOAD_MW > 63000
+      - name: PEAK_ABOVE_85GW
+        synonyms:
+          - extreme peak demand
+          - record peak load
+        description: Summers with peak load exceeding 85 GW
+        expr: PEAK_SUMMER_LOAD_MW > 85000
+      - name: YEAR_2023
+        description: 2023 summer baseline year
+        expr: YEAR = 2023
+      - name: YEAR_2024
+        description: 2024 summer comparison year
+        expr: YEAR = 2024
+      - name: YEAR_2025
+        description: 2025 current summer year
+        expr: YEAR = 2025
+    metrics:
+      - name: AVG_SUMMER_LOAD_MW
+        description: Average load during summer months (MW)
+        expr: AVG(AVG_SUMMER_LOAD_MW)
+        access_modifier: public_access
+      - name: PEAK_SUMMER_LOAD_MW
+        description: Peak load during summer months (MW)
+        expr: MAX(PEAK_SUMMER_LOAD_MW)
+        access_modifier: public_access
+  - name: TRANSFORMER_HOURLY_LOAD
+    synonyms:
+      - CAPACITY_MONITORING
+      - TRANSFORMER_LOADS
+      - XFMR_LOAD
+    description: Hourly transformer load analysis with overload detection, weather correlation, and voltage sag prediction
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: TRANSFORMER_HOURLY_LOAD
+    dimensions:
+      - name: CIRCUIT_ID
+        description: Circuit identifier
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: FEEDER_ID
+        description: Feeder identifier
+        expr: FEEDER_ID
+        data_type: VARCHAR(16777216)
+      - name: HEAT_CATEGORY
+        synonyms:
+          - temperature category
+          - weather condition
+        description: Heat stress category (EXTREME_HEAT, HIGH_HEAT, MODERATE_HEAT, NORMAL)
+        expr: HEAT_CATEGORY
+        data_type: VARCHAR(13)
+      - name: SHOULD_CAUSE_VOLTAGE_SAG
+        description: Flag indicating conditions that should cause voltage sag
+        expr: SHOULD_CAUSE_VOLTAGE_SAG
+        data_type: BOOLEAN
+      - name: STRESS_LEVEL
+        synonyms:
+          - capacity status
+          - load status
+        description: Transformer stress level (CRITICAL_OVERLOAD, HIGH_STRESS, MODERATE_STRESS, NORMAL)
+        expr: STRESS_LEVEL
+        data_type: VARCHAR(17)
+      - name: SUBSTATION_ID
+        description: Substation identifier
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_ID
+        description: Transformer identifier
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+    time_dimensions:
+      - name: LOAD_HOUR
+        description: Hour of load measurement
+        expr: LOAD_HOUR
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: AVG_VOLTAGE_BEFORE_SAG
+        synonyms:
+          - baseline voltage
+          - normal voltage
+        description: Average voltage before any sag applied
+        expr: AVG_VOLTAGE_BEFORE_SAG
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+      - name: HOURLY_KWH
+        synonyms:
+          - energy consumption
+          - hourly load
+        description: Total energy consumption for the hour in kWh
+        expr: HOURLY_KWH
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: LOAD_FACTOR_PCT
+        synonyms:
+          - capacity utilization
+          - transformer load percentage
+        description: Load factor as percentage of rated capacity
+        expr: LOAD_FACTOR_PCT
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: METER_READINGS
+        description: Number of meter readings aggregated
+        expr: METER_READINGS
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: RATED_KVA
+        synonyms:
+          - nameplate rating
+          - transformer capacity
+        description: Transformer rated capacity in kVA
+        expr: RATED_KVA
+        data_type: NUMBER(4,0)
+        access_modifier: public_access
+      - name: TEMP_F
+        synonyms:
+          - ambient temperature
+          - temperature
+        description: Ambient temperature in Fahrenheit
+        expr: TEMP_F
+        data_type: FLOAT
+        access_modifier: public_access
+  - name: TRANSFORMER_METADATA
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: TRANSFORMER_METADATA
+    dimensions:
+      - name: ASSET_ID
+        expr: ASSET_ID
+        data_type: VARCHAR(16777216)
+      - name: CIRCUIT_ID
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: FEEDER_ID
+        expr: FEEDER_ID
+        data_type: VARCHAR(16777216)
+      - name: LOAD_SERVING_CLASS
+        expr: LOAD_SERVING_CLASS
+        data_type: VARCHAR(11)
+      - name: LOCATION_AREA
+        expr: LOCATION_AREA
+        data_type: VARCHAR(17)
+      - name: SUBSTATION_ID
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_ID
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+    time_dimensions:
+      - name: LAST_MAINTENANCE_DATE
+        expr: LAST_MAINTENANCE_DATE
+        data_type: DATE
+    facts:
+      - name: AGE_YEARS
+        expr: AGE_YEARS
+        data_type: NUMBER(5,0)
+        access_modifier: public_access
+      - name: INSTALL_YEAR
+        expr: INSTALL_YEAR
+        data_type: NUMBER(4,0)
+        access_modifier: public_access
+      - name: LATITUDE
+        expr: LATITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: LONGITUDE
+        expr: LONGITUDE
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: RATED_KVA
+        expr: RATED_KVA
+        data_type: NUMBER(4,0)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - TRANSFORMER_ID
+  - name: TRANSFORMER_THERMAL_STRESS_MATERIALIZED
+    synonyms:
+      - OVERLOAD ANALYSIS
+      - THERMAL ANALYSIS
+      - TRANSFORMER STRESS
+    description: Transformer thermal stress with historical summer pattern comparison showing stress trends
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: TRANSFORMER_THERMAL_STRESS_MATERIALIZED
+    dimensions:
+      - name: MONTH
+        description: Month of load measurement
+        expr: MONTH
+        data_type: NUMBER(2,0)
+      - name: STRESS_VS_HISTORICAL
+        synonyms:
+          - historical comparison
+          - stress trend
+        description: 'Comparison to historical baseline: ABOVE_HISTORICAL_PATTERN, BELOW_HISTORICAL_PATTERN, WITHIN_HISTORICAL_RANGE, NO_HISTORICAL_DATA, or UNRELIABLE_COMPARISON (data quality issues)'
+        expr: STRESS_VS_HISTORICAL
+        data_type: VARCHAR(24)
+      - name: THERMAL_STRESS_CATEGORY
+        synonyms:
+          - overload status
+          - stress level
+        description: 'Stress category: CRITICAL (>150%), SEVERE_OVERLOAD (120-150%), OVERLOAD (100-120%), ELEVATED (80-100%), MODERATE (60-80%), NORMAL (<60%)'
+        expr: THERMAL_STRESS_CATEGORY
+        data_type: VARCHAR(15)
+      - name: TRANSFORMER_ID
+        description: Transformer identifier
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+      - name: YEAR
+        description: Year of load measurement
+        expr: YEAR
+        data_type: NUMBER(4,0)
+    time_dimensions:
+      - name: LOAD_HOUR
+        description: Hour of load measurement
+        expr: LOAD_HOUR
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: ACTIVE_METERS
+        description: Number of active meters
+        expr: ACTIVE_METERS
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: AVG_VOLTAGE
+        description: Average voltage
+        expr: AVG_VOLTAGE
+        data_type: NUMBER(38,6)
+        access_modifier: public_access
+      - name: DATA_QUALITY_RELIABLE
+        synonyms:
+          - clean data
+          - reliable data
+          - valid data
+        description: Flag indicating load factor data is reliable for analysis (excludes values >150% and transformers with historical data quality issues)
+        expr: DATA_QUALITY_RELIABLE
+        data_type: BOOLEAN
+        access_modifier: public_access
+      - name: HISTORICAL_SUMMER_AVG_LOAD
+        description: Historical summer average load baseline
+        expr: HISTORICAL_SUMMER_AVG_LOAD
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: LOAD_FACTOR_PCT
+        description: Load factor as percentage of capacity
+        expr: LOAD_FACTOR_PCT
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: RATED_KVA
+        description: Transformer rated capacity (kVA)
+        expr: RATED_KVA
+        data_type: NUMBER(4,0)
+        access_modifier: public_access
+      - name: TOTAL_KWH
+        description: Total energy load for the hour (kWh)
+        expr: TOTAL_KWH
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: VOLTAGE_SAG_COUNT
+        description: Count of voltage sag events
+        expr: VOLTAGE_SAG_COUNT
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+    filters:
+      - name: ABOVE_HISTORICAL_PATTERN
+        synonyms:
+          - exceeding baseline
+          - worse than historical
+        description: Current stress above historical summer average
+        expr: STRESS_VS_HISTORICAL = 'ABOVE_HISTORICAL'
+      - name: ANY_STRESS
+        synonyms:
+          - abnormal operation
+          - stressed transformers
+        description: Transformers in elevated stress or overload
+        expr: THERMAL_STRESS_CATEGORY IN ('ELEVATED','OVERLOAD', 'OVERLOAD')
+      - name: CRITICAL_HOURS_INCREASING
+        synonyms:
+          - stress escalation
+          - worsening stress pattern
+        description: Transformers with more critical hours than 3-year average
+        expr: COUNT_IF(THERMAL_STRESS_CATEGORY = 'OVERLOAD') > SUMMER_2023_2024_AVG_CRITICAL_HOURS
+      - name: CRITICAL_OVERLOAD
+        synonyms:
+          - critical stress
+          - overload condition
+        description: Transformers in overload condition
+        expr: THERMAL_STRESS_CATEGORY = 'OVERLOAD'
+      - name: FREQUENT_VOLTAGE_SAGS
+        synonyms:
+          - recurring sag events
+          - voltage quality issues
+        description: Transformers with multiple voltage sag events
+        expr: VOLTAGE_SAG_COUNT > 5
+      - name: HIGH_STRESS_CONDITION
+        synonyms:
+          - approaching overload
+          - elevated stress
+        description: Transformers in high stress (approaching capacity)
+        expr: THERMAL_STRESS_CATEGORY = 'HIGH_STRESS'
+    metrics:
+      - name: AVG_HOURLY_LOAD_KWH
+        description: Average hourly load
+        expr: AVG(TOTAL_KWH)
+        access_modifier: public_access
+      - name: AVG_LOAD_FACTOR_PCT
+        description: Average capacity utilization percentage
+        expr: AVG(LOAD_FACTOR_PCT)
+        access_modifier: public_access
+      - name: AVG_VOLTAGE_QUALITY
+        description: Average voltage across all hours
+        expr: AVG(AVG_VOLTAGE)
+        access_modifier: public_access
+      - name: CRITICAL_HOURS_VS_BASELINE
+        description: Excess critical hours vs 3-year average
+        expr: COUNT_IF(THERMAL_STRESS_CATEGORY IN ('CRITICAL', 'SEVERE_OVERLOAD', 'OVERLOAD')) - AVG(SUMMER_2023_2024_AVG_CRITICAL_HOURS)
+        access_modifier: public_access
+      - name: HIGH_STRESS_HOURS
+        description: Hours in high stress condition
+        expr: COUNT_IF(THERMAL_STRESS_CATEGORY IN ('ELEVATED', 'OVERLOAD', 'SEVERE_OVERLOAD', 'CRITICAL'))
+        access_modifier: public_access
+      - name: HOURS_ABOVE_HISTORICAL_AVG
+        description: Count of hours exceeding historical summer average
+        expr: COUNT_IF(TOTAL_KWH > HISTORICAL_SUMMER_AVG_LOAD)
+        access_modifier: public_access
+      - name: PEAK_HOURLY_LOAD_KWH
+        description: Peak hourly load in period
+        expr: MAX(TOTAL_KWH)
+        access_modifier: public_access
+      - name: PEAK_LOAD_FACTOR_PCT
+        description: Maximum capacity utilization in period
+        expr: MAX(LOAD_FACTOR_PCT)
+        access_modifier: public_access
+      - name: TOTAL_CRITICAL_HOURS
+        description: Total hours transformer operated in critical stress
+        expr: COUNT_IF(THERMAL_STRESS_CATEGORY IN ('CRITICAL', 'SEVERE_OVERLOAD', 'OVERLOAD'))
+        access_modifier: public_access
+      - name: TOTAL_ENERGY_DELIVERED_KWH
+        description: Total energy delivered through transformer
+        expr: SUM(TOTAL_KWH)
+        access_modifier: public_access
+      - name: TOTAL_VOLTAGE_SAG_INCIDENTS
+        description: Total count of voltage sag events
+        expr: SUM(VOLTAGE_SAG_COUNT)
+        access_modifier: public_access
+  - name: VEGETATION_TRANSFORMER_RISK
+    synonyms:
+      - transformer tree risk
+      - transformer vegetation exposure
+      - tree transformer proximity
+    description: Individual tree-to-transformer proximity risk from Overture Maps data. 801 tree-transformer associations with distance-based risk scoring. Use for field crew prioritization and targeted vegetation management.
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: VEGETATION_TRANSFORMER_RISK
+    dimensions:
+      - name: CIRCUIT_ID
+        description: Circuit the tree/transformer belongs to
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: FEEDER_ID
+        description: Feeder identifier
+        expr: FEEDER_ID
+        data_type: VARCHAR(16777216)
+      - name: SUBSTATION_ID
+        description: Parent substation
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_ID
+        description: Associated transformer identifier
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+      - name: TREE_ID
+        description: Unique tree identifier from Overture Maps
+        expr: TREE_ID
+        data_type: VARCHAR(16777216)
+      - name: VEGETATION_RISK_LEVEL
+        synonyms:
+          - proximity risk level
+          - tree risk category
+        description: Risk classification based on distance to power infrastructure (CRITICAL <=5m, HIGH 5-10m, MODERATE 10-20m, LOW 20-50m)
+        expr: VEGETATION_RISK_LEVEL
+        data_type: VARCHAR(8)
+        sample_values:
+          - CRITICAL
+          - HIGH
+          - MODERATE
+          - LOW
+    facts:
+      - name: DISTANCE_TO_LINE_METERS
+        synonyms:
+          - line proximity
+          - wire distance
+        description: Distance from tree to nearest power line in meters
+        expr: DISTANCE_TO_LINE_METERS
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: DISTANCE_TO_TRANSFORMER_M
+        synonyms:
+          - transformer proximity
+        description: Distance from tree to associated transformer in meters
+        expr: DISTANCE_TO_TRANSFORMER_M
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: RISK_SCORE
+        synonyms:
+          - proximity score
+          - vegetation score
+        description: Numeric risk score (0-100) based on distance to lines
+        expr: RISK_SCORE
+        data_type: NUMBER(3,0)
+        access_modifier: public_access
+      - name: TREE_LAT
+        description: Tree latitude coordinate
+        expr: TREE_LAT
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: TREE_LON
+        description: Tree longitude coordinate
+        expr: TREE_LON
+        data_type: FLOAT
+        access_modifier: public_access
+    filters:
+      - name: CLOSE_TO_TRANSFORMER
+        description: Trees within 15 meters of a transformer
+        expr: DISTANCE_TO_TRANSFORMER_M < 15
+      - name: CRITICAL_PROXIMITY_TREES
+        synonyms:
+          - critical trees
+          - immediate strike risk
+        description: Trees within 5 meters of power lines (immediate risk)
+        expr: VEGETATION_RISK_LEVEL = 'CRITICAL'
+      - name: HIGH_PRIORITY_TREES
+        synonyms:
+          - priority trimming
+          - urgent vegetation
+        description: Trees classified as CRITICAL or HIGH risk
+        expr: VEGETATION_RISK_LEVEL IN ('CRITICAL', 'HIGH')
+    metrics:
+      - name: AVG_DISTANCE_TO_LINE
+        description: Average distance from trees to power lines in meters
+        expr: AVG(DISTANCE_TO_LINE_METERS)
+        access_modifier: public_access
+      - name: AVG_RISK_SCORE
+        description: Average vegetation risk score across all trees
+        expr: AVG(RISK_SCORE)
+        access_modifier: public_access
+      - name: CRITICAL_TREE_COUNT
+        synonyms:
+          - critical proximity count
+          - immediate hazard count
+        description: Count of trees within 5 meters of power lines
+        expr: COUNT_IF(VEGETATION_RISK_LEVEL = 'CRITICAL')
+        access_modifier: public_access
+      - name: DISTINCT_CIRCUITS_AT_RISK
+        description: Count of distinct circuits with vegetation risk
+        expr: COUNT(DISTINCT CIRCUIT_ID)
+        access_modifier: public_access
+      - name: DISTINCT_TRANSFORMERS_AT_RISK
+        description: Count of distinct transformers with tree proximity risk
+        expr: COUNT(DISTINCT TRANSFORMER_ID)
+        access_modifier: public_access
+      - name: HIGH_RISK_TREE_COUNT
+        description: Count of trees 5-10 meters from power lines
+        expr: COUNT_IF(VEGETATION_RISK_LEVEL = 'HIGH')
+        access_modifier: public_access
+      - name: MIN_DISTANCE_TO_LINE
+        synonyms:
+          - closest tree
+          - minimum clearance
+        description: Minimum distance from any tree to power lines (worst case)
+        expr: MIN(DISTANCE_TO_LINE_METERS)
+        access_modifier: public_access
+      - name: TOTAL_TREE_ASSOCIATIONS
+        description: Total count of tree-transformer risk associations
+        expr: COUNT(*)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - TREE_ID
+  - name: VOLTAGE_SAG_EVENTS
+    synonyms:
+      - POWER_QUALITY_EVENTS
+      - SAG_EVENTS
+      - VOLTAGE_SAGS
+    description: Voltage sag events with causal links to transformer overload, equipment faults, and aging infrastructure
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: VOLTAGE_SAG_EVENTS
+    dimensions:
+      - name: CIRCUIT_ID
+        description: Affected circuit identifier
+        expr: CIRCUIT_ID
+        data_type: VARCHAR(16777216)
+      - name: EVENT_ID
+        description: Unique voltage sag event identifier
+        expr: EVENT_ID
+        data_type: VARCHAR(16777216)
+      - name: FEEDER_ID
+        description: Affected feeder identifier
+        expr: FEEDER_ID
+        data_type: VARCHAR(16777216)
+      - name: HEAT_CATEGORY
+        synonyms:
+          - temperature category
+          - weather condition
+        description: Heat stress category (EXTREME_HEAT, HIGH_HEAT, MODERATE_HEAT, NORMAL)
+        expr: HEAT_CATEGORY
+        data_type: VARCHAR(13)
+      - name: SAG_TYPE
+        synonyms:
+          - event type
+          - sag cause
+        description: Type of voltage sag (TRANSFORMER_OVERLOAD, EQUIPMENT_FAULT, AGING_EQUIPMENT)
+        expr: SAG_TYPE
+        data_type: VARCHAR(20)
+      - name: SUBSTATION_ID
+        description: Parent substation identifier
+        expr: SUBSTATION_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_ID
+        description: Affected transformer identifier
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+    time_dimensions:
+      - name: SAG_END_TIME
+        description: Voltage sag end timestamp
+        expr: SAG_END_TIME
+        data_type: TIMESTAMP_NTZ(9)
+      - name: SAG_START_TIME
+        description: Voltage sag start timestamp
+        expr: SAG_START_TIME
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: DURATION_MINUTES
+        synonyms:
+          - event length
+          - sag duration
+        description: Voltage sag duration in minutes
+        expr: DURATION_MINUTES
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: LOAD_FACTOR_PCT
+        synonyms:
+          - capacity utilization
+          - transformer load
+        description: Transformer load factor percentage at time of sag
+        expr: LOAD_FACTOR_PCT
+        data_type: NUMBER(38,2)
+        access_modifier: public_access
+      - name: TEMP_F
+        synonyms:
+          - ambient temp
+          - temperature
+        description: Ambient temperature in Fahrenheit during event
+        expr: TEMP_F
+        data_type: NUMBER(5,0)
+        access_modifier: public_access
+      - name: VOLTAGE_DROP_AMOUNT
+        synonyms:
+          - sag magnitude
+          - voltage drop
+        description: Voltage reduction in volts
+        expr: VOLTAGE_DROP_AMOUNT
+        data_type: NUMBER(2,0)
+        access_modifier: public_access
+    primary_key:
+      columns:
+        - EVENT_ID
+  - name: WEATHER_OUTAGE_CORRELATION_HISTORICAL
+    synonyms:
+      - STORM CORRELATION
+      - WEATHER IMPACT
+      - WEATHER OUTAGE PATTERNS
+    description: Historical correlation between weather conditions and outage patterns with enriched weather data
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: WEATHER_OUTAGE_CORRELATION_HISTORICAL
+    dimensions:
+      - name: MONTH
+        description: Month of outage
+        expr: MONTH
+        data_type: NUMBER(2,0)
+      - name: OUTAGE_DATE
+        description: Date of outage events
+        expr: OUTAGE_DATE
+        data_type: DATE
+      - name: WEATHER_CATEGORY
+        synonyms:
+          - storm severity
+          - weather type
+        description: Weather category (EXTREME_HEAT, HIGH_WIND, HEAVY_RAIN, etc)
+        expr: WEATHER_CATEGORY
+        data_type: VARCHAR(13)
+      - name: YEAR
+        description: Year of outage
+        expr: YEAR
+        data_type: NUMBER(4,0)
+    facts:
+      - name: AVG_TEMP_F
+        description: Average temperature on outage date (F)
+        expr: AVG_TEMP_F
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: AVG_WIND_SPEED
+        description: Average wind speed on outage date (mph)
+        expr: AVG_WIND_SPEED
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: HOURS_WITH_PRECIP
+        description: Number of hours with precipitation
+        expr: HOURS_WITH_PRECIP
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: MAX_TEMP_F
+        description: Maximum temperature on outage date (F)
+        expr: MAX_TEMP_F
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: MAX_WIND_SPEED
+        description: Maximum wind speed on outage date (mph)
+        expr: MAX_WIND_SPEED
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: OUTAGE_COUNT
+        description: Number of outages on this date
+        expr: OUTAGE_COUNT
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: TOTAL_OUTAGE_MINUTES
+        description: Total outage duration in minutes
+        expr: TOTAL_OUTAGE_MINUTES
+        data_type: NUMBER(30,0)
+        access_modifier: public_access
+      - name: TOTAL_PRECIP
+        description: Total precipitation on outage date (inches)
+        expr: TOTAL_PRECIP
+        data_type: NUMBER(29,2)
+        access_modifier: public_access
+      - name: TRANSFORMERS_AFFECTED
+        description: Number of unique transformers affected
+        expr: TRANSFORMERS_AFFECTED
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+  - name: WEATHER_STRESS_EVENTS
+    synonyms:
+      - HEAT_EVENTS
+      - WEATHER_CONDITIONS
+    description: Daily weather stress events for demand forecasting and grid stress analysis
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: WEATHER_STRESS_EVENTS
+    dimensions:
+      - name: HEAT_CATEGORY
+        synonyms:
+          - temperature category
+          - weather severity
+        description: Heat stress category (EXTREME_HEAT, HIGH_HEAT, MODERATE_HEAT, NORMAL)
+        expr: HEAT_CATEGORY
+        data_type: VARCHAR(13)
+    time_dimensions:
+      - name: EVENT_DATE
+        expr: EVENT_DATE
+        data_type: DATE
+    facts:
+      - name: STRESS_DURATION_HOURS
+        synonyms:
+          - heat stress period
+          - peak hours
+        description: Duration of heat stress in hours
+        expr: STRESS_DURATION_HOURS
+        data_type: NUMBER(1,0)
+        access_modifier: public_access
+      - name: TEMP_F
+        synonyms:
+          - daily temperature
+          - temperature
+        description: Daily temperature in Fahrenheit
+        expr: TEMP_F
+        data_type: NUMBER(3,0)
+        access_modifier: public_access
+  - name: AMI_MONTHLY_USAGE
+    synonyms:
+      - MONTHLY_AMI
+      - YOY_USAGE
+      - METER_MONTHLY_USAGE
+      - MONTHLY_CONSUMPTION
+    description: Pre-aggregated monthly AMI usage with 2.4M rows optimized for monthly trend analysis without scanning granular interval data.
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: AMI_MONTHLY_USAGE
+    primary_key:
+      columns:
+        - METER_ID
+        - USAGE_MONTH
+    dimensions:
+      - name: METER_ID
+        description: Unique meter identifier
+        expr: METER_ID
+        data_type: VARCHAR(16777216)
+      - name: TRANSFORMER_ID
+        description: Associated transformer identifier
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR(16777216)
+      - name: CUSTOMER_SEGMENT_ID
+        synonyms:
+          - customer segment
+          - segment
+        description: Customer segment identifier
+        expr: CUSTOMER_SEGMENT_ID
+        data_type: VARCHAR(11)
+      - name: BUILDING_TYPE
+        synonyms:
+          - property type
+        description: Type of building
+        expr: BUILDING_TYPE
+        data_type: VARCHAR(16777216)
+    time_dimensions:
+      - name: USAGE_MONTH
+        synonyms:
+          - billing month
+          - consumption month
+        description: Month timestamp for the aggregated usage
+        expr: USAGE_MONTH
+        data_type: TIMESTAMP_NTZ(9)
+    facts:
+      - name: MONTHLY_KWH
+        synonyms:
+          - monthly usage
+          - total consumption
+        description: Total energy consumption in kWh for the month
+        expr: MONTHLY_KWH
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: READING_COUNT
+        description: Number of interval readings aggregated
+        expr: READING_COUNT
+        data_type: NUMBER(18,0)
+        access_modifier: public_access
+      - name: AVG_USAGE_PER_READING
+        synonyms:
+          - average usage
+        description: Average kWh per reading interval
+        expr: AVG_USAGE_PER_READING
+        data_type: FLOAT
+        access_modifier: public_access
+    metrics:
+      - name: TOTAL_MONTHLY_CONSUMPTION
+        description: Sum of all monthly kWh consumption
+        expr: SUM(MONTHLY_KWH)
+        access_modifier: public_access
+      - name: AVG_MONTHLY_CONSUMPTION
+        description: Average monthly kWh per meter
+        expr: AVG(MONTHLY_KWH)
+        access_modifier: public_access
+      - name: METER_COUNT
+        description: Count of distinct meters
+        expr: COUNT(DISTINCT METER_ID)
+        access_modifier: public_access
+  - name: SAP_WORK_ORDERS
+    synonyms:
+      - MAINTENANCE_ORDERS
+      - WORK_ORDERS
+      - SAP_ORDERS
+      - FIELD_WORK
+    description: SAP-sourced work orders with 250K maintenance records including scheduling, crew assignments, costs, and completion status for field operations analysis.
+    base_table:
+      database: SI_DEMOS
+      schema: PRODUCTION
+      table: SAP_WORK_ORDERS
+    primary_key:
+      columns:
+        - WORK_ORDER_ID
+    dimensions:
+      - name: WORK_ORDER_ID
+        description: Unique work order identifier
+        expr: WORK_ORDER_ID
+        data_type: VARCHAR(16777216)
+      - name: SAP_ORDER_NUMBER
+        synonyms:
+          - sap number
+        description: SAP system order number
+        expr: SAP_ORDER_NUMBER
+        data_type: VARCHAR(16777216)
+      - name: SAP_NOTIFICATION_ID
+        description: SAP notification identifier
+        expr: SAP_NOTIFICATION_ID
+        data_type: VARCHAR(16777216)
+      - name: WORK_TYPE
+        synonyms:
+          - order type
+          - maintenance type
+        description: Type of work order
+        expr: WORK_TYPE
+        data_type: VARCHAR(18)
+      - name: WORK_ORDER_STATUS
+        synonyms:
+          - status
+          - completion status
+        description: Current status of the work order
+        expr: WORK_ORDER_STATUS
+        data_type: VARCHAR(13)
+      - name: PRIORITY
+        synonyms:
+          - urgency
+          - priority level
+        description: Priority level of the work order
+        expr: PRIORITY
+        data_type: VARCHAR(9)
+      - name: ASSIGNED_CREW_ID
+        synonyms:
+          - crew
+          - work crew
+        description: Assigned maintenance crew identifier
+        expr: ASSIGNED_CREW_ID
+        data_type: VARCHAR(16777216)
+      - name: ASSIGNED_TECHNICIAN_ID
+        synonyms:
+          - technician
+        description: Assigned technician identifier
+        expr: ASSIGNED_TECHNICIAN_ID
+        data_type: VARCHAR(16777216)
+      - name: EQUIPMENT_ID
+        description: Associated equipment identifier
+        expr: EQUIPMENT_ID
+        data_type: VARCHAR(16777216)
+    time_dimensions:
+      - name: CREATED_DATE
+        synonyms:
+          - order date
+          - creation date
+        description: Date work order was created
+        expr: CREATED_DATE
+        data_type: DATE
+      - name: SCHEDULED_START_DATE
+        synonyms:
+          - planned date
+          - scheduled date
+        description: Scheduled start date
+        expr: SCHEDULED_START_DATE
+        data_type: DATE
+      - name: ACTUAL_COMPLETION_DATE
+        synonyms:
+          - finish date
+          - completed date
+        description: Actual completion date
+        expr: ACTUAL_COMPLETION_DATE
+        data_type: DATE
+    facts:
+      - name: ESTIMATED_COST_USD
+        synonyms:
+          - estimated cost
+          - budgeted cost
+        description: Estimated cost in US dollars
+        expr: ESTIMATED_COST_USD
+        data_type: NUMBER(6,0)
+        access_modifier: public_access
+      - name: ACTUAL_COST_USD
+        synonyms:
+          - actual cost
+          - final cost
+        description: Actual cost incurred in US dollars
+        expr: ACTUAL_COST_USD
+        data_type: NUMBER(10,2)
+        access_modifier: public_access
+      - name: LABOR_HOURS
+        synonyms:
+          - hours worked
+        description: Labor hours for the work order
+        expr: LABOR_HOURS
+        data_type: FLOAT
+        access_modifier: public_access
+      - name: SERVICE_LAT
+        description: Service location latitude
+        expr: SERVICE_LAT
+        data_type: NUMBER(12,6)
+        access_modifier: public_access
+      - name: SERVICE_LON
+        description: Service location longitude
+        expr: SERVICE_LON
+        data_type: NUMBER(12,6)
+        access_modifier: public_access
+    metrics:
+      - name: TOTAL_WORK_ORDERS
+        description: Count of work orders
+        expr: COUNT(*)
+        access_modifier: public_access
+      - name: OPEN_WORK_ORDERS
+        description: Count of work orders not yet completed
+        expr: COUNT(CASE WHEN WORK_ORDER_STATUS NOT IN ('COMPLETED', 'CANCELLED') THEN 1 END)
+        access_modifier: public_access
+      - name: TOTAL_ACTUAL_COST
+        description: Sum of actual costs
+        expr: SUM(ACTUAL_COST_USD)
+        access_modifier: public_access
+      - name: AVG_LABOR_HOURS
+        description: Average labor hours per work order
+        expr: AVG(LABOR_HOURS)
+        access_modifier: public_access
+  # NOTE: AMI_STREAMING_DATA removed by #audit (Jan 22, 2026)
+  # Reason: Temporal orphan - data covers Jan 17-22, 2026 only, 
+  # creating 5-month gap from main historical data (Jul 2024 - Aug 2025).
+  # This caused confusion for analysts asking about "latest data".
+  # Use AMI_READINGS_ENHANCED for all interval-level AMI queries.
+  
+  # NOTE: VEGETATION_POWER_LINE_RISK removed by #audit (Jan 22, 2026)
+  # Reason: Superseded by VEGETATION_RISK_COMPUTED (49K rows) in APPLICATIONS schema.
+  # This table has only 3,611 rows vs 49,265 in the authoritative source.
+  # Use CIRCUIT_VEGETATION_RISK and VEGETATION_TRANSFORMER_RISK for vegetation analysis.
+  
+  # Vegetation analysis is available through:
+  # - CIRCUIT_VEGETATION_RISK (73 circuits, aggregated risk)
+  # - VEGETATION_TRANSFORMER_RISK (1,572 transformer-level risks)
+  
+relationships:
+  - name: AMI_TO_METER_INFRA
+    left_table: AMI_READINGS_ENHANCED
+    right_table: METER_INFRASTRUCTURE
+    relationship_columns:
+      - left_column: METER_ID
+        right_column: METER_ID
+    relationship_type: many_to_one
+  - name: AMI_TO_OUTAGE
+    left_table: AMI_READINGS_ENHANCED
+    right_table: OUTAGE_EVENTS
+    relationship_columns:
+      - left_column: OUTAGE_ID
+        right_column: OUTAGE_ID
+    relationship_type: many_to_one
+  - name: AMI_TO_VOLTAGE_SAG
+    left_table: AMI_READINGS_ENHANCED
+    right_table: VOLTAGE_SAG_EVENTS
+    relationship_columns:
+      - left_column: VOLTAGE_SAG_EVENT_ID
+        right_column: EVENT_ID
+    relationship_type: many_to_one
+  - name: BUILDING_TO_METER
+    left_table: BUILDING_METER_ASSOCIATIONS
+    right_table: METER_INFRASTRUCTURE
+    relationship_columns:
+      - left_column: METER_ID
+        right_column: METER_ID
+    relationship_type: many_to_one
+  - name: CIRCUIT_TO_SUBSTATION
+    left_table: CIRCUIT_METADATA
+    right_table: SUBSTATIONS
+    relationship_columns:
+      - left_column: SUBSTATION_ID
+        right_column: SUBSTATION_ID
+    relationship_type: many_to_one
+  - name: VEG_RISK_TO_CIRCUIT
+    left_table: CIRCUIT_VEGETATION_RISK
+    right_table: CIRCUIT_METADATA
+    relationship_columns:
+      - left_column: CIRCUIT_ID
+        right_column: CIRCUIT_ID
+    relationship_type: many_to_one
+  - name: VEG_RISK_TO_SUBSTATION
+    left_table: CIRCUIT_VEGETATION_RISK
+    right_table: SUBSTATIONS
+    relationship_columns:
+      - left_column: SUBSTATION_ID
+        right_column: SUBSTATION_ID
+    relationship_type: many_to_one
+  - name: CUSTOMER_TO_METER
+    left_table: CUSTOMERS_MASTER_DATA
+    right_table: METER_INFRASTRUCTURE
+    relationship_columns:
+      - left_column: PRIMARY_METER_ID
+        right_column: METER_ID
+    relationship_type: many_to_one
+  - name: POLE_TO_CIRCUIT
+    left_table: GRID_POLES_INFRASTRUCTURE
+    right_table: CIRCUIT_METADATA
+    relationship_columns:
+      - left_column: CIRCUIT_ID
+        right_column: CIRCUIT_ID
+    relationship_type: many_to_one
+  - name: POLE_TO_SUBSTATION
+    left_table: GRID_POLES_INFRASTRUCTURE
+    right_table: SUBSTATIONS
+    relationship_columns:
+      - left_column: SUBSTATION_ID
+        right_column: SUBSTATION_ID
+    relationship_type: many_to_one
+  - name: POLE_TO_TRANSFORMER
+    left_table: GRID_POLES_INFRASTRUCTURE
+    right_table: TRANSFORMER_METADATA
+    relationship_columns:
+      - left_column: TRANSFORMER_ID
+        right_column: TRANSFORMER_ID
+    relationship_type: many_to_one
+  - name: METER_TO_CIRCUIT
+    left_table: METER_INFRASTRUCTURE
+    right_table: CIRCUIT_METADATA
+    relationship_columns:
+      - left_column: CIRCUIT_ID
+        right_column: CIRCUIT_ID
+    relationship_type: many_to_one
+  - name: METER_TO_SUBSTATION
+    left_table: METER_INFRASTRUCTURE
+    right_table: SUBSTATIONS
+    relationship_columns:
+      - left_column: SUBSTATION_ID
+        right_column: SUBSTATION_ID
+    relationship_type: many_to_one
+  - name: METER_TO_TRANSFORMER
+    left_table: METER_INFRASTRUCTURE
+    right_table: TRANSFORMER_METADATA
+    relationship_columns:
+      - left_column: TRANSFORMER_ID
+        right_column: TRANSFORMER_ID
+    relationship_type: many_to_one
+  - name: OUTAGE_TO_TRANSFORMER
+    left_table: OUTAGE_EVENTS
+    right_table: TRANSFORMER_METADATA
+    relationship_columns:
+      - left_column: TRANSFORMER_ID
+        right_column: TRANSFORMER_ID
+    relationship_type: many_to_one
+  - name: OUTAGE_TO_VOLTAGE_SAG
+    left_table: OUTAGE_EVENTS
+    right_table: VOLTAGE_SAG_EVENTS
+    relationship_columns:
+      - left_column: CAUSED_BY_SAG_EVENT_ID
+        right_column: EVENT_ID
+    relationship_type: many_to_one
+  - name: VEG_CIRCUIT_TO_OUTAGE
+    left_table: OUTAGE_EVENTS
+    right_table: CIRCUIT_VEGETATION_RISK
+    relationship_columns:
+      - left_column: CIRCUIT_ID
+        right_column: CIRCUIT_ID
+    relationship_type: many_to_one
+  - name: XFMR_LOAD_TO_TRANSFORMER
+    left_table: TRANSFORMER_HOURLY_LOAD
+    right_table: TRANSFORMER_METADATA
+    relationship_columns:
+      - left_column: TRANSFORMER_ID
+        right_column: TRANSFORMER_ID
+    relationship_type: many_to_one
+  - name: TRANSFORMER_TO_CIRCUIT
+    left_table: TRANSFORMER_METADATA
+    right_table: CIRCUIT_METADATA
+    relationship_columns:
+      - left_column: CIRCUIT_ID
+        right_column: CIRCUIT_ID
+    relationship_type: many_to_one
+  - name: TRANSFORMER_TO_SUBSTATION
+    left_table: TRANSFORMER_METADATA
+    right_table: SUBSTATIONS
+    relationship_columns:
+      - left_column: SUBSTATION_ID
+        right_column: SUBSTATION_ID
+    relationship_type: many_to_one
+  - name: TREE_RISK_TO_CIRCUIT
+    left_table: VEGETATION_TRANSFORMER_RISK
+    right_table: CIRCUIT_METADATA
+    relationship_columns:
+      - left_column: CIRCUIT_ID
+        right_column: CIRCUIT_ID
+    relationship_type: many_to_one
+  - name: TREE_RISK_TO_TRANSFORMER
+    left_table: VEGETATION_TRANSFORMER_RISK
+    right_table: TRANSFORMER_METADATA
+    relationship_columns:
+      - left_column: TRANSFORMER_ID
+        right_column: TRANSFORMER_ID
+    relationship_type: many_to_one
+  - name: VOLTAGE_SAG_TO_TRANSFORMER
+    left_table: VOLTAGE_SAG_EVENTS
+    right_table: TRANSFORMER_METADATA
+    relationship_columns:
+      - left_column: TRANSFORMER_ID
+        right_column: TRANSFORMER_ID
+    relationship_type: many_to_one
+  - name: AMI_MONTHLY_TO_METER
+    left_table: AMI_MONTHLY_USAGE
+    right_table: METER_INFRASTRUCTURE
+    relationship_columns:
+      - left_column: METER_ID
+        right_column: METER_ID
+    relationship_type: many_to_one
+  - name: SAP_WORK_ORDER_TO_TRANSFORMER
+    left_table: SAP_WORK_ORDERS
+    right_table: TRANSFORMER_METADATA
+    relationship_columns:
+      - left_column: EQUIPMENT_ID
+        right_column: TRANSFORMER_ID
+    relationship_type: many_to_one
+  - name: SAP_WORK_ORDER_TO_CIRCUIT
+    left_table: SAP_WORK_ORDERS
+    right_table: CIRCUIT_METADATA
+    relationship_columns:
+      - left_column: EQUIPMENT_ID
+        right_column: CIRCUIT_ID
+    relationship_type: many_to_one
+  # NOTE: AMI_STREAMING_TO_METER relationship removed - AMI_STREAMING_DATA table removed
+verified_queries:
+  - name: CRITICAL_OVERLOAD_TRANSFORMERS
+    sql: |-
+      SELECT
+        TRANSFORMER_ID,
+        THERMAL_STRESS_CATEGORY,
+        LOAD_FACTOR_PCT,
+        STRESS_VS_HISTORICAL
+      FROM
+        __TRANSFORMER_THERMAL_STRESS_MATERIALIZED
+      WHERE
+        YEAR = 2025
+        AND MONTH IN (7, 8)
+        AND THERMAL_STRESS_CATEGORY = 'OVERLOAD'
+      ORDER BY
+        LOAD_FACTOR_PCT DESC
+      LIMIT
+        25
+    question: Which transformers are in critical overload condition?
+    verified_at: 1767731947
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: '"Compare the peak ERCOT loads for July across years"'
+    sql: |-
+      SELECT
+        YEAR,
+        MAX(ERCOT_TOTAL_MW) AS peak_load_mw,
+        COUNT(*) AS hourly_records
+      FROM
+        __ERCOT_LOAD_UNIFIED
+      WHERE
+        MONTH = 7
+      GROUP BY
+        YEAR
+      ORDER BY
+        YEAR DESC NULLS LAST
+    question: Compare the peak ERCOT loads for July across years
+    verified_at: 1767731976
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: '"Show the meter names and zip codes of the most vulnerable customers by county with severe or high energy burden"'
+    sql: |-
+      SELECT
+        METER_ID,
+        ZIP_CODE,
+        COUNTY_NAME,
+        BURDEN_CLASSIFICATION,
+        ANNUAL_ENERGY_BURDEN_PCT,
+        ESTIMATED_MONTHLY_BILL_USD,
+        LOW_INCOME_FLAG
+      FROM
+        __ENERGY_BURDEN_ANALYSIS
+      WHERE
+        YEAR = 2025
+        AND MONTH IN (7, 8)
+        AND LOW_INCOME_FLAG = TRUE
+        AND BURDEN_CLASSIFICATION IN ('Severe', 'High')
+      ORDER BY
+        COUNTY_NAME,
+        ANNUAL_ENERGY_BURDEN_PCT DESC NULLS LAST
+      LIMIT
+        200
+    question: Show the meter names and zip codes of the most vulnerable customers by county with severe or high energy burden
+    verified_at: 1767510441
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: LOW_INCOME_REVENUE_BY_COUNTY
+    sql: |
+      SELECT COUNTY_NAME, INCOME_CLASSIFICATION, BURDEN_CLASSIFICATION,
+             ESTIMATED_MONTHLY_BILL_USD, LOW_INCOME_FLAG
+      FROM __ENERGY_BURDEN_ANALYSIS
+      WHERE YEAR = 2025 AND MONTH IN (7, 8)
+        AND LOW_INCOME_FLAG = TRUE
+      ORDER BY ESTIMATED_MONTHLY_BILL_USD DESC
+      LIMIT 200
+    question: What is revenue from low-income customers by county?
+    verified_at: 1735516800
+    verified_by: #- Grid Command
+  - name: TRANSFORMERS_ABOVE_HISTORICAL_STRESS
+    sql: |
+      SELECT TRANSFORMER_ID, THERMAL_STRESS_CATEGORY, LOAD_FACTOR_PCT, STRESS_VS_HISTORICAL
+      FROM __TRANSFORMER_THERMAL_STRESS_MATERIALIZED
+      WHERE YEAR = 2025 AND MONTH IN (7, 8)
+        AND STRESS_VS_HISTORICAL = 'ABOVE_HISTORICAL_PATTERN'
+      ORDER BY LOAD_FACTOR_PCT DESC
+      LIMIT 50
+    question: Which transformers exceed their historical stress baseline?
+    verified_at: 1735516800
+    verified_by: #- Grid Command
+  - name: HIGH_WIND_OUTAGE_EVENTS
+    sql: 'SELECT OUTAGE_DATE, OUTAGE_COUNT, MAX_WIND_SPEED, AVG_WIND_SPEED, TOTAL_PRECIP, TOTAL_OUTAGE_MINUTES FROM __WEATHER_OUTAGE_CORRELATION_HISTORICAL WHERE YEAR = 2025 AND MONTH IN (7, 8) AND MAX_WIND_SPEED >= 7.0 ORDER BY OUTAGE_COUNT DESC LIMIT 25 '
+    question: Show outage events during high wind conditions
+    verified_at: 1735516800
+    verified_by: #- Grid Command
+  - name: COASTAL_VULNERABLE_CUSTOMERS
+    sql: SELECT METER_ID, COUNTY_NAME, BURDEN_CLASSIFICATION, ANNUAL_ENERGY_BURDEN_PCT, ESTIMATED_MONTHLY_BILL_USD, LOW_INCOME_FLAG FROM __ENERGY_BURDEN_ANALYSIS WHERE YEAR = 2025 AND MONTH IN (7, 8) AND COUNTY_NAME IN ('GALVESTON', 'BRAZORIA', 'CHAMBERS') AND LOW_INCOME_FLAG = TRUE AND BURDEN_CLASSIFICATION IN ('Severe', 'High') ORDER BY ANNUAL_ENERGY_BURDEN_PCT DESC LIMIT 100
+    question: Find vulnerable customers in hurricane-risk coastal counties
+    verified_at: 1735516800
+    verified_by: #- Grid Command
+  - name: COMMERCIAL_BUILDING_ENERGY_INTENSITY
+    sql: |-
+      SELECT 
+        b.BUILDING_ID,
+        b.BUILDING_NAME,
+        b.BUILDING_TYPE,
+        COUNT(DISTINCT b.METER_ID) as meter_count,
+        SUM(a.USAGE_KWH_ADJUSTED) as total_kwh,
+        AVG(b.CONFIDENCE_SCORE) as avg_confidence,
+        AVG(b.DISTANCE_METERS) as avg_distance_meters
+      FROM __AMI_READINGS_ENHANCED a
+      JOIN __BUILDING_METER_ASSOCIATIONS b ON a.METER_ID = b.METER_ID
+      WHERE b.BUILDING_TYPE IN ('commercial', 'office', 'retail', 'warehouse')
+        AND a.TIMESTAMP >= '2025-07-01' 
+        AND a.TIMESTAMP < '2025-09-01'
+        AND b.RN = 1
+      GROUP BY b.BUILDING_ID, b.BUILDING_NAME, b.BUILDING_TYPE
+      ORDER BY total_kwh DESC
+      LIMIT 50
+    question: Which commercial buildings have the highest energy usage?
+    verified_at: 1735977600
+    verified_by: #- Grid Command
+    use_as_onboarding_question: true
+  - name: RESIDENTIAL_MULTIFAMILY_CONSUMPTION
+    sql: |-
+      SELECT 
+        b.BUILDING_ID,
+        b.BUILDING_NAME,
+        b.BUILDING_TYPE,
+        b.NUM_FLOORS,
+        COUNT(DISTINCT b.METER_ID) as unit_count,
+        SUM(a.USAGE_KWH_ADJUSTED) as total_building_kwh,
+        AVG(a.USAGE_KWH_ADJUSTED) as avg_kwh_per_reading,
+        AVG(b.CONFIDENCE_SCORE) as avg_confidence
+      FROM __AMI_READINGS_ENHANCED a
+      JOIN __BUILDING_METER_ASSOCIATIONS b ON a.METER_ID = b.METER_ID
+      WHERE b.BUILDING_TYPE IN ('apartments', 'duplex', 'dormitory')
+        AND a.TIMESTAMP >= '2025-07-01' 
+        AND a.TIMESTAMP < '2025-09-01'
+        AND b.RN = 1
+      GROUP BY b.BUILDING_ID, b.BUILDING_NAME, b.BUILDING_TYPE, b.NUM_FLOORS
+      HAVING COUNT(DISTINCT b.METER_ID) >= 3
+      ORDER BY total_building_kwh DESC
+      LIMIT 50
+    question: Show energy consumption for multi-family residential buildings like apartments
+    verified_at: 1735977600
+    verified_by: #- Grid Command
+    use_as_onboarding_question: true
+  - name: BUILDING_CLASSIFICATION_QUALITY
+    sql: |-
+      SELECT 
+        DATA_SOURCE,
+        BUILDING_TYPE,
+        COUNT(*) as match_count,
+        COUNT(DISTINCT METER_ID) as unique_meters,
+        COUNT(DISTINCT BUILDING_ID) as unique_buildings,
+        ROUND(AVG(CONFIDENCE_SCORE), 1) as avg_confidence,
+        ROUND(MIN(CONFIDENCE_SCORE), 1) as min_confidence,
+        ROUND(MAX(CONFIDENCE_SCORE), 1) as max_confidence
+      FROM __BUILDING_METER_ASSOCIATIONS
+      WHERE RN = 1
+      GROUP BY DATA_SOURCE, BUILDING_TYPE
+      ORDER BY DATA_SOURCE, match_count DESC
+      LIMIT 100
+    question: Show building classification quality by data source and building type
+    verified_at: 1735977600
+    verified_by: #- Grid Command
+    use_as_onboarding_question: true
+  - name: ENERGY_BURDEN_BY_BUILDING_TYPE
+    sql: |-
+      SELECT 
+        CASE 
+          WHEN b.BUILDING_TYPE IN ('house', 'residential', 'duplex', 'terrace', 'semidetached_house') THEN 'Single-Family Residential'
+          WHEN b.BUILDING_TYPE IN ('apartments', 'dormitory') THEN 'Multi-Family Residential'
+          WHEN b.BUILDING_TYPE IN ('commercial', 'office', 'retail') THEN 'Commercial'
+          WHEN b.BUILDING_TYPE IN ('warehouse', 'industrial') THEN 'Industrial'
+          ELSE 'Other'
+        END as building_category,
+        COUNT(DISTINCT e.METER_ID) as meter_count,
+        AVG(e.ANNUAL_ENERGY_BURDEN_PCT) as avg_burden_pct,
+        COUNT_IF(e.BURDEN_CLASSIFICATION IN ('Severe', 'High')) as high_burden_count,
+        AVG(e.ESTIMATED_MONTHLY_BILL_USD) as avg_monthly_bill,
+        AVG(b.CONFIDENCE_SCORE) as avg_match_confidence
+      FROM __ENERGY_BURDEN_ANALYSIS e
+      JOIN __BUILDING_METER_ASSOCIATIONS b ON e.METER_ID = b.METER_ID
+      WHERE e.YEAR = 2025 
+        AND e.MONTH IN (7, 8)
+        AND b.CONFIDENCE_SCORE >= 90
+        AND b.RN = 1
+      GROUP BY CASE 
+        WHEN b.BUILDING_TYPE IN ('house', 'residential', 'duplex', 'terrace', 'semidetached_house') THEN 'Single-Family Residential'
+        WHEN b.BUILDING_TYPE IN ('apartments', 'dormitory') THEN 'Multi-Family Residential'
+        WHEN b.BUILDING_TYPE IN ('commercial', 'office', 'retail') THEN 'Commercial'
+        WHEN b.BUILDING_TYPE IN ('warehouse', 'industrial') THEN 'Industrial'
+        ELSE 'Other'
+      END
+      ORDER BY avg_burden_pct DESC
+    question: Compare energy burden across different building types
+    verified_at: 1735977600
+    verified_by: #- Grid Command
+    use_as_onboarding_question: true
+  - name: HURRICANE_CUSTOMER_IMPACT
+    sql: |-
+      SELECT 
+        CUSTOMER_METER_ID, 
+        CITY, 
+        COUNTY_NAME, 
+        CUSTOMER_SEGMENT_ID, 
+        OUTAGE_START_TIME, 
+        OUTAGE_END_TIME, 
+        OUTAGE_DURATION_MINUTES, 
+        TRANSFORMER_ID, 
+        SUBSTATION_ID 
+      FROM __CUSTOMER_OUTAGE_EVENTS 
+      WHERE OUTAGE_TYPE = 'SEVERE_THUNDERSTORM' 
+        AND OUTAGE_CATEGORY = 'STORM'
+        AND COUNTY_NAME IN ('GALVESTON', 'BRAZORIA', 'CHAMBERS')
+      ORDER BY OUTAGE_DURATION_MINUTES DESC 
+      LIMIT 100
+    question: Which customers in coastal counties were most affected by severe storms?
+    verified_at: 1737590400
+    verified_by: Audit - Fixed to use actual storm data
+    use_as_onboarding_question: true
+  - name: COASTAL_STORM_VULNERABILITY
+    sql: |-
+      SELECT
+        COUNTY_NAME,
+        OUTAGE_TYPE,
+        COUNT(DISTINCT CUSTOMER_METER_ID) AS unique_customers_affected,
+        COUNT(*) AS total_customer_outages,
+        ROUND(AVG(OUTAGE_DURATION_MINUTES), 1) AS avg_outage_minutes,
+        MAX(OUTAGE_DURATION_MINUTES) AS max_outage_minutes,
+        MIN(OUTAGE_START_TIME) AS first_outage,
+        MAX(OUTAGE_END_TIME) AS last_restoration
+      FROM
+        __CUSTOMER_OUTAGE_EVENTS
+      WHERE
+        OUTAGE_CATEGORY = 'STORM'
+        AND COUNTY_NAME IN ('GALVESTON', 'BRAZORIA', 'CHAMBERS')
+      GROUP BY
+        COUNTY_NAME,
+        OUTAGE_TYPE
+      ORDER BY
+        unique_customers_affected DESC
+    question: Show customers in high-risk coastal zones affected by different storm types
+    verified_at: 1767527863
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: CUSTOMER_STORM_OUTAGE_HISTORY
+    sql: SELECT CUSTOMER_METER_ID, COUNTY_NAME, CITY, CUSTOMER_SEGMENT_ID, OUTAGE_CATEGORY, OUTAGE_TYPE, OUTAGE_START_TIME, OUTAGE_END_TIME, OUTAGE_DURATION_MINUTES, TRANSFORMER_ID, SUBSTATION_ID FROM __CUSTOMER_OUTAGE_EVENTS WHERE CUSTOMER_METER_ID = 'MTR-800K-0301548' ORDER BY OUTAGE_START_TIME
+    question: Show outage history for a specific customer
+    verified_at: 1737590400
+    verified_by: Audit - Updated to meter with storm outages
+    use_as_onboarding_question: false
+  - name: STORM_RESTORATION_METRICS
+    sql: |-
+      SELECT 
+        OUTAGE_TYPE, 
+        COUNTY_NAME, 
+        COUNT(DISTINCT CUSTOMER_METER_ID) AS unique_customers_affected, 
+        COUNT(*) AS total_customer_outages, 
+        ROUND(AVG(OUTAGE_DURATION_MINUTES), 1) AS avg_restoration_minutes, 
+        ROUND(MIN(OUTAGE_DURATION_MINUTES), 1) AS min_restoration_minutes, 
+        ROUND(MAX(OUTAGE_DURATION_MINUTES), 1) AS max_restoration_minutes, 
+        ROUND(SUM(OUTAGE_DURATION_MINUTES) / 1000000.0, 3) AS customer_minutes_lost_millions 
+      FROM __CUSTOMER_OUTAGE_EVENTS 
+      WHERE OUTAGE_CATEGORY = 'STORM' 
+      GROUP BY OUTAGE_TYPE, COUNTY_NAME 
+      ORDER BY customer_minutes_lost_millions DESC
+    question: Compare storm restoration times by storm type and county
+    verified_at: 1737590400
+    verified_by: Audit - Removed WEATHER_EVENT_ID (all NULL)
+    use_as_onboarding_question: true
+  - name: '"Show all meters connected to transformer XFMR-HOU-012641, including the transformer details, substation, circuit, and location information"'
+    sql: |-
+      SELECT
+        mi.meter_id,
+        mi.transformer_id,
+        mi.substation_id,
+        mi.circuit_id,
+        mi.city,
+        mi.county_name,
+        mi.zip_code,
+        mi.meter_latitude,
+        mi.meter_longitude,
+        tm.rated_kva,
+        tm.age_years,
+        tm.install_year,
+        tm.feeder_id,
+        tm.location_area,
+        tm.last_maintenance_date
+      FROM
+        meter_infrastructure AS mi
+        LEFT OUTER JOIN transformer_metadata AS tm ON mi.transformer_id = tm.transformer_id
+      WHERE
+        mi.transformer_id = 'XFMR-HOU-012641'
+      ORDER BY
+        mi.meter_id
+    question: Show all meters connected to transformer XFMR-HOU-012641, including the transformer details, substation, circuit, and location information
+    verified_at: 1767731636
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: '"Compare summer load patterns across 2023, 2024, and 2025 showing average load, peak load, and Houston''s share of ERCOT load"'
+    sql: |-
+      WITH summer_data AS (
+        SELECT
+          year,
+          ercot_total_mw,
+          houston_share_pct,
+          timestamp_utc
+        FROM
+          ercot_load_unified
+        WHERE
+          month IN (6, 7, 8)
+          AND timestamp_utc <= CURRENT_TIMESTAMP()
+      )
+      SELECT
+        year,
+        AVG(ercot_total_mw) AS avg_summer_load_mw,
+        MAX(ercot_total_mw) AS peak_summer_load_mw,
+        AVG(houston_share_pct) AS avg_houston_share_pct,
+        MIN(ercot_total_mw) AS min_summer_load_mw,
+        COUNT(*) AS hourly_records,
+        MIN(timestamp_utc) AS data_start_date,
+        MAX(timestamp_utc) AS data_end_date
+      FROM
+        summer_data
+      GROUP BY
+        year
+      ORDER BY
+        year DESC NULLS LAST
+    question: Compare summer load patterns across 2023, 2024, and 2025 showing average load, peak load, and Houston's share of ERCOT load
+    verified_at: 1767731691
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: '"What is the distribution of circuit sizes and geographic coverage across our electrical distribution network?"'
+    sql: |-
+      WITH circuit_analysis AS (
+        SELECT
+          tm.circuit_id,
+          tm.substation_id,
+          COUNT(DISTINCT tm.transformer_id) AS transformers_on_circuit,
+          COUNT(
+            DISTINCT CASE
+              WHEN tm.transformer_id LIKE '%-SPLIT-%' THEN tm.transformer_id
+            END
+          ) AS split_transformers,
+          AVG(tm.latitude) AS circuit_center_lat,
+          AVG(tm.longitude) AS circuit_center_lon,
+          MIN(tm.latitude) AS min_lat,
+          MAX(tm.latitude) AS max_lat,
+          MIN(tm.longitude) AS min_lon,
+          MAX(tm.longitude) AS max_lon,
+          MAX(tm.latitude) - MIN(tm.latitude) AS lat_span,
+          MAX(tm.longitude) - MIN(tm.longitude) AS lon_span
+        FROM
+          transformer_metadata AS tm
+        GROUP BY
+          tm.circuit_id,
+          tm.substation_id
+      )
+      SELECT
+        COUNT(*) AS total_circuits,
+        ROUND(AVG(transformers_on_circuit), 1) AS avg_transformers_per_circuit,
+        ROUND(MEDIAN(transformers_on_circuit), 1) AS median_transformers_per_circuit,
+        MIN(transformers_on_circuit) AS min_transformers,
+        MAX(transformers_on_circuit) AS max_transformers,
+        ROUND(AVG(lat_span * 111000), 0) AS avg_circuit_span_north_south_m,
+        ROUND(
+          AVG(
+            lon_span * 111000 * COS(RADIANS(circuit_center_lat))
+          ),
+          0
+        ) AS avg_circuit_span_east_west_m,
+        COUNT(
+          CASE
+            WHEN lat_span * 111000 < 5000
+            AND lon_span * 111000 * COS(RADIANS(circuit_center_lat)) < 5000 THEN 1
+          END
+        ) AS circuits_under_5km_span,
+        COUNT(
+          CASE
+            WHEN lat_span * 111000 > 15000
+            OR lon_span * 111000 * COS(RADIANS(circuit_center_lat)) > 15000 THEN 1
+          END
+        ) AS circuits_over_15km_span,
+        ROUND(
+          100.0 * COUNT(
+            CASE
+              WHEN lat_span * 111000 < 10000
+              AND lon_span * 111000 * COS(RADIANS(circuit_center_lat)) < 10000 THEN 1
+            END
+          ) / COUNT(*),
+          2
+        ) AS pct_circuits_under_10km
+      FROM
+        circuit_analysis
+    question: What is the distribution of circuit sizes and geographic coverage across our electrical distribution network?
+    verified_at: 1767731757
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: '"Show me circuits with critical vegetation risk level"'
+    sql: |-
+      SELECT
+        sv.circuit_id,
+        sv.circuit_risk_level,
+        sv.critical_trees,
+        sv.avg_risk_score,
+        sv.max_risk_score,
+        sv.affected_transformers
+      FROM
+        SEMANTIC_VIEW(
+          SI_DEMOS.APPLICATIONS.CENTERPOINTENERGY_SEMANTIC_MODEL FACTS circuit_vegetation_risk.critical_trees,
+          circuit_vegetation_risk.avg_risk_score,
+          circuit_vegetation_risk.max_risk_score,
+          circuit_vegetation_risk.affected_transformers DIMENSIONS circuit_vegetation_risk.circuit_id,
+          circuit_vegetation_risk.circuit_risk_level
+          WHERE
+            circuit_vegetation_risk.circuit_risk_level = 'CRITICAL'
+        ) AS sv
+      ORDER BY
+        sv.critical_trees DESC NULLS LAST
+    question: Show me circuits with critical vegetation risk level
+    verified_at: 1767905029
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: '"How many critical trees are near power lines by circuit?"'
+    sql: |-
+      SELECT
+        cvr.circuit_id,
+        cvr.critical_trees
+      FROM
+        circuit_vegetation_risk AS cvr
+      WHERE
+        cvr.critical_trees > 0
+      ORDER BY
+        cvr.critical_trees DESC NULLS LAST
+    question: How many critical trees are near power lines by circuit?
+    verified_at: 1767905155
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: '"Show trees closest to power lines sorted by distance"'
+    sql: |-
+      SELECT
+        vtr.tree_id,
+        vtr.transformer_id,
+        vtr.circuit_id,
+        vtr.distance_to_line_meters,
+        vtr.vegetation_risk_level,
+        vtr.risk_score
+      FROM
+        vegetation_transformer_risk AS vtr
+      ORDER BY
+        vtr.distance_to_line_meters ASC
+    question: Show trees closest to power lines sorted by distance
+    verified_at: 1767905246
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: '"List high priority trees for trimming crews"'
+    sql: |-
+      SELECT
+        vtr.tree_id,
+        vtr.transformer_id,
+        vtr.circuit_id,
+        vtr.vegetation_risk_level,
+        vtr.distance_to_line_meters,
+        vtr.risk_score,
+        vtr.tree_lat,
+        vtr.tree_lon
+      FROM
+        vegetation_transformer_risk AS vtr
+      WHERE
+        vtr.vegetation_risk_level IN ('CRITICAL', 'HIGH')
+      ORDER BY
+        vtr.risk_score DESC NULLS LAST,
+        vtr.distance_to_line_meters ASC
+    question: List high priority trees for trimming crews
+    verified_at: 1767905646
+    verified_by: Abhinav Bannerjee
+    use_as_onboarding_question: true
+  - name: MONTHLY_USAGE_TRENDS
+    sql: |-
+      SELECT
+        DATE_TRUNC('MONTH', amu.usage_month) AS month,
+        SUM(amu.monthly_kwh) AS total_monthly_kwh,
+        COUNT(DISTINCT amu.meter_id) AS meter_count,
+        AVG(amu.avg_usage_per_reading) AS avg_usage_per_reading
+      FROM
+        ami_monthly_usage AS amu
+      GROUP BY
+        DATE_TRUNC('MONTH', amu.usage_month)
+      ORDER BY
+        month DESC
+      LIMIT
+        24
+    question: Show monthly usage trends
+    verified_at: 1737500000
+    verified_by: Cortex Code
+    use_as_onboarding_question: true
+  - name: OPEN_WORK_ORDERS_BY_PRIORITY
+    sql: |-
+      SELECT
+        swo.priority,
+        swo.work_type,
+        COUNT(*) AS work_order_count,
+        SUM(swo.estimated_cost_usd) AS total_estimated_cost,
+        AVG(swo.labor_hours) AS avg_labor_hours
+      FROM
+        sap_work_orders AS swo
+      WHERE
+        swo.work_order_status NOT IN ('COMPLETED', 'CANCELLED')
+      GROUP BY
+        swo.priority,
+        swo.work_type
+      ORDER BY
+        CASE swo.priority
+          WHEN 'EMERGENCY' THEN 1
+          WHEN 'HIGH' THEN 2
+          WHEN 'MEDIUM' THEN 3
+          WHEN 'LOW' THEN 4
+        END
+    question: What are the open work orders by priority?
+    verified_at: 1737500000
+    verified_by: Cortex Code
+    use_as_onboarding_question: true
+  # NOTE: STREAMING_DATA_SUMMARY and HIGH_RISK_VEGETATION_LOCATIONS queries removed
+  # by #audit (Jan 22, 2026) - referenced tables no longer in semantic model
+  - name: WORK_ORDERS_BY_STATUS
+    sql: |-
+      SELECT
+        swo.work_type,
+        swo.work_order_status,
+        COUNT(*) AS order_count,
+        SUM(swo.actual_cost_usd) AS total_actual_cost,
+        AVG(swo.labor_hours) AS avg_labor_hours
+      FROM
+        sap_work_orders AS swo
+      GROUP BY
+        swo.work_type,
+        swo.work_order_status
+      ORDER BY
+        swo.work_type,
+        swo.work_order_status
+    question: Show work orders by type and status
+    verified_at: 1737500000
+    verified_by: Cortex Code
+    use_as_onboarding_question: true
+  - name: MONTHLY_USAGE_BY_SEGMENT
+    sql: |-
+      SELECT
+        amu.customer_segment_id,
+        amu.building_type,
+        SUM(amu.monthly_kwh) AS total_consumption_kwh,
+        COUNT(DISTINCT amu.meter_id) AS meter_count,
+        AVG(amu.monthly_kwh) AS avg_monthly_kwh
+      FROM
+        ami_monthly_usage AS amu
+      GROUP BY
+        amu.customer_segment_id,
+        amu.building_type
+      ORDER BY
+        total_consumption_kwh DESC
+    question: Show monthly usage by customer segment and building type
+    verified_at: 1737500000
+    verified_by: Cortex Code
+    use_as_onboarding_question: true
+  # NOTE: Verified queries for AMI_STREAMING_DATA and VEGETATION_POWER_LINE_RISK 
+  # removed by #audit (Jan 22, 2026) - tables no longer in semantic model
+  - name: VEGETATION_RISK_BY_CIRCUIT
+    sql: |-
+      SELECT
+        cvr.circuit_id,
+        cvr.circuit_risk_level,
+        cvr.avg_risk_score,
+        cvr.critical_trees,
+        cvr.high_trees,
+        cvr.affected_transformers
+      FROM
+        circuit_vegetation_risk AS cvr
+      WHERE
+        cvr.circuit_risk_level IN ('CRITICAL', 'HIGH')
+      ORDER BY
+        cvr.avg_risk_score DESC NULLS LAST
+      LIMIT 50
+    question: What are the highest risk vegetation circuits?
+    verified_at: 1737590400
+    verified_by: Audit
+    use_as_onboarding_question: true
+module_custom_instructions:
+  sql_generation: |-
+    ## Business Context & Data Semantics
+
+    ### Authoritative Data Sources (Audit Jan 22, 2026)
+    
+    **AMI Data View Chain:**
+    - AMI_READINGS_ENHANCED → AMI_READINGS_FINAL → AMI_READINGS_WITH_VOLTAGE_EVENTS → AMI_INTERVAL_READINGS (7.1B rows)
+    - Use AMI_READINGS_ENHANCED for ALL interval-level AMI queries (it's the authoritative source)
+    - Use AMI_MONTHLY_USAGE for monthly aggregates and YoY analysis (2.4M rows, Jul 2024 - Aug 2025)
+    - DO NOT use AMI_STREAMING_DATA (removed - temporal orphan with 5-month gap)
+    
+    **Vegetation Risk:**
+    - Use CIRCUIT_VEGETATION_RISK for circuit-level risk analysis (73 circuits)
+    - Use VEGETATION_TRANSFORMER_RISK for transformer-level risk (744 transformers, 1,572 tree-transformer pairs)
+    - DO NOT use VEGETATION_POWER_LINE_RISK (removed - superseded by VEGETATION_RISK_COMPUTED)
+    
+    **Energy Burden Analysis (Fix Jan 22, 2026):**
+    - ENERGY_BURDEN_ANALYSIS view fixed to eliminate duplicate rows from multi-tenant meters
+    - IS_MASTER_METER flag now correctly identifies multi-tenant buildings (12+ apartments sharing one meter)
+    - Use BURDEN_CLASSIFICATION_REFINED for individual household analysis (excludes master meters)
+    - Multi-tenant meters have CUSTOMERS_ON_METER > 1 (up to 51 units per meter)
+    
+    **Data Coverage:**
+    - Historical data: July 2024 - August 2025 (14 months of 15-minute intervals)
+    - Meters: 596,906 unique meters
+    - Transformers: 91,554 assets
+    - Customers: 686,359 accounts
+
+    ### CRITICAL: Summer-Only Data Design (Audit Jan 22, 2026)
+    
+    **This dataset is designed for SUMMER PEAK ANALYSIS only.**
+    
+    **Full Data (primary analysis periods):**
+    | Table | Jul-Aug 2024 | Jul-Aug 2025 | Notes |
+    |-------|--------------|--------------|-------|
+    | AMI_MONTHLY_USAGE | ✅ 597K/mo | ✅ 597K/mo | YoY comparison ready |
+    | AMI_INTERVAL_READINGS | ✅ 3.5B | ✅ 3.5B | 15-min intervals |
+    | TRANSFORMER_THERMAL_STRESS | ✅ 53M/mo | ✅ 53M/mo | Hourly stress metrics |
+    | HOUSTON_WEATHER_HOURLY | ✅ 744/mo | ✅ 744/mo | Also has Jul-Aug 2023 |
+    | SAP_WORK_ORDERS | ❌ None | ✅ 250K | 2025 summer only |
+    | VOLTAGE_SAG_EVENTS | ❌ None | ✅ 73K | 2025 summer only |
+    
+    **Year-round context data (for trends/comparison):**
+    | Table | Coverage | Purpose |
+    |-------|----------|---------|
+    | ERCOT_LOAD_UNIFIED | Jan 2023 - Aug 2025 | Grid load context, YoY summer comparison |
+    | ERCOT_LMP_UNIFIED | Jul 2024 - Dec 2025 | Pricing context |
+    | CUSTOMER_OUTAGE_EVENTS | Jul 2024 - Aug 2025 | Sparse non-summer (~4K/mo), dense summer (~80K/mo) |
+    
+    **Query guidance:**
+    - DEFAULT to July-August 2025 for current analysis
+    - Use July-August 2024 as YoY baseline
+    - For "last year" queries, map to Jul-Aug 2024
+    - DO NOT query for spring/fall/winter data in AMI tables - it doesn't exist
+    - If user asks for "annual" data, explain summer-only coverage and provide summer totals
+
+    ### Energy Burden Definitions
+    - Energy burden is calculated as (annual energy cost / annual household income) * 100
+    - Burden classifications: Severe (>10%), High (6-10%), Moderate (3-6%), Low (<3%)
+    - Use ANNUAL_ENERGY_BURDEN_PCT for burden analysis (already expressed as percentage)
+    - LOW_INCOME_FLAG identifies customers eligible for assistance programs
+    - VULNERABLE_CUSTOMERS = low-income AND (severe OR high burden)
+
+    ### Year-over-Year Comparison Logic
+    - For YoY analysis comparing current year to 2024 baseline:
+      * Filter WHERE YEAR = 2025 to get current data
+      * Compare against *_2024_BASELINE columns (e.g., BURDEN_2024_BASELINE)
+      * Percentage changes are in *_CHANGE_VS_2024_PCT columns (already computed)
+      * Always show BOTH absolute current values AND percentage changes for complete picture
+    - Interpretation: >5% change = "worsening/improving", <5% = "stable"
+
+    ### Time Period Defaults & Conventions
+    - **IMPORTANT:** This is a SUMMER-FOCUSED dataset. Primary data exists only for July-August.
+    - Default analysis period is July-August 2025 (summer peak season) unless user specifies otherwise
+    - For YoY comparison, use July-August 2024 as baseline
+    - ERCOT load data spans full years (2023-2025) for seasonal context
+    - Peak demand hours are 2-7 PM Central Time (14:00-19:00 UTC)
+    - "Summer" means July-August (months 7, 8) for this dataset
+    - "Heatwave" implies days with MAX_TEMP_F > 100
+    - If user asks for data outside July-August, explain the summer-only design
+
+    ### Geographic & Service Territory Context
+    - Grid Operations service territory: Houston Metro + surrounding 8 counties
+    - Coastal counties (Galveston, Brazoria, Chambers) have hurricane/storm exposure
+    - Use COUNTY dimension for geographic analysis
+    - "Houston Metro" includes Harris, Fort Bend, Montgomery, Brazoria, Galveston counties
+
+    ### Data Quality & Filtering Best Practices
+    - Exclude meters with STATUS = 'INACTIVE' for operational analysis
+    - For anomaly detection, check both IS_PRICING_ANOMALY_VS_2024 and IS_USAGE_ANOMALY flags
+    - Equipment capacity status values: NORMAL, APPROACHING_CAPACITY, ABOVE_CAPACITY, CRITICAL
+    - THERMAL_STRESS_CATEGORY: CRITICAL (>150%), SEVERE_OVERLOAD (120-150%), OVERLOAD (100-120%), ELEVATED (80-100%), MODERATE (60-80%), NORMAL (<60%)
+
+    ### Aggregation & Metric Usage Guidance
+    - ALWAYS use predefined metrics (e.g., TOTAL_MONTHLY_REVENUE, AVG_CUSTOMER_BILL) rather than raw SUM()/AVG() when available
+    - For customer segmentation, group by BURDEN_CLASSIFICATION, INCOME_CLASSIFICATION, or CUSTOMER_SEGMENT
+    - Use METER_TYPE dimension (residential/commercial/industrial) for consumption pattern analysis
+    - For equipment analysis, join to METER_INFRASTRUCTURE or TRANSFORMER_METADATA to get asset context
+
+    ### Output Formatting Standards
+    - Currency: Round to 2 decimal places, format with $ sign and thousands separator
+    - Percentages: Round to 1 decimal place, display with % symbol
+    - Large counts: Format with thousands separator (e.g., 1,234,567)
+    - Dates: Display in YYYY-MM-DD format
+    - Meter IDs: Preserve as strings, do not convert to numbers
+
+    ### Domain-Specific Query Interpretation
+    - "Affordability" or "energy burden" → Query ENERGY_BURDEN_ANALYSIS table
+    - "Low income" → Apply LOW_INCOME_FLAG = TRUE filter
+    - "Vulnerable" or "at-risk" → Apply filter for LOW_INCOME_FLAG = TRUE AND high/severe burden
+    - "Coastal" or "storm risk" → Filter COUNTY IN ('Galveston', 'Brazoria', 'Chambers')
+    - "Peak demand" → Filter for summer months (6-8) AND peak hours (14-19)
+    - "Overload" or "capacity exceeded" → Filter where CAPACITY_PCT > 100 or CAPACITY_STATUS contains 'ABOVE'
+
+    ### Calculation Patterns
+    - Total revenue: Use TOTAL_MONTHLY_REVENUE metric (pre-aggregated)
+    - Average burden: Use AVG_ENERGY_BURDEN_PCT metric (handles NULL correctly)
+    - Customer counts: Use COUNT(DISTINCT METER_ID) or predefined count metrics

@@ -88,14 +88,114 @@ snow sql -q "SHOW ENDPOINTS IN SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER" -c
 ```
 
 ### Local Development
-```bash
-# Backend
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
-SNOWFLAKE_CONNECTION_NAME=cpe_demo_CLI python3 backend/server.py
 
-# Frontend (separate terminal)
-npm run dev
+#### Prerequisites
+- Python 3.11+
+- Node.js 18+
+- Snowflake CLI (`snow`) configured with `cpe_demo_CLI` connection
+- PostgreSQL client (for direct PostGIS queries)
+
+#### Quick Start (Two Terminals)
+
+**Terminal 1 - Backend (FastAPI):**
+```bash
+cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs/backend
+python server_fastapi.py
+# Server starts on port 3001
 ```
+
+**Terminal 2 - Frontend (Vite):**
+```bash
+cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
+npm run dev
+# Vite dev server on port 8081, proxies /api to port 3001
+```
+
+| Service | URL | Purpose |
+|---------|-----|---------|
+| Frontend | http://localhost:8081 | React + DeckGL Map UI |
+| Backend API | http://localhost:3001 | FastAPI REST endpoints |
+| API Docs | http://localhost:3001/docs | Swagger UI |
+
+#### #Local Testing Best Practices
+
+**1. Verify Services Before Testing**
+```bash
+# Check if backend is already running
+lsof -i:3001
+
+# Health check
+curl http://localhost:3001/api/health
+
+# Kill existing process if needed
+lsof -ti:3001 | xargs kill -9
+```
+
+**2. Test Spatial Endpoints Directly**
+```bash
+# Water bodies (Houston area)
+curl "http://localhost:3001/api/spatial/layers/water-bodies?min_lon=-95.5&max_lon=-95.2&min_lat=29.7&max_lat=30.0&zoom=14"
+
+# Vegetation risk
+curl "http://localhost:3001/api/spatial/layers/vegetation?min_lon=-95.5&max_lon=-95.2&min_lat=29.7&max_lat=30.0"
+
+# Power lines
+curl "http://localhost:3001/api/spatial/layers/power-lines?min_lon=-95.5&max_lon=-95.2&min_lat=29.7&max_lat=30.0"
+```
+
+**3. Direct PostGIS Queries (Data Quality Debugging)**
+```bash
+# Set password for session
+export PGPASSWORD="<REDACTED_PASSWORD>"
+
+# Connect to PostGIS
+psql -h <your_postgres_host> \
+     -U application -d postgres
+
+# Example: Check water body data quality
+SELECT water_type, COUNT(*), ROUND(AVG(acres)::numeric, 2) as avg_acres
+FROM osm_water GROUP BY water_type ORDER BY COUNT(*) DESC;
+```
+
+**4. Background Server (Long Sessions)**
+```bash
+# Start backend in background (survives terminal close)
+cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs/backend
+nohup python server_fastapi.py > /tmp/server.log 2>&1 & disown
+
+# Monitor logs
+tail -f /tmp/server.log
+```
+
+**5. Common Issues & Fixes**
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| Port in use | `Address already in use` | `lsof -ti:3001 \| xargs kill -9` |
+| Server dies after cache warm | Process exits after ~10s | Use `nohup ... & disown` pattern |
+| SSO token expired | `TokenRetrievalError` in logs | Run `snow connection test -c cpe_demo_CLI` |
+| Slow first request | 2-3s response time | Normal - cache warming on startup |
+
+#### Architecture: Local vs Production
+
+```
+LOCAL DEVELOPMENT                    PRODUCTION (SPCS)
+─────────────────                    ─────────────────
+localhost:8081 (Vite)                SPCS Container
+      │                                    │
+      ▼                                    ▼
+localhost:3001 (uvicorn)             Gunicorn (4 workers)
+      │                                    │
+      ├──► Snowflake Postgres ◄────────────┤
+      │    (PostGIS - <20ms)               │
+      │                                    │
+      └──► Snowflake Warehouse ◄───────────┘
+           (Analytics - <5s)
+```
+
+Both environments use the **same dual-backend pattern**:
+- **PostGIS** for fast spatial queries (water bodies, vegetation, power lines)
+- **Snowflake** for analytics queries (KPIs, historical data, AI/ML)
 
 ---
 
@@ -184,5 +284,5 @@ flux_ops_center_spcs/
 
 ---
 
-**Last Updated:** January 10, 2026  
+**Last Updated:** January 21, 2026  
 **Author:** Abhinav Bannerjee (Senior SE - Enterprise Acquisition)

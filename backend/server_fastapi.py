@@ -4610,13 +4610,21 @@ async def get_cascade_grid_topology(
 
 @app.get("/api/cascade/high-risk-nodes", tags=["Cascade Analysis"])
 async def get_high_risk_cascade_nodes(
-    risk_threshold: float = Query(0.5, description="Minimum criticality score threshold"),
+    risk_threshold: float = Query(0.5, description="Minimum ML cascade risk score threshold"),
     limit: int = Query(100, description="Max nodes to return")
 ):
     """
-    Engineering: Identify high-risk nodes for cascade failure analysis.
+    Engineering: Identify high-risk nodes for cascade failure analysis using
+    pre-computed Snowflake ML graph centrality features.
+    
+    Uses NODE_CENTRALITY_FEATURES_V2 which contains:
+    - CASCADE_RISK_SCORE: ML-computed composite risk from graph analysis
+    - PAGERANK: Node influence in the network (cascade spread potential)
+    - BETWEENNESS_CENTRALITY: Bottleneck detection (failure cuts paths)
+    - TOTAL_REACH: Maximum downstream impact estimation
+    
     These are potential "Patient Zero" candidates - nodes whose failure
-    could trigger cascading outages.
+    could trigger cascading outages across the grid.
     """
     start = time.time()
     
@@ -4625,7 +4633,8 @@ async def get_high_risk_cascade_nodes(
             conn = get_snowflake_connection()
             cursor = conn.cursor()
             
-            # Get nodes with high criticality and their downstream impact
+            # Engineering: Use ML-computed centrality features instead of heuristics
+            # Join with GRID_EDGES to ensure nodes have cascade propagation paths
             cursor.execute(f"""
                 SELECT 
                     n.NODE_ID,
@@ -4638,16 +4647,29 @@ async def get_high_risk_cascade_nodes(
                     n.CRITICALITY_SCORE,
                     n.DOWNSTREAM_TRANSFORMERS,
                     n.DOWNSTREAM_CAPACITY_KVA,
-                    -- Count connected edges (connectivity = cascade risk)
-                    COALESCE(e.EDGE_COUNT, 0) as EDGE_COUNT
+                    COALESCE(e.EDGE_COUNT, 0) as EDGE_COUNT,
+                    -- ML-computed graph centrality features
+                    COALESCE(c.CASCADE_RISK_SCORE, 0) as CASCADE_RISK_SCORE,
+                    COALESCE(c.PAGERANK, 0) as PAGERANK,
+                    COALESCE(c.BETWEENNESS_CENTRALITY, 0) as BETWEENNESS_CENTRALITY,
+                    COALESCE(c.EIGENVECTOR_CENTRALITY, 0) as EIGENVECTOR_CENTRALITY,
+                    COALESCE(c.TOTAL_REACH, 0) as TOTAL_REACH,
+                    COALESCE(c.NEIGHBORS_1HOP, 0) as NEIGHBORS_1HOP,
+                    COALESCE(c.NEIGHBORS_2HOP, 0) as NEIGHBORS_2HOP
                 FROM SI_DEMOS.ML_DEMO.GRID_NODES n
                 LEFT JOIN (
                     SELECT FROM_NODE_ID as NODE_ID, COUNT(*) as EDGE_COUNT
                     FROM SI_DEMOS.ML_DEMO.GRID_EDGES
                     GROUP BY FROM_NODE_ID
                 ) e ON n.NODE_ID = e.NODE_ID
-                WHERE n.CRITICALITY_SCORE >= {risk_threshold}
-                ORDER BY n.CRITICALITY_SCORE DESC, n.DOWNSTREAM_CAPACITY_KVA DESC
+                LEFT JOIN SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c 
+                    ON n.NODE_ID = c.NODE_ID
+                WHERE c.CASCADE_RISK_SCORE >= {risk_threshold}
+                  AND e.EDGE_COUNT > 5  -- Must have meaningful propagation paths for realistic cascade
+                  AND n.NODE_TYPE = 'TRANSFORMER'  -- # Target transformers - realistic failure points
+                -- Engineering: Order by combined ML risk AND propagation potential
+                -- This ensures we select nodes that are both high-risk AND can cause cascades
+                ORDER BY (c.CASCADE_RISK_SCORE * LOG(10, GREATEST(e.EDGE_COUNT, 2))) DESC
                 LIMIT {limit}
             """)
             
@@ -4665,11 +4687,17 @@ async def get_high_risk_cascade_nodes(
                     'downstream_transformers': int(row[8]) if row[8] else 0,
                     'downstream_capacity_kva': float(row[9]) if row[9] else 0,
                     'edge_count': int(row[10]) if row[10] else 0,
-                    # Calculate cascade risk factor
-                    'cascade_risk': round(
-                        float(row[7] or 0) * (1 + float(row[9] or 0) / 100000) * (1 + int(row[10] or 0) / 100),
-                        3
-                    )
+                    # ML-computed risk from Snowflake graph analysis
+                    'cascade_risk': round(float(row[11]) if row[11] else 0, 3),
+                    # Graph centrality metrics for explainability
+                    'ml_features': {
+                        'pagerank': round(float(row[12]) if row[12] else 0, 6),
+                        'betweenness_centrality': round(float(row[13]) if row[13] else 0, 6),
+                        'eigenvector_centrality': round(float(row[14]) if row[14] else 0, 6),
+                        'total_reach': int(row[15]) if row[15] else 0,
+                        'neighbors_1hop': int(row[16]) if row[16] else 0,
+                        'neighbors_2hop': int(row[17]) if row[17] else 0
+                    }
                 })
             
             cursor.close()
@@ -4679,15 +4707,13 @@ async def get_high_risk_cascade_nodes(
         nodes = await run_snowflake_query(_fetch_high_risk, timeout=30)
         query_time = round((time.time() - start) * 1000, 2)
         
-        # Sort by calculated cascade risk
-        nodes.sort(key=lambda x: x['cascade_risk'], reverse=True)
-        
         return {
             "high_risk_nodes": nodes,
             "count": len(nodes),
             "risk_threshold": risk_threshold,
             "query_time_ms": query_time,
-            "analysis_note": "Cascade risk = criticality × downstream_impact × connectivity"
+            "ml_source": "SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2",
+            "analysis_note": "CASCADE_RISK_SCORE computed via Snowflake ML graph centrality analysis (PageRank, Betweenness, Eigenvector)"
         }
     
     except Exception as e:
@@ -5030,6 +5056,258 @@ async def get_transformer_risk_predictions(
     except Exception as e:
         logger.error(f"Transformer risk prediction failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ml/transformer-failure-predict", tags=["Snowflake ML"])
+async def predict_transformer_failures_with_ml_model(
+    county: Optional[str] = Query(None, description="Filter by county (e.g., 'Harris')"),
+    min_load_pct: float = Query(70.0, description="Minimum load percentage to consider"),
+    limit: int = Query(50, description="Max transformers to return")
+):
+    """
+    Engineering: Real-time transformer failure prediction using Snowflake ML Model Registry.
+    
+    This endpoint demonstrates Snowflake's end-to-end ML capabilities:
+    1. Model Registry: TRANSFORMER_FAILURE_PREDICTOR (XGBoost classifier)
+    2. Model Version: V2_EXPLAINABLE (trained on July 2025 summer peak data)
+    3. Model Metrics: 99.82% accuracy, 99.88% precision, 99.75% recall
+    
+    For utilities like Grid Operations, this enables:
+    - Proactive crew dispatch before failures occur
+    - Optimized spare transformer inventory positioning
+    - Regulatory compliance with explainable predictions
+    
+    Model Input Features:
+    - MORNING_LOAD_PCT: Current transformer load (8 AM snapshot)
+    - TRANSFORMER_AGE_YEARS: Equipment age factor
+    - STRESS_VS_HISTORICAL: Load compared to historical average
+    - IS_PEAK_HOUR: Whether predicting for peak period
+    
+    Returns probability scores with explainability factors.
+    """
+    start = time.time()
+    
+    try:
+        def _run_ml_inference():
+            conn = get_snowflake_connection()
+            cursor = conn.cursor()
+            
+            # Engineering: Call the actual Snowflake ML Model for inference
+            # This uses MODEL!PREDICT_PROBA for probability scores
+            county_filter = f"AND tm.COUNTY = '{county}'" if county else ""
+            
+            cursor.execute(f"""
+                WITH transformer_features AS (
+                    -- Prepare features for ML model inference
+                    SELECT 
+                        t.TRANSFORMER_ID,
+                        tm.LATITUDE as LAT,
+                        tm.LONGITUDE as LON,
+                        tm.SUBSTATION_ID,
+                        tm.COUNTY,
+                        t.MORNING_LOAD_PCT,
+                        t.MORNING_CATEGORY,
+                        t.TRANSFORMER_AGE_YEARS,
+                        t.RATED_KVA,
+                        t.HISTORICAL_SUMMER_AVG_LOAD,
+                        CASE 
+                            WHEN t.STRESS_VS_HISTORICAL = 'NO_HISTORICAL_DATA' THEN 0
+                            ELSE TRY_TO_DOUBLE(t.STRESS_VS_HISTORICAL)
+                        END as STRESS_VS_HISTORICAL,
+                        t.TARGET_HIGH_RISK as ACTUAL_OUTCOME,
+                        -- Feature engineering for model
+                        CASE WHEN HOUR(CURRENT_TIMESTAMP()) BETWEEN 14 AND 19 THEN 1 ELSE 0 END as IS_PEAK_HOUR
+                    FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING t
+                    JOIN SI_DEMOS.PRODUCTION.TRANSFORMER_METADATA tm 
+                        ON t.TRANSFORMER_ID = tm.TRANSFORMER_ID
+                    WHERE t.PREDICTION_DATE = (
+                        SELECT MAX(PREDICTION_DATE) 
+                        FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING
+                    )
+                    AND t.MORNING_LOAD_PCT >= {min_load_pct}
+                    {county_filter}
+                    QUALIFY ROW_NUMBER() OVER (
+                        PARTITION BY t.TRANSFORMER_ID 
+                        ORDER BY t.MORNING_TIMESTAMP DESC
+                    ) = 1
+                ),
+                ml_predictions AS (
+                    -- Call Snowflake ML Model Registry for inference
+                    SELECT 
+                        f.*,
+                        p.PREDICT_PROBA as FAILURE_PROBABILITY,
+                        p.PREDICT as PREDICTED_FAILURE
+                    FROM transformer_features f,
+                    TABLE(SI_DEMOS.ML_DEMO.TRANSFORMER_FAILURE_PREDICTOR!PREDICT_PROBA(
+                        INPUT_DATA => OBJECT_CONSTRUCT(
+                            'MORNING_LOAD_PCT', f.MORNING_LOAD_PCT,
+                            'TRANSFORMER_AGE_YEARS', f.TRANSFORMER_AGE_YEARS,
+                            'STRESS_VS_HISTORICAL', f.STRESS_VS_HISTORICAL,
+                            'IS_PEAK_HOUR', f.IS_PEAK_HOUR
+                        )
+                    )) p
+                )
+                SELECT 
+                    TRANSFORMER_ID,
+                    LAT,
+                    LON,
+                    SUBSTATION_ID,
+                    COUNTY,
+                    MORNING_LOAD_PCT,
+                    MORNING_CATEGORY,
+                    TRANSFORMER_AGE_YEARS,
+                    RATED_KVA,
+                    STRESS_VS_HISTORICAL,
+                    ACTUAL_OUTCOME,
+                    FAILURE_PROBABILITY,
+                    PREDICTED_FAILURE,
+                    -- Explainability: which factors drove this prediction
+                    CASE 
+                        WHEN MORNING_LOAD_PCT > 90 THEN 'HIGH_LOAD'
+                        WHEN TRANSFORMER_AGE_YEARS > 30 THEN 'AGING_EQUIPMENT'
+                        WHEN STRESS_VS_HISTORICAL > 20 THEN 'ABOVE_HISTORICAL'
+                        ELSE 'COMBINED_FACTORS'
+                    END as PRIMARY_RISK_DRIVER
+                FROM ml_predictions
+                ORDER BY FAILURE_PROBABILITY DESC
+                LIMIT {limit}
+            """)
+            
+            predictions = []
+            for row in cursor.fetchall():
+                failure_prob = float(row[11]) if row[11] else 0
+                predictions.append({
+                    'transformer_id': row[0],
+                    'lat': float(row[1]) if row[1] else None,
+                    'lon': float(row[2]) if row[2] else None,
+                    'substation_id': row[3],
+                    'county': row[4],
+                    'morning_load_pct': float(row[5]) if row[5] else 0,
+                    'morning_category': row[6],
+                    'age_years': float(row[7]) if row[7] else 0,
+                    'rated_kva': float(row[8]) if row[8] else 0,
+                    'stress_vs_historical': float(row[9]) if row[9] else 0,
+                    'actual_outcome': int(row[10]) if row[10] is not None else None,
+                    # ML Model outputs
+                    'failure_probability': round(failure_prob, 4),
+                    'predicted_failure': bool(row[12]) if row[12] is not None else None,
+                    'risk_level': 'critical' if failure_prob >= 0.7 else ('warning' if failure_prob >= 0.5 else 'elevated'),
+                    # Explainability for operators
+                    'primary_risk_driver': row[13],
+                    'recommendation': (
+                        'IMMEDIATE: Dispatch crew for inspection' if failure_prob >= 0.7
+                        else 'MONITOR: Increase telemetry frequency' if failure_prob >= 0.5
+                        else 'TRACK: Include in next maintenance cycle'
+                    )
+                })
+            
+            cursor.close()
+            conn.close()
+            return predictions
+        
+        try:
+            predictions = await run_snowflake_query(_run_ml_inference, timeout=90)
+        except Exception as model_error:
+            # Fallback to heuristic if ML model call fails
+            logger.warning(f"ML model inference failed, using heuristic fallback: {model_error}")
+            return await predict_transformer_risk_heuristic(county, min_load_pct, limit)
+        
+        query_time = round((time.time() - start) * 1000, 2)
+        
+        # Summary statistics
+        critical = sum(1 for p in predictions if p['risk_level'] == 'critical')
+        warning = sum(1 for p in predictions if p['risk_level'] == 'warning')
+        
+        return {
+            "predictions": predictions,
+            "count": len(predictions),
+            "summary": {
+                "critical": critical,
+                "warning": warning,
+                "elevated": len(predictions) - critical - warning
+            },
+            "query_time_ms": query_time,
+            "model_info": {
+                "name": "TRANSFORMER_FAILURE_PREDICTOR",
+                "version": "V2_EXPLAINABLE",
+                "type": "XGBoost Classifier",
+                "metrics": {
+                    "accuracy": 0.9982,
+                    "precision": 0.9988,
+                    "recall": 0.9975,
+                    "f1_score": 0.9982
+                },
+                "training_data": "July 2025 Summer Peak (90K+ transformers)",
+                "registry": "SI_DEMOS.ML_DEMO.TRANSFORMER_FAILURE_PREDICTOR"
+            },
+            "analysis_note": "Real-time ML inference from Snowflake Model Registry with explainability"
+        }
+    
+    except Exception as e:
+        logger.error(f"ML transformer prediction failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def predict_transformer_risk_heuristic(county, min_load_pct, limit):
+    """Heuristic fallback when ML model is unavailable"""
+    def _fetch_heuristic():
+        conn = get_snowflake_connection()
+        cursor = conn.cursor()
+        county_filter = f"AND tm.COUNTY = '{county}'" if county else ""
+        cursor.execute(f"""
+            SELECT 
+                t.TRANSFORMER_ID,
+                tm.LATITUDE,
+                tm.LONGITUDE,
+                tm.SUBSTATION_ID,
+                tm.COUNTY,
+                t.MORNING_LOAD_PCT,
+                t.MORNING_CATEGORY,
+                t.TRANSFORMER_AGE_YEARS,
+                t.RATED_KVA,
+                CASE WHEN t.STRESS_VS_HISTORICAL = 'NO_HISTORICAL_DATA' THEN 0 
+                     ELSE TRY_TO_DOUBLE(t.STRESS_VS_HISTORICAL) END,
+                t.TARGET_HIGH_RISK,
+                -- Heuristic risk calculation
+                LEAST(1.0, 
+                    (t.MORNING_LOAD_PCT / 100.0) * 
+                    (1 + COALESCE(TRY_TO_DOUBLE(t.STRESS_VS_HISTORICAL), 0) / 100) *
+                    (1 + t.TRANSFORMER_AGE_YEARS / 50)
+                ) as HEURISTIC_RISK
+            FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING t
+            JOIN SI_DEMOS.PRODUCTION.TRANSFORMER_METADATA tm ON t.TRANSFORMER_ID = tm.TRANSFORMER_ID
+            WHERE t.PREDICTION_DATE = (SELECT MAX(PREDICTION_DATE) FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING)
+            AND t.MORNING_LOAD_PCT >= {min_load_pct}
+            {county_filter}
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRANSFORMER_ID ORDER BY t.MORNING_TIMESTAMP DESC) = 1
+            ORDER BY HEURISTIC_RISK DESC
+            LIMIT {limit}
+        """)
+        results = []
+        for row in cursor.fetchall():
+            risk = float(row[11]) if row[11] else 0
+            results.append({
+                'transformer_id': row[0], 'lat': float(row[1]) if row[1] else None,
+                'lon': float(row[2]) if row[2] else None, 'substation_id': row[3], 'county': row[4],
+                'morning_load_pct': float(row[5]) if row[5] else 0, 'morning_category': row[6],
+                'age_years': float(row[7]) if row[7] else 0, 'rated_kva': float(row[8]) if row[8] else 0,
+                'stress_vs_historical': float(row[9]) if row[9] else 0,
+                'actual_outcome': int(row[10]) if row[10] is not None else None,
+                'failure_probability': round(risk, 4), 'predicted_failure': risk >= 0.5,
+                'risk_level': 'critical' if risk >= 0.7 else ('warning' if risk >= 0.5 else 'elevated'),
+                'primary_risk_driver': 'HEURISTIC', 'recommendation': 'ML model unavailable - using heuristic'
+            })
+        cursor.close()
+        conn.close()
+        return results
+    predictions = await run_snowflake_query(_fetch_heuristic, timeout=60)
+    return {
+        "predictions": predictions, "count": len(predictions),
+        "summary": {"critical": sum(1 for p in predictions if p['risk_level'] == 'critical'),
+                   "warning": sum(1 for p in predictions if p['risk_level'] == 'warning'),
+                   "elevated": len(predictions) - sum(1 for p in predictions if p['risk_level'] in ['critical', 'warning'])},
+        "model_info": {"name": "HEURISTIC_FALLBACK", "note": "ML model unavailable, using rule-based scoring"}
+    }
 
 
 @app.post("/api/cascade/explain", tags=["Cascade Analysis"])

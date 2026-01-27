@@ -1,0 +1,22 @@
+definition_version: 2
+
+entities:
+  transformer_failure_prediction:
+    type: notebook
+    identifier:
+      name: TRANSFORMER_FAILURE_PREDICTION
+      schema: ML_DEMO
+      database: SI_DEMOS
+    query_warehouse: SI_DEMO_WH
+    notebook_file: transformer_failure_prediction.ipynb
+    
+    # Dedicated ML Compute Pool with GPU (NVIDIA A10G)
+    compute_pool: ML_DATA_SCIENCE_POOL
+    runtime_name: SYSTEM$GPU_RUNTIME
+    
+    # NOTE: External access configured via SQL:
+    # ALTER NOTEBOOK ... SET EXTERNAL_ACCESS_INTEGRATIONS = (PYPI_ACCESS_INTEGRATION)
+    
+    artifacts:
+      - transformer_failure_prediction.ipynb
+      - requirements.txt
