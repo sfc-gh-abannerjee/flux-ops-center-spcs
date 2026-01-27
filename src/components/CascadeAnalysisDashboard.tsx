@@ -30,6 +30,11 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  Slider,
+  Switch,
+  FormControlLabel,
+  Divider,
+  Collapse,
 } from '@mui/material';
 import {
   Warning,
@@ -45,9 +50,26 @@ import {
   Refresh,
   Science,
   BubbleChart,
-  Layers
+  Layers,
+  Tune,
+  Map as MapIcon,
+  ExpandMore,
+  ExpandLess,
+  AcUnit,
+  Whatshot,
 } from '@mui/icons-material';
 import type { CascadeScenario, CascadeResult, CascadeNode, CascadeWaveBreakdown } from '../types';
+
+// Regional cascade risk aggregation
+interface RegionalCascadeRisk {
+  region: string;
+  county: string;
+  node_count: number;
+  high_risk_count: number;
+  avg_criticality: number;
+  total_downstream_transformers: number;
+  estimated_customers_at_risk: number;
+}
 
 interface CascadeAnalysisDashboardProps {
   scenarios: CascadeScenario[];
@@ -398,6 +420,228 @@ function HighRiskNodesTable({ highRiskNodes }: { highRiskNodes: CascadeNode[] })
   );
 }
 
+// Regional Analysis Panel - Aggregates cascade risk by county/region
+function RegionalAnalysisPanel({ highRiskNodes, cascadeResult }: { highRiskNodes: CascadeNode[]; cascadeResult: CascadeResult | null }) {
+  const [expanded, setExpanded] = useState(true);
+  
+  // Aggregate risk by region (derived from node names/IDs)
+  const regionalData = useMemo<RegionalCascadeRisk[]>(() => {
+    // Build regional aggregation from high-risk nodes and cascade results
+    const regionMap = new Map<string, RegionalCascadeRisk>();
+    
+    // Extract region from node name (e.g., "SUB-HOU-124" -> "HOU" -> "Houston")
+    const getRegion = (nodeId: string, nodeName?: string): { region: string; county: string } => {
+      const id = nodeId.toUpperCase();
+      if (id.includes('HOU') || nodeName?.toLowerCase().includes('houston')) {
+        return { region: 'Houston Metro', county: 'Harris' };
+      }
+      if (id.includes('GAL') || nodeName?.toLowerCase().includes('galveston')) {
+        return { region: 'Coastal', county: 'Galveston' };
+      }
+      if (id.includes('BRA') || nodeName?.toLowerCase().includes('brazoria')) {
+        return { region: 'Coastal', county: 'Brazoria' };
+      }
+      if (id.includes('MON') || nodeName?.toLowerCase().includes('montgomery')) {
+        return { region: 'North', county: 'Montgomery' };
+      }
+      if (id.includes('FBN') || id.includes('FTB') || nodeName?.toLowerCase().includes('fort bend')) {
+        return { region: 'Southwest', county: 'Fort Bend' };
+      }
+      if (id.includes('WAL') || nodeName?.toLowerCase().includes('waller')) {
+        return { region: 'West', county: 'Waller' };
+      }
+      if (id.includes('LIB') || nodeName?.toLowerCase().includes('liberty')) {
+        return { region: 'East', county: 'Liberty' };
+      }
+      if (id.includes('CHA') || nodeName?.toLowerCase().includes('chambers')) {
+        return { region: 'Coastal', county: 'Chambers' };
+      }
+      // Default to Houston Metro if unknown
+      return { region: 'Houston Metro', county: 'Harris' };
+    };
+    
+    // Process high-risk nodes
+    highRiskNodes.forEach(node => {
+      const { region, county } = getRegion(node.node_id, node.node_name || undefined);
+      const key = `${region}-${county}`;
+      
+      if (!regionMap.has(key)) {
+        regionMap.set(key, {
+          region,
+          county,
+          node_count: 0,
+          high_risk_count: 0,
+          avg_criticality: 0,
+          total_downstream_transformers: 0,
+          estimated_customers_at_risk: 0,
+        });
+      }
+      
+      const data = regionMap.get(key)!;
+      data.node_count++;
+      if (node.criticality_score > 0.6) data.high_risk_count++;
+      data.avg_criticality = ((data.avg_criticality * (data.node_count - 1)) + node.criticality_score) / data.node_count;
+      data.total_downstream_transformers += node.downstream_transformers || 0;
+      data.estimated_customers_at_risk += (node.downstream_transformers || 0) * 50;
+    });
+    
+    // If we have cascade result, augment with affected nodes
+    if (cascadeResult?.cascade_order) {
+      cascadeResult.cascade_order.forEach(node => {
+        const { region, county } = getRegion(node.node_id, node.node_name || undefined);
+        const key = `${region}-${county}`;
+        
+        if (!regionMap.has(key)) {
+          regionMap.set(key, {
+            region,
+            county,
+            node_count: 0,
+            high_risk_count: 0,
+            avg_criticality: 0,
+            total_downstream_transformers: 0,
+            estimated_customers_at_risk: 0,
+          });
+        }
+        
+        const data = regionMap.get(key)!;
+        // Mark as affected in cascade
+        data.high_risk_count = Math.max(data.high_risk_count, 1);
+      });
+    }
+    
+    return Array.from(regionMap.values())
+      .sort((a, b) => b.estimated_customers_at_risk - a.estimated_customers_at_risk);
+  }, [highRiskNodes, cascadeResult]);
+
+  const maxCustomers = Math.max(...regionalData.map(r => r.estimated_customers_at_risk), 1);
+  const totalCustomersAtRisk = regionalData.reduce((sum, r) => sum + r.estimated_customers_at_risk, 0);
+
+  if (regionalData.length === 0) return null;
+
+  return (
+    <Card sx={{ bgcolor: 'rgba(34, 197, 94, 0.05)', border: '1px solid rgba(34, 197, 94, 0.2)' }}>
+      <CardContent>
+        <Box 
+          sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+          onClick={() => setExpanded(!expanded)}
+        >
+          <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#22C55E' }}>
+            <MapIcon /> Regional Cascade Risk Analysis
+          </Typography>
+          <Stack direction="row" spacing={2} alignItems="center">
+            <Chip 
+              label={`${(totalCustomersAtRisk / 1000).toFixed(0)}K Customers at Risk`}
+              size="small"
+              sx={{ bgcolor: alpha('#22C55E', 0.2), color: '#22C55E' }}
+            />
+            {expanded ? <ExpandLess /> : <ExpandMore />}
+          </Stack>
+        </Box>
+
+        <Collapse in={expanded}>
+          <Box sx={{ mt: 3 }}>
+            {/* Summary Stats */}
+            <Grid container spacing={2} sx={{ mb: 3 }}>
+              <Grid item xs={4}>
+                <Paper sx={{ p: 2, textAlign: 'center', bgcolor: alpha('#22C55E', 0.1) }}>
+                  <Typography variant="h4" sx={{ color: '#22C55E', fontWeight: 700 }}>
+                    {regionalData.length}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">Regions Analyzed</Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={4}>
+                <Paper sx={{ p: 2, textAlign: 'center', bgcolor: alpha('#FBBF24', 0.1) }}>
+                  <Typography variant="h4" sx={{ color: '#FBBF24', fontWeight: 700 }}>
+                    {regionalData.reduce((sum, r) => sum + r.high_risk_count, 0)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">High-Risk Nodes</Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={4}>
+                <Paper sx={{ p: 2, textAlign: 'center', bgcolor: alpha('#3B82F6', 0.1) }}>
+                  <Typography variant="h4" sx={{ color: '#3B82F6', fontWeight: 700 }}>
+                    {(totalCustomersAtRisk / 1000).toFixed(0)}K
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">Customers at Risk</Typography>
+                </Paper>
+              </Grid>
+            </Grid>
+
+            {/* Regional Risk Bars */}
+            <Typography variant="subtitle2" sx={{ mb: 2, color: 'text.secondary' }}>
+              Risk Distribution by County
+            </Typography>
+            <Stack spacing={1.5}>
+              {regionalData.slice(0, 8).map((region) => {
+                const widthPercent = (region.estimated_customers_at_risk / maxCustomers) * 100;
+                const riskColor = region.avg_criticality > 0.7 ? '#EF4444' : region.avg_criticality > 0.4 ? '#FBBF24' : '#22C55E';
+                
+                return (
+                  <Box key={`${region.region}-${region.county}`}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {region.county} County
+                        <Typography component="span" variant="caption" sx={{ ml: 1, color: 'text.secondary' }}>
+                          ({region.region})
+                        </Typography>
+                      </Typography>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Tooltip title="High-risk nodes in this region">
+                          <Chip 
+                            label={`${region.high_risk_count} critical`}
+                            size="small"
+                            sx={{ 
+                              height: 20, 
+                              fontSize: '0.65rem',
+                              bgcolor: alpha(riskColor, 0.2),
+                              color: riskColor
+                            }}
+                          />
+                        </Tooltip>
+                        <Typography variant="body2" sx={{ minWidth: 60, textAlign: 'right' }}>
+                          {(region.estimated_customers_at_risk / 1000).toFixed(0)}K
+                        </Typography>
+                      </Stack>
+                    </Box>
+                    <Box sx={{ height: 8, bgcolor: alpha('#fff', 0.05), borderRadius: 1, overflow: 'hidden' }}>
+                      <Tooltip title={`${region.estimated_customers_at_risk.toLocaleString()} customers potentially affected`}>
+                        <Box sx={{ 
+                          width: `${widthPercent}%`, 
+                          height: '100%', 
+                          bgcolor: riskColor,
+                          transition: 'width 0.5s ease',
+                          borderRadius: 1
+                        }} />
+                      </Tooltip>
+                    </Box>
+                  </Box>
+                );
+              })}
+            </Stack>
+
+            {/* Risk Legend */}
+            <Stack direction="row" spacing={3} sx={{ mt: 3, pt: 2, borderTop: '1px solid', borderColor: alpha('#fff', 0.1) }}>
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Box sx={{ width: 12, height: 12, bgcolor: '#EF4444', borderRadius: 0.5 }} />
+                <Typography variant="caption" color="text.secondary">Critical Risk (&gt;70%)</Typography>
+              </Stack>
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Box sx={{ width: 12, height: 12, bgcolor: '#FBBF24', borderRadius: 0.5 }} />
+                <Typography variant="caption" color="text.secondary">Elevated Risk (40-70%)</Typography>
+              </Stack>
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Box sx={{ width: 12, height: 12, bgcolor: '#22C55E', borderRadius: 0.5 }} />
+                <Typography variant="caption" color="text.secondary">Normal (&lt;40%)</Typography>
+              </Stack>
+            </Stack>
+          </Box>
+        </Collapse>
+      </CardContent>
+    </Card>
+  );
+}
+
 // Main dashboard component
 export function CascadeAnalysisDashboard({
   scenarios,
@@ -415,6 +659,25 @@ export function CascadeAnalysisDashboard({
   const [selectedPatientZero, setSelectedPatientZero] = useState<string>('');
   const waveBreakdown = useWaveBreakdown(cascadeResult);
   
+  // Custom scenario parameters state
+  const [customMode, setCustomMode] = useState(false);
+  const [customTemperature, setCustomTemperature] = useState(25);
+  const [customLoadMultiplier, setCustomLoadMultiplier] = useState(1.0);
+  const [customFailureThreshold, setCustomFailureThreshold] = useState(0.65);
+  const [showAdvancedControls, setShowAdvancedControls] = useState(false);
+  
+  // Sync custom parameters when scenario changes
+  useEffect(() => {
+    if (!customMode) {
+      const scenario = scenarios.find(s => s.name === selectedScenario);
+      if (scenario) {
+        setCustomTemperature(scenario.parameters.temperature_c);
+        setCustomLoadMultiplier(scenario.parameters.load_multiplier);
+        setCustomFailureThreshold(scenario.parameters.failure_threshold);
+      }
+    }
+  }, [selectedScenario, scenarios, customMode]);
+  
   // Load high-risk nodes on mount
   useEffect(() => {
     if (highRiskNodes.length === 0) {
@@ -423,10 +686,28 @@ export function CascadeAnalysisDashboard({
   }, [highRiskNodes.length, onLoadHighRisk]);
 
   const handleSimulate = async () => {
-    const scenario = scenarios.find(s => s.name === selectedScenario);
-    if (scenario) {
-      await onSimulate(scenario, selectedPatientZero || undefined);
-    }
+    // Build scenario with custom parameters if in custom mode
+    const baseScenario = scenarios.find(s => s.name === selectedScenario);
+    if (!baseScenario && !customMode) return;
+    
+    const scenarioToRun: CascadeScenario = customMode ? {
+      name: 'Custom Scenario',
+      description: `Custom parameters: ${customTemperature}°C, ${customLoadMultiplier}x load`,
+      parameters: {
+        temperature_c: customTemperature,
+        load_multiplier: customLoadMultiplier,
+        failure_threshold: customFailureThreshold,
+      }
+    } : {
+      ...baseScenario!,
+      parameters: {
+        temperature_c: customTemperature,
+        load_multiplier: customLoadMultiplier,
+        failure_threshold: customFailureThreshold,
+      }
+    };
+    
+    await onSimulate(scenarioToRun, selectedPatientZero || undefined);
   };
 
   const getScenarioIcon = (name: string) => {
@@ -434,6 +715,14 @@ export function CascadeAnalysisDashboard({
     if (name.includes('Summer')) return '🌡️';
     if (name.includes('Hurricane')) return '🌀';
     return '⚡';
+  };
+  
+  // Temperature color based on value
+  const getTempColor = (temp: number) => {
+    if (temp < 0) return '#3B82F6'; // Cold blue
+    if (temp < 15) return '#22C55E'; // Cool green  
+    if (temp < 30) return '#FBBF24'; // Warm yellow
+    return '#EF4444'; // Hot red
   };
 
   const selectedScenarioData = scenarios.find(s => s.name === selectedScenario);
@@ -471,18 +760,40 @@ export function CascadeAnalysisDashboard({
       {/* Simulation Controls */}
       <Card sx={{ bgcolor: 'rgba(41, 181, 232, 0.05)', border: '1px solid rgba(41, 181, 232, 0.2)' }}>
         <CardContent>
-          <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3, color: '#29B5E8' }}>
-            <Science /> Simulation Configuration
-          </Typography>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+            <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#29B5E8' }}>
+              <Science /> Scenario Builder
+            </Typography>
+            <FormControlLabel
+              control={
+                <Switch 
+                  checked={customMode} 
+                  onChange={(e) => setCustomMode(e.target.checked)}
+                  sx={{
+                    '& .MuiSwitch-switchBase.Mui-checked': { color: '#8B5CF6' },
+                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#8B5CF6' },
+                  }}
+                />
+              }
+              label={
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <Tune sx={{ fontSize: 18, color: customMode ? '#8B5CF6' : 'text.secondary' }} />
+                  <Typography variant="body2" sx={{ color: customMode ? '#8B5CF6' : 'text.secondary' }}>
+                    Custom Parameters
+                  </Typography>
+                </Stack>
+              }
+            />
+          </Box>
           
           <Grid container spacing={3}>
             {/* Scenario Selection */}
             <Grid item xs={12} md={4}>
-              <FormControl fullWidth>
-                <InputLabel>Scenario</InputLabel>
+              <FormControl fullWidth disabled={customMode}>
+                <InputLabel>Scenario Preset</InputLabel>
                 <Select
                   value={selectedScenario}
-                  label="Scenario"
+                  label="Scenario Preset"
                   onChange={(e) => setSelectedScenario(e.target.value)}
                 >
                   {scenarios.map((scenario) => (
@@ -535,7 +846,7 @@ export function CascadeAnalysisDashboard({
                   variant="contained"
                   fullWidth
                   onClick={handleSimulate}
-                  disabled={isSimulating || !selectedScenario}
+                  disabled={isSimulating || (!selectedScenario && !customMode)}
                   startIcon={isSimulating ? <Speed /> : <PlayArrow />}
                   sx={{
                     bgcolor: '#FF6B6B',
@@ -561,32 +872,213 @@ export function CascadeAnalysisDashboard({
             </Grid>
           </Grid>
 
-          {/* Scenario Description */}
-          {selectedScenarioData && (
-            <Alert 
-              severity="info" 
-              sx={{ mt: 2, bgcolor: alpha('#3B82F6', 0.1), '& .MuiAlert-icon': { color: '#3B82F6' } }}
+          {/* Interactive Parameter Sliders */}
+          <Box sx={{ mt: 3, pt: 2, borderTop: '1px solid', borderColor: alpha('#fff', 0.1) }}>
+            <Box 
+              sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, cursor: 'pointer' }}
+              onClick={() => setShowAdvancedControls(!showAdvancedControls)}
             >
-              <Typography variant="body2">{selectedScenarioData.description}</Typography>
-              <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
+              <Typography variant="subtitle2" sx={{ color: customMode ? '#8B5CF6' : '#29B5E8' }}>
+                {customMode ? '🎛️ Custom Scenario Parameters' : '⚙️ Adjust Scenario Parameters'}
+              </Typography>
+              {showAdvancedControls ? <ExpandLess /> : <ExpandMore />}
+            </Box>
+            
+            <Collapse in={showAdvancedControls || customMode}>
+              <Grid container spacing={4} sx={{ mt: 1 }}>
+                {/* Temperature Slider */}
+                <Grid item xs={12} md={4}>
+                  <Box sx={{ px: 1 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        {customTemperature < 10 ? (
+                          <AcUnit sx={{ color: getTempColor(customTemperature), fontSize: 20 }} />
+                        ) : (
+                          <Whatshot sx={{ color: getTempColor(customTemperature), fontSize: 20 }} />
+                        )}
+                        <Typography variant="body2" fontWeight={600}>Temperature</Typography>
+                      </Stack>
+                      <Chip 
+                        label={`${customTemperature}°C`}
+                        size="small"
+                        sx={{ 
+                          bgcolor: alpha(getTempColor(customTemperature), 0.2),
+                          color: getTempColor(customTemperature),
+                          fontWeight: 700,
+                          minWidth: 60
+                        }}
+                      />
+                    </Stack>
+                    <Slider
+                      value={customTemperature}
+                      onChange={(_, value) => setCustomTemperature(value as number)}
+                      min={-25}
+                      max={50}
+                      step={1}
+                      marks={[
+                        { value: -18, label: '-18°' },
+                        { value: 0, label: '0°' },
+                        { value: 25, label: '25°' },
+                        { value: 42, label: '42°' },
+                      ]}
+                      sx={{
+                        color: getTempColor(customTemperature),
+                        '& .MuiSlider-thumb': {
+                          '&:hover, &.Mui-focusVisible': {
+                            boxShadow: `0 0 0 8px ${alpha(getTempColor(customTemperature), 0.16)}`,
+                          },
+                        },
+                        '& .MuiSlider-markLabel': {
+                          fontSize: '0.65rem',
+                          color: 'text.secondary',
+                        },
+                      }}
+                    />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      {customTemperature < 0 ? 'Extreme cold - high heating demand' : 
+                       customTemperature > 35 ? 'Extreme heat - high AC demand' : 'Moderate temperature'}
+                    </Typography>
+                  </Box>
+                </Grid>
+
+                {/* Load Multiplier Slider */}
+                <Grid item xs={12} md={4}>
+                  <Box sx={{ px: 1 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <ElectricalServices sx={{ color: customLoadMultiplier > 1.5 ? '#EF4444' : '#22C55E', fontSize: 20 }} />
+                        <Typography variant="body2" fontWeight={600}>Load Multiplier</Typography>
+                      </Stack>
+                      <Chip 
+                        label={`${customLoadMultiplier.toFixed(1)}x`}
+                        size="small"
+                        sx={{ 
+                          bgcolor: alpha(customLoadMultiplier > 1.5 ? '#EF4444' : customLoadMultiplier > 1.2 ? '#FBBF24' : '#22C55E', 0.2),
+                          color: customLoadMultiplier > 1.5 ? '#EF4444' : customLoadMultiplier > 1.2 ? '#FBBF24' : '#22C55E',
+                          fontWeight: 700,
+                          minWidth: 60
+                        }}
+                      />
+                    </Stack>
+                    <Slider
+                      value={customLoadMultiplier}
+                      onChange={(_, value) => setCustomLoadMultiplier(value as number)}
+                      min={0.3}
+                      max={3.0}
+                      step={0.1}
+                      marks={[
+                        { value: 0.5, label: '0.5x' },
+                        { value: 1.0, label: '1.0x' },
+                        { value: 1.8, label: '1.8x' },
+                        { value: 2.5, label: '2.5x' },
+                      ]}
+                      sx={{
+                        color: customLoadMultiplier > 1.5 ? '#EF4444' : customLoadMultiplier > 1.2 ? '#FBBF24' : '#22C55E',
+                        '& .MuiSlider-markLabel': {
+                          fontSize: '0.65rem',
+                          color: 'text.secondary',
+                        },
+                      }}
+                    />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      {customLoadMultiplier > 2.0 ? 'Crisis-level demand surge' :
+                       customLoadMultiplier > 1.5 ? 'High demand - stress conditions' :
+                       customLoadMultiplier < 0.8 ? 'Reduced load (evacuations/outages)' : 'Normal load conditions'}
+                    </Typography>
+                  </Box>
+                </Grid>
+
+                {/* Failure Threshold Slider */}
+                <Grid item xs={12} md={4}>
+                  <Box sx={{ px: 1 }}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <Warning sx={{ color: customFailureThreshold < 0.5 ? '#EF4444' : '#22C55E', fontSize: 20 }} />
+                        <Typography variant="body2" fontWeight={600}>Failure Threshold</Typography>
+                      </Stack>
+                      <Chip 
+                        label={`${(customFailureThreshold * 100).toFixed(0)}%`}
+                        size="small"
+                        sx={{ 
+                          bgcolor: alpha(customFailureThreshold < 0.5 ? '#EF4444' : customFailureThreshold < 0.7 ? '#FBBF24' : '#22C55E', 0.2),
+                          color: customFailureThreshold < 0.5 ? '#EF4444' : customFailureThreshold < 0.7 ? '#FBBF24' : '#22C55E',
+                          fontWeight: 700,
+                          minWidth: 60
+                        }}
+                      />
+                    </Stack>
+                    <Slider
+                      value={customFailureThreshold}
+                      onChange={(_, value) => setCustomFailureThreshold(value as number)}
+                      min={0.1}
+                      max={0.95}
+                      step={0.05}
+                      marks={[
+                        { value: 0.15, label: '15%' },
+                        { value: 0.4, label: '40%' },
+                        { value: 0.65, label: '65%' },
+                        { value: 0.8, label: '80%' },
+                      ]}
+                      sx={{
+                        color: customFailureThreshold < 0.5 ? '#EF4444' : customFailureThreshold < 0.7 ? '#FBBF24' : '#22C55E',
+                        '& .MuiSlider-markLabel': {
+                          fontSize: '0.65rem',
+                          color: 'text.secondary',
+                        },
+                      }}
+                    />
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                      {customFailureThreshold < 0.4 ? 'Fragile grid - failures propagate easily' :
+                       customFailureThreshold < 0.6 ? 'Stressed grid - moderate resilience' : 'Resilient grid - high failure resistance'}
+                    </Typography>
+                  </Box>
+                </Grid>
+              </Grid>
+            </Collapse>
+          </Box>
+
+          {/* Current Configuration Summary */}
+          <Alert 
+            severity={customMode ? 'warning' : 'info'} 
+            sx={{ 
+              mt: 2, 
+              bgcolor: alpha(customMode ? '#8B5CF6' : '#3B82F6', 0.1), 
+              '& .MuiAlert-icon': { color: customMode ? '#8B5CF6' : '#3B82F6' } 
+            }}
+          >
+            <Typography variant="body2">
+              {customMode 
+                ? 'Custom scenario with user-defined parameters'
+                : selectedScenarioData?.description || 'Select a scenario to begin'}
+            </Typography>
+            <Stack direction="row" spacing={2} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+              <Chip 
+                icon={customTemperature < 10 ? <AcUnit sx={{ fontSize: 16 }} /> : <Whatshot sx={{ fontSize: 16 }} />}
+                label={`Temp: ${customTemperature}°C`} 
+                size="small" 
+                sx={{ bgcolor: alpha(getTempColor(customTemperature), 0.2), color: getTempColor(customTemperature) }}
+              />
+              <Chip 
+                icon={<ElectricalServices sx={{ fontSize: 16 }} />}
+                label={`Load: ${customLoadMultiplier.toFixed(1)}x`} 
+                size="small" 
+                sx={{ bgcolor: alpha(customLoadMultiplier > 1.5 ? '#EF4444' : '#22C55E', 0.2) }}
+              />
+              <Chip 
+                icon={<Warning sx={{ fontSize: 16 }} />}
+                label={`Threshold: ${(customFailureThreshold * 100).toFixed(0)}%`} 
+                size="small" 
+                sx={{ bgcolor: alpha(customFailureThreshold < 0.5 ? '#EF4444' : '#22C55E', 0.2) }}
+              />
+              {customMode && (
                 <Chip 
-                  label={`Load Multiplier: ${selectedScenarioData.parameters.load_multiplier}x`} 
+                  label="CUSTOM MODE" 
                   size="small" 
-                  sx={{ bgcolor: alpha('#3B82F6', 0.2) }}
+                  sx={{ bgcolor: alpha('#8B5CF6', 0.3), color: '#8B5CF6', fontWeight: 700 }}
                 />
-                <Chip 
-                  label={`Failure Threshold: ${(selectedScenarioData.parameters.failure_threshold * 100).toFixed(0)}%`} 
-                  size="small" 
-                  sx={{ bgcolor: alpha('#3B82F6', 0.2) }}
-                />
-                <Chip 
-                  label={`Temp: ${selectedScenarioData.parameters.temperature_c}°C`} 
-                  size="small" 
-                  sx={{ bgcolor: alpha('#3B82F6', 0.2) }}
-                />
-              </Stack>
-            </Alert>
-          )}
+              )}
+            </Stack>
+          </Alert>
 
           {/* Loading indicator */}
           {isSimulating && (
@@ -668,6 +1160,10 @@ export function CascadeAnalysisDashboard({
             <Grid item xs={12} md={6}>
               <HighRiskNodesTable highRiskNodes={highRiskNodes} />
             </Grid>
+            {/* Regional Analysis Panel */}
+            <Grid item xs={12}>
+              <RegionalAnalysisPanel highRiskNodes={highRiskNodes} cascadeResult={cascadeResult} />
+            </Grid>
           </Grid>
         </>
       )}
@@ -708,6 +1204,10 @@ export function CascadeAnalysisDashboard({
                 </Stack>
               </CardContent>
             </Card>
+          </Grid>
+          {/* Regional Analysis Panel - shown even without simulation results */}
+          <Grid item xs={12}>
+            <RegionalAnalysisPanel highRiskNodes={highRiskNodes} cascadeResult={null} />
           </Grid>
         </Grid>
       )}
