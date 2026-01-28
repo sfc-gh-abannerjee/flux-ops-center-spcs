@@ -32,11 +32,22 @@ export interface Citation {
   source: string;
 }
 
+// Size state for docked panels (Gmail/Slack style)
+export type DockedPanelSize = 'minimized' | 'compact' | 'expanded' | 'fullscreen';
+
 export interface ChatDrawerProps {
   open: boolean;
   onClose: () => void;
   fabPosition: { x: number; y: number };
   agentEndpoint?: string;
+  // Gmail-style dock coordination
+  isDocked?: boolean;
+  dockedSize?: DockedPanelSize;
+  onDockedSizeChange?: (size: DockedPanelSize) => void;
+  onDockChange?: (docked: boolean) => void;
+  // Other panel states for coordination
+  otherPanelDocked?: boolean;
+  otherPanelSize?: DockedPanelSize;
 }
 
 export interface SavedSession {
@@ -71,7 +82,17 @@ export interface SerializedMessage {
   feedbackMessage?: string;
 }
 
-export type LayoutMode = 'floating' | 'expanded' | 'docked-left' | 'docked-right' | 'docked-bottom';
+// Layout modes simplified for Gmail-style bottom dock
+export type LayoutMode = 'floating' | 'docked-bottom';
+
+// Panel dimension constants for Gmail-style dock
+export const DOCK_PANEL_DIMENSIONS = {
+  gap: 12,
+  margin: 16,
+  compact: { width: 360, height: 350 },
+  expanded: { width: 480, height: 450 },
+  fullscreen: { width: '50vw', height: '100vh' },
+} as const;
 
 export const SUGGESTED_PROMPTS = [
   "Compare summer load patterns 2023 vs 2024 vs 2025",

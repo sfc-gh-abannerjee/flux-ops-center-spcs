@@ -24,12 +24,14 @@ import {
   MenuItem,
   ListItemIcon,
   ListItemText,
-  Divider
+  Divider,
+  alpha
 } from '@mui/material';
 import {
   Send,
   Close,
   ExpandMore,
+  ExpandLess,
   Code,
   TableChart,
   InsertChart,
@@ -56,7 +58,10 @@ import {
   KeyboardArrowLeft,
   KeyboardArrowRight,
   PushPin,
-  PushPinOutlined
+  PushPinOutlined,
+  AutoAwesome,
+  Minimize,
+  CropSquare,
 } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import FormattedMarkdown from './FormattedMarkdown';
@@ -64,14 +69,80 @@ import { LAYOUT } from './layoutConstants';
 import { logger } from './utils/logger';
 import { VegaEmbed } from 'react-vega';
 import { Highlight, themes } from 'prism-react-renderer';
-import type { Message, TableData, Citation, ChatDrawerProps, LayoutMode } from './chat/types';
+import type { Message, TableData, Citation, ChatDrawerProps, DockedPanelSize, DOCK_PANEL_DIMENSIONS } from './chat/types';
 import { SUGGESTED_PROMPTS, useSessionStorage } from './chat';
+import FluxLogo from './FluxLogo';
+
+// Service-specific icon components using official Snowflake icons
+const CortexAgentIcon = ({ size = 14 }: { size?: number }) => (
+  <img src="/icons/Snowflake_ICON_Copilot.svg" alt="Cortex Agent" width={size} height={size} style={{ display: 'block' }} />
+);
+
+const CortexSearchIcon = ({ size = 14 }: { size?: number }) => (
+  <img src="/icons/Snowflake_ICON_Cortex.svg" alt="Cortex Search" width={size} height={size} style={{ display: 'block' }} />
+);
+
+// Snowflake Service Badge - shows what powers the agent
+function SnowflakeServiceBadge({ 
+  service, 
+  tooltip,
+  compact = false  // Icon-only mode for floating panels
+}: { 
+  service: 'cortex-agent' | 'cortex-search';
+  tooltip: string;
+  compact?: boolean;
+}) {
+  const configs = {
+    'cortex-agent': { label: 'Cortex Agent', color: '#0EA5E9', Icon: CortexAgentIcon },
+    'cortex-search': { label: 'Cortex Search', color: '#0EA5E9', Icon: CortexSearchIcon },
+  };
+  const config = configs[service];
+  
+  return (
+    <Tooltip title={compact ? config.label : tooltip} arrow placement="bottom">
+      <Box
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: compact ? 0 : 0.5,
+          height: 20,
+          width: compact ? 24 : 'auto',  // Fixed width for icon-only
+          px: compact ? 0 : 0.75,
+          py: 0.25,
+          borderRadius: compact ? '50%' : '10px',  // Circle for icon-only
+          fontSize: '0.6rem',
+          fontWeight: 600,
+          bgcolor: alpha(config.color, 0.12),
+          color: config.color,
+          border: `1px solid ${alpha(config.color, 0.25)}`,
+          whiteSpace: 'nowrap',
+          cursor: 'default',
+          transition: 'all 0.15s ease',
+          '&:hover': {
+            bgcolor: alpha(config.color, 0.18),
+            borderColor: alpha(config.color, 0.4),
+          },
+        }}
+      >
+        <config.Icon size={12} />
+        {!compact && <span>{config.label}</span>}
+      </Box>
+    </Tooltip>
+  );
+}
 
 export default function ChatDrawer({ 
   open, 
   onClose,
   fabPosition,
-  agentEndpoint = import.meta.env.DEV ? 'http://localhost:3001/api/agent/stream' : '/api/agent/stream' 
+  agentEndpoint = import.meta.env.DEV ? 'http://localhost:3001/api/agent/stream' : '/api/agent/stream',
+  isDocked = false,
+  dockedSize = 'compact',
+  onDockedSizeChange,
+  onDockChange,
+  otherPanelDocked = false,
+  otherPanelSize = 'minimized',
 }: ChatDrawerProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -94,9 +165,22 @@ export default function ChatDrawer({
     initializeSessions
   } = useSessionStorage();
   
-  // Layout modes: 'floating' | 'expanded' | 'docked-left' | 'docked-right' | 'docked-bottom'
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>('floating');
-  const [dockedCollapsed, setDockedCollapsed] = useState(false);
+  // Helper functions for dock size management
+  const setDockSize = (size: DockedPanelSize) => {
+    onDockedSizeChange?.(size);
+  };
+  
+  const toggleDock = () => {
+    onDockChange?.(!isDocked);
+    if (!isDocked) {
+      // When docking, start at compact size
+      setDockSize('compact');
+    }
+  };
+  
+  // Derived state for backward compatibility
+  const isFullscreen = isDocked && dockedSize === 'fullscreen';
+  const isMinimized = isDocked && dockedSize === 'minimized';
   
   // Smart scroll - only auto-scroll when user is near bottom
   const [userScrolledUp, setUserScrolledUp] = useState(false);
@@ -808,12 +892,66 @@ export default function ChatDrawer({
   const fabSize = 56;
   const chatOffset = 68;
 
-  // Layout dimensions based on mode - uses shared constants from layoutConstants.ts
-  const getLayoutStyles = () => {
-    switch (layoutMode) {
-      case 'expanded':
+  // Layout dimensions based on mode - Gmail-style dock with side-by-side coordination
+  // Constants for Gmail-style dock layout
+  const DOCK = {
+    gap: 16,
+    margin: 16,
+    compact: { width: 380, height: 350 }, // Small panel with content visible
+    // Dynamic expanded width - calculated based on other panel state
+    expanded: { height: 'calc(40vh)' as const }, // Height stays the same
+    fullscreen: { width: '50vw' as const, height: '100vh' as const },
+  };
+
+  // Tab positioning constants (must match CascadeControlPanel)
+  const CHAT_TAB_WIDTH_CONST = 180;
+  const CASCADE_TAB_WIDTH_CONST = 180;
+  const TAB_GAP_CONST = 8;
+  const TAB_MARGIN_CONST = 16;
+
+  // Calculate dynamic expanded width based on other panel state
+  // IMPORTANT: Must account for minimized tabs to avoid overlap
+  // Both tabs are ALWAYS positioned on the RIGHT side using 'right:' positioning
+  const getExpandedWidth = (): string => {
+    if (otherPanelDocked && otherPanelSize !== 'minimized') {
+      if (otherPanelSize === 'expanded') {
+        // Both expanded: split 50/50
+        return 'calc(50vw - 24px)';
+      } else {
+        // Other is compact (380px): take remaining space
+        // Full width - compact panel width - margins - gap
+        return `calc(100vw - ${DOCK.compact.width}px - ${DOCK.margin * 2}px - ${DOCK.gap}px)`;
+      }
+    }
+    // Other panel is minimized or not docked
+    // When Grid Intelligence is expanded, the Cascade tab is hidden (to avoid left positioning)
+    // So we can take full width minus right margin only
+    return `calc(100vw - ${DOCK.margin * 2}px)`;
+  };
+
+  const getLayoutStyles = (): React.CSSProperties => {
+    // Fullscreen mode - special handling
+    if (isFullscreen) {
+      const otherIsFullscreen = otherPanelDocked && otherPanelSize === 'fullscreen';
+      
+      if (otherIsFullscreen) {
+        // Split-pane mode: ChatDrawer takes right half
         return {
-          position: 'fixed' as const,
+          position: 'fixed',
+          top: 0,
+          left: '50%',
+          right: 0,
+          bottom: 0,
+          width: '50vw',
+          height: '100vh',
+          borderRadius: 0,
+          transform: 'none',
+          borderLeft: '1px solid rgba(51, 65, 85, 0.8)',
+        };
+      } else {
+        // Solo fullscreen: take entire viewport
+        return {
+          position: 'fixed',
           top: 0,
           left: 0,
           right: 0,
@@ -823,135 +961,115 @@ export default function ChatDrawer({
           borderRadius: 0,
           transform: 'none',
         };
-      case 'docked-left':
-        return {
-          position: 'fixed' as const,
-          top: LAYOUT.DOCK_TOP_OFFSET_LEFT,
-          left: dockedCollapsed ? -400 : 0,
-          bottom: LAYOUT.DOCK_BOTTOM_OFFSET,
-          width: 400,
-          height: 'auto',
-          borderRadius: 0,
-          borderRight: '1px solid rgba(51, 65, 85, 0.8)',
-          transform: 'none',
-          transition: 'left 0.3s ease',
-        };
-      case 'docked-right':
-        return {
-          position: 'fixed' as const,
-          top: LAYOUT.DOCK_TOP_OFFSET_RIGHT,
-          right: dockedCollapsed ? -400 : 0,
-          bottom: 0,
-          width: 400,
-          height: 'auto',
-          borderRadius: 0,
-          borderLeft: '1px solid rgba(51, 65, 85, 0.8)',
-          transform: 'none',
-          transition: 'right 0.3s ease',
-        };
-      case 'docked-bottom':
-        return {
-          position: 'fixed' as const,
-          left: LAYOUT.DOCK_LEFT_OFFSET,
-          right: 0,
-          bottom: dockedCollapsed ? -320 : 0,
-          height: 320,
-          width: 'auto',
-          borderRadius: 0,
-          borderTop: '1px solid rgba(51, 65, 85, 0.8)',
-          transform: 'none',
-          transition: 'bottom 0.3s ease',
-        };
-      default: // floating
-        const bottomPosition = window.innerHeight - fabPosition.y - fabSize;
-        const rightPosition = window.innerWidth - fabPosition.x - fabSize;
-        const constrainedBottom = Math.max(chatOffset, Math.min(bottomPosition + chatOffset, window.innerHeight - chatHeight));
-        const constrainedRight = Math.max(0, Math.min(rightPosition, window.innerWidth - chatWidth));
-        return {
-          position: 'fixed' as const,
-          bottom: constrainedBottom,
-          right: constrainedRight,
-          width: chatWidth,
-          height: chatHeight,
-          borderRadius: '16px',
-          transform: 'translate3d(0, 0, 0)',
-        };
+      }
     }
+    
+    // Docked modes (compact, expanded, minimized)
+    if (isDocked) {
+      // For minimized, we hide the panel but keep it in DOM
+      if (dockedSize === 'minimized') {
+        return {
+          position: 'fixed',
+          right: -500,
+          bottom: 0,
+          width: 360,
+          height: 350,
+          borderRadius: '12px 12px 0 0',
+          transform: 'none',
+          transition: 'all 0.3s ease',
+        };
+      }
+      
+      // Calculate dimensions based on size - now with dynamic expanded width
+      const isExpanded = dockedSize === 'expanded';
+      const width = isExpanded ? getExpandedWidth() : DOCK.compact.width;
+      const height = isExpanded ? DOCK.expanded.height : DOCK.compact.height;
+      
+      // ChatDrawer is always positioned from the RIGHT
+      return {
+        position: 'fixed',
+        right: DOCK.margin,
+        bottom: 0,
+        width: width,
+        height: height,
+        borderRadius: '12px 12px 0 0',
+        borderTop: '1px solid rgba(51, 65, 85, 0.8)',
+        borderLeft: '1px solid rgba(51, 65, 85, 0.8)',
+        borderRight: '1px solid rgba(51, 65, 85, 0.8)',
+        transform: 'none',
+        transition: 'all 0.3s ease',
+      };
+    }
+    
+    // Floating mode (default)
+    const bottomPosition = window.innerHeight - fabPosition.y - fabSize;
+    const rightPosition = window.innerWidth - fabPosition.x - fabSize;
+    const constrainedBottom = Math.max(chatOffset, Math.min(bottomPosition + chatOffset, window.innerHeight - chatHeight));
+    const constrainedRight = Math.max(0, Math.min(rightPosition, window.innerWidth - chatWidth));
+    return {
+      position: 'fixed',
+      bottom: constrainedBottom,
+      right: constrainedRight,
+      width: chatWidth,
+      height: chatHeight,
+      borderRadius: '16px',
+      transform: 'translate3d(0, 0, 0)',
+    };
   };
 
   const layoutStyles = getLayoutStyles();
 
-  // Dock toggle button for collapsed docked modes
+  // Dock toggle button for minimized state (Gmail-style tab at bottom)
+  // Tab positioning constants - must be coordinated with CascadeControlPanel
+  const CHAT_TAB_WIDTH = 180; // Width of "Grid Intelligence" tab
+  const CASCADE_TAB_WIDTH = 180; // Width of "Cascade Analysis" tab (same as Chat tab)
+  const TAB_GAP = 8; // Gap between tabs
+  const TAB_MARGIN = 16; // Margin from viewport edge
+  
   const renderDockToggle = () => {
-    if (layoutMode === 'docked-left' && dockedCollapsed) {
+    if (isDocked && dockedSize === 'minimized') {
+      // Calculate tab position based on Cascade panel state
+      // Grid Intelligence tab is ALWAYS positioned at the right edge (right: 16)
+      // Cascade tab positions itself to the LEFT of Grid Intelligence, using right positioning
+      const rightPosition: number = TAB_MARGIN;
+      
+      // If Cascade is fullscreen, hide this tab entirely
+      if (otherPanelDocked && otherPanelSize === 'fullscreen') {
+        return null;
+      }
+      
       return (
         <Box
-          onClick={() => setDockedCollapsed(false)}
-          sx={{
-            position: 'fixed',
-            left: 0,
-            top: '50%',
-            transform: 'translateY(-50%)',
-            bgcolor: 'rgba(15, 23, 42, 0.95)',
-            borderTopRightRadius: 8,
-            borderBottomRightRadius: 8,
-            p: 0.5,
-            cursor: 'pointer',
-            zIndex: 1300,
-            border: '1px solid rgba(51, 65, 85, 0.5)',
-            borderLeft: 'none',
-            '&:hover': { bgcolor: 'rgba(14, 165, 233, 0.2)' },
-          }}
-        >
-          <KeyboardArrowRight sx={{ color: '#0EA5E9' }} />
-        </Box>
-      );
-    }
-    if (layoutMode === 'docked-right' && dockedCollapsed) {
-      return (
-        <Box
-          onClick={() => setDockedCollapsed(false)}
-          sx={{
-            position: 'fixed',
-            right: 0,
-            top: '50%',
-            transform: 'translateY(-50%)',
-            bgcolor: 'rgba(15, 23, 42, 0.95)',
-            borderTopLeftRadius: 8,
-            borderBottomLeftRadius: 8,
-            p: 0.5,
-            cursor: 'pointer',
-            zIndex: 1300,
-            border: '1px solid rgba(51, 65, 85, 0.5)',
-            borderRight: 'none',
-            '&:hover': { bgcolor: 'rgba(14, 165, 233, 0.2)' },
-          }}
-        >
-          <KeyboardArrowLeft sx={{ color: '#0EA5E9' }} />
-        </Box>
-      );
-    }
-    if (layoutMode === 'docked-bottom' && dockedCollapsed) {
-      return (
-        <Box
-          onClick={() => setDockedCollapsed(false)}
+          onClick={() => setDockSize('compact')}
           sx={{
             position: 'fixed',
             bottom: 0,
-            right: 200, // Offset from right edge
-            bgcolor: 'rgba(15, 23, 42, 0.95)',
+            right: rightPosition,
+            width: CHAT_TAB_WIDTH,
+            bgcolor: alpha('#0EA5E9', 0.95),
             borderTopLeftRadius: 8,
             borderTopRightRadius: 8,
             px: 2,
-            py: 0.5,
+            py: 0.75,
             cursor: 'pointer',
             zIndex: 1300,
-            border: '1px solid rgba(51, 65, 85, 0.5)',
+            border: '1px solid',
+            borderColor: '#0EA5E9',
             borderBottom: 'none',
-            '&:hover': { bgcolor: 'rgba(14, 165, 233, 0.2)' },
+            '&:hover': { bgcolor: '#0284C7' },
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 1,
+            boxShadow: '0 -4px 12px rgba(14, 165, 233, 0.2)',
+            transition: 'all 0.2s ease',
           }}
         >
-          <KeyboardArrowUp sx={{ color: '#0EA5E9' }} />
+          <AutoAwesome sx={{ color: 'white', fontSize: 16 }} />
+          <Typography variant="caption" sx={{ color: 'white', fontWeight: 600, whiteSpace: 'nowrap' }}>
+            Grid Intelligence
+          </Typography>
+          <KeyboardArrowUp sx={{ color: 'white', fontSize: 16 }} />
         </Box>
       );
     }
@@ -1022,11 +1140,11 @@ export default function ChatDrawer({
             backdropFilter: 'blur(20px) saturate(180%)',
             WebkitBackdropFilter: 'blur(20px) saturate(180%)',
             overflow: 'hidden',
-            zIndex: 1299,
-            boxShadow: layoutMode === 'floating' 
+            zIndex: isFullscreen ? 1400 : 1299,
+            boxShadow: !isDocked 
               ? '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(14, 165, 233, 0.2), 0 0 40px rgba(14, 165, 233, 0.1)'
               : '0 0 20px rgba(0, 0, 0, 0.5)',
-            border: layoutMode === 'floating' ? '1px solid rgba(51, 65, 85, 0.5)' : 'none',
+            border: !isDocked ? '1px solid rgba(51, 65, 85, 0.5)' : 'none',
             cursor: 'default',
           }}
         >
@@ -1036,154 +1154,219 @@ export default function ChatDrawer({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            p: layoutMode === 'docked-bottom' ? 1.5 : 2,
+            p: isDocked ? 1.5 : 2,
             borderBottom: '1px solid rgba(51, 65, 85, 0.5)',
             bgcolor: 'rgba(15, 23, 42, 0.6)',
             backdropFilter: 'blur(10px)',
             color: '#0EA5E9',
-            cursor: layoutMode === 'floating' ? 'grab' : 'default',
+            cursor: !isDocked ? 'grab' : 'default',
             userSelect: 'none',
             touchAction: 'none',
             flexDirection: 'row',
             flexShrink: 0,
           }}
         >
-          <Typography variant="h6" sx={{ fontWeight: 600, fontSize: '18px', pointerEvents: 'none' }}>
-            Grid Intelligence Assistant
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <FluxLogo size={isDocked && dockedSize === 'compact' ? 18 : (dockedSize === 'fullscreen' ? 24 : 20)} />
+            <Typography 
+              variant="h6" 
+              sx={{ 
+                fontWeight: 600, 
+                fontSize: isDocked && dockedSize === 'compact' ? '15px' : '18px', 
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Grid Intelligence{isDocked && dockedSize !== 'compact' ? ' Assistant' : ''}
+            </Typography>
+          </Box>
           <Box sx={{ 
             display: 'flex', 
             gap: 0.5, 
             flexDirection: 'row',
-            alignItems: 'center' 
+            alignItems: 'center',
+            flexShrink: 0,
           }}>
-            <Tooltip title="New Chat">
-              <IconButton 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  startNewSession();
-                }} 
-                onPointerDown={(e) => e.stopPropagation()}
-                size="small" 
-                sx={{ color: '#10B981', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#34d399' } }}
-              >
-                <Add />
-              </IconButton>
-            </Tooltip>
-            {savedSessions.length > 0 && (
-              <Tooltip title="Chat History">
-                <IconButton 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowSessionList(!showSessionList);
-                  }} 
-                  onPointerDown={(e) => e.stopPropagation()}
-                  size="small" 
-                  sx={{ color: '#0EA5E9', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#38bdf8' } }}
-                >
-                  <History />
-                </IconButton>
-              </Tooltip>
+            {/* Chat-specific actions - only show in docked non-compact mode (not in floating) */}
+            {isDocked && dockedSize !== 'compact' && (
+              <>
+                <Tooltip title="New Chat">
+                  <IconButton 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      startNewSession();
+                    }} 
+                    onPointerDown={(e) => e.stopPropagation()}
+                    size="small" 
+                    sx={{ color: '#10B981', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#34d399' } }}
+                  >
+                    <Add />
+                  </IconButton>
+                </Tooltip>
+                {savedSessions.length > 0 && (
+                  <Tooltip title="Chat History">
+                    <IconButton 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowSessionList(!showSessionList);
+                      }} 
+                      onPointerDown={(e) => e.stopPropagation()}
+                      size="small" 
+                      sx={{ color: '#0EA5E9', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#38bdf8' } }}
+                    >
+                      <History />
+                    </IconButton>
+                  </Tooltip>
+                )}
+                {messages.length > 0 && currentSessionId && (
+                  <Tooltip title="Delete Current Chat">
+                    <IconButton 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm('Delete this chat? This cannot be undone.')) {
+                          deleteSession(currentSessionId);
+                        }
+                      }} 
+                      onPointerDown={(e) => e.stopPropagation()}
+                      size="small" 
+                      sx={{ color: '#94a3b8', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#f87171' } }}
+                    >
+                      <DeleteOutline />
+                    </IconButton>
+                  </Tooltip>
+                )}
+              </>
             )}
-            {messages.length > 0 && currentSessionId && (
-              <Tooltip title="Delete Current Chat">
-                <IconButton 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (window.confirm('Delete this chat? This cannot be undone.')) {
-                      deleteSession(currentSessionId);
-                    }
-                  }} 
-                  onPointerDown={(e) => e.stopPropagation()}
-                  size="small" 
-                  sx={{ color: '#94a3b8', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#f87171' } }}
-                >
-                  <DeleteOutline />
-                </IconButton>
-              </Tooltip>
+            
+            {/* Service badges - always visible except compact mode, icon-only when floating */}
+            {(!isDocked || dockedSize !== 'compact') && (
+              <>
+                <SnowflakeServiceBadge 
+                  service="cortex-agent" 
+                  tooltip="Powered by Snowflake Cortex Agent with tool orchestration"
+                  compact={!isDocked}  // Icon-only when floating
+                />
+                <SnowflakeServiceBadge 
+                  service="cortex-search" 
+                  tooltip="RAG retrieval via Cortex Search on utility documentation"
+                  compact={!isDocked}  // Icon-only when floating
+                />
+                <Box sx={{ width: '1px', height: 16, bgcolor: 'rgba(51, 65, 85, 0.5)', mx: 0.5 }} />
+              </>
             )}
             
-            <Box sx={{ width: '1px', height: 16, bgcolor: 'rgba(51, 65, 85, 0.5)', mx: 0.5 }} />
+            {/* Size controls for docked mode */}
+            {isDocked && (
+              <>
+                {/* Compact/Expanded toggle */}
+                <Tooltip title={dockedSize === 'expanded' ? "Compact view" : "Expand panel"}>
+                  <IconButton 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDockSize(dockedSize === 'expanded' ? 'compact' : 'expanded');
+                    }} 
+                    onPointerDown={(e) => e.stopPropagation()}
+                    size="small" 
+                    sx={{ 
+                      color: dockedSize === 'expanded' ? '#0EA5E9' : '#64748b', 
+                      pointerEvents: 'auto', 
+                      zIndex: 1, 
+                      '&:hover': { color: '#0EA5E9' } 
+                    }}
+                  >
+                    {dockedSize === 'expanded' ? <KeyboardArrowDown sx={{ fontSize: 18 }} /> : <KeyboardArrowUp sx={{ fontSize: 18 }} />}
+                  </IconButton>
+                </Tooltip>
+                
+                {/* Fullscreen toggle */}
+                <Tooltip title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}>
+                  <IconButton 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDockSize(isFullscreen ? 'expanded' : 'fullscreen');
+                    }} 
+                    onPointerDown={(e) => e.stopPropagation()}
+                    size="small" 
+                    sx={{ 
+                      color: isFullscreen ? '#0EA5E9' : '#64748b', 
+                      pointerEvents: 'auto', 
+                      zIndex: 1, 
+                      '&:hover': { color: '#0EA5E9' } 
+                    }}
+                  >
+                    {isFullscreen ? <CloseFullscreen sx={{ fontSize: 18 }} /> : <OpenInFull sx={{ fontSize: 18 }} />}
+                  </IconButton>
+                </Tooltip>
+              </>
+            )}
             
-            {/* Layout controls */}
-            <Tooltip title={layoutMode === 'expanded' ? "Exit fullscreen" : "Expand fullscreen"}>
-              <IconButton 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setLayoutMode(layoutMode === 'expanded' ? 'floating' : 'expanded');
-                  setDockedCollapsed(false);
-                }} 
-                onPointerDown={(e) => e.stopPropagation()}
-                size="small" 
-                sx={{ 
-                  color: layoutMode === 'expanded' ? '#0EA5E9' : '#64748b', 
-                  pointerEvents: 'auto', 
-                  zIndex: 1, 
-                  '&:hover': { color: '#0EA5E9' } 
-                }}
-              >
-                {layoutMode === 'expanded' ? <CloseFullscreen sx={{ fontSize: 18 }} /> : <OpenInFull sx={{ fontSize: 18 }} />}
-              </IconButton>
-            </Tooltip>
-            
-            <Tooltip title="Dock menu">
-              <IconButton 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  // Cycle through dock positions: floating -> left -> right -> bottom -> floating
-                  const modes: Array<typeof layoutMode> = ['floating', 'docked-left', 'docked-right', 'docked-bottom'];
-                  const currentIdx = modes.indexOf(layoutMode);
-                  const nextIdx = (currentIdx + 1) % modes.length;
-                  setLayoutMode(modes[nextIdx]);
-                  setDockedCollapsed(false);
-                }} 
-                onPointerDown={(e) => e.stopPropagation()}
-                size="small" 
-                sx={{ 
-                  color: layoutMode.startsWith('docked') ? '#0EA5E9' : '#64748b', 
-                  pointerEvents: 'auto', 
-                  zIndex: 1, 
-                  '&:hover': { color: '#0EA5E9' } 
-                }}
-              >
-                <ViewSidebar sx={{ 
-                  fontSize: 18,
-                  transform: layoutMode === 'docked-left' ? 'scaleX(-1)' : 
-                             layoutMode === 'docked-bottom' ? 'rotate(-90deg)' : 'none'
-                }} />
-              </IconButton>
-            </Tooltip>
-            
-            {layoutMode.startsWith('docked') && (
-              <Tooltip title={dockedCollapsed ? "Expand panel" : "Collapse panel"}>
+            {/* Fullscreen button for floating mode */}
+            {!isDocked && (
+              <Tooltip title="Fullscreen">
                 <IconButton 
                   onClick={(e) => {
                     e.stopPropagation();
-                    setDockedCollapsed(!dockedCollapsed);
+                    toggleDock();
+                    setTimeout(() => setDockSize('fullscreen'), 50);
                   }} 
                   onPointerDown={(e) => e.stopPropagation()}
                   size="small" 
                   sx={{ color: '#64748b', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#0EA5E9' } }}
                 >
-                  {dockedCollapsed ? <PushPinOutlined sx={{ fontSize: 18 }} /> : <PushPin sx={{ fontSize: 18 }} />}
+                  <OpenInFull sx={{ fontSize: 18 }} />
                 </IconButton>
               </Tooltip>
             )}
             
-            <IconButton 
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose();
-              }} 
-              onPointerDown={(e) => e.stopPropagation()}
-              size="small" 
-              sx={{ color: 'white', pointerEvents: 'auto', zIndex: 1 }}
-            >
-              <Close />
-            </IconButton>
+            {/* Dock/Undock toggle */}
+            <Tooltip title={isDocked ? 'Undock (floating)' : 'Dock to bottom'}>
+              <IconButton 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleDock();
+                }} 
+                onPointerDown={(e) => e.stopPropagation()}
+                size="small" 
+                sx={{ 
+                  color: isDocked ? '#0EA5E9' : '#64748b', 
+                  pointerEvents: 'auto', 
+                  zIndex: 1, 
+                  '&:hover': { color: '#0EA5E9' } 
+                }}
+              >
+                <DockOutlined sx={{ 
+                  fontSize: 18,
+                  transform: 'rotate(-90deg)'
+                }} />
+              </IconButton>
+            </Tooltip>
+            
+            {/* Minimize button - works from both docked and floating modes */}
+            <Tooltip title="Minimize to tab">
+              <IconButton 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!isDocked) {
+                    // If floating, dock first then minimize
+                    toggleDock();
+                    setTimeout(() => setDockSize('minimized'), 50);
+                  } else {
+                    setDockSize('minimized');
+                  }
+                }} 
+                onPointerDown={(e) => e.stopPropagation()}
+                size="small" 
+                sx={{ color: '#64748b', pointerEvents: 'auto', zIndex: 1, '&:hover': { color: '#0EA5E9' } }}
+              >
+                <Minimize sx={{ fontSize: 18 }} />
+              </IconButton>
+            </Tooltip>
           </Box>
         </Box>
 
+        {/* Content area - hidden only when minimized */}
+        {(dockedSize !== 'minimized' || !isDocked) && (
+        <>
         {showSessionList && savedSessions.length > 0 && (
           <Box sx={{ 
             p: 1, 
@@ -1237,7 +1420,7 @@ export default function ChatDrawer({
           </Box>
         )}
 
-        {/* Main content wrapper for scroll area + input */}
+        {/* Main content wrapper for scroll area + input - inside conditional */}
         <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
           <Box
             ref={scrollContainerRef}
@@ -1387,6 +1570,8 @@ export default function ChatDrawer({
           </Box>
         </Box>
         </Box>
+        </>
+        )}
       </Paper>
     </Grow>
     </>,

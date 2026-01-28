@@ -1,3 +1,11 @@
+# CRITICAL: Set AWS env vars BEFORE any imports that might load boto3
+# The snowflake-connector-python pulls in boto3 which reads ~/.aws/config
+# If the default profile uses SSO and the token is expired, it causes auth errors
+import os
+os.environ.setdefault('AWS_PROFILE', '')
+os.environ.setdefault('AWS_SDK_LOAD_CONFIG', 'false')
+os.environ.setdefault('AWS_CONFIG_FILE', '/dev/null')  # Prevent reading ~/.aws/config
+
 from fastapi import FastAPI, Query, Request, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
@@ -17,7 +25,6 @@ import asyncio
 import snowflake.connector
 import subprocess
 import httpx
-import os
 import toml
 import io
 import time

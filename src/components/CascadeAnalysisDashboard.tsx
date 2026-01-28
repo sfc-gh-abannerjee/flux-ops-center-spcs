@@ -57,6 +57,11 @@ import {
   ExpandLess,
   AcUnit,
   Whatshot,
+  SwapHoriz,
+  AttachMoney,
+  TrendingDown,
+  CheckCircle,
+  PriorityHigh,
 } from '@mui/icons-material';
 import type { CascadeScenario, CascadeResult, CascadeNode, CascadeWaveBreakdown } from '../types';
 
@@ -71,6 +76,26 @@ interface RegionalCascadeRisk {
   estimated_customers_at_risk: number;
 }
 
+// Cross-region flow data for Sankey visualization
+interface CrossRegionFlow {
+  source_region: string;
+  target_region: string;
+  flow_capacity_mw: number;
+  connection_count: number;
+  vulnerability_score: number;
+}
+
+// Investment ROI data per region
+interface RegionalInvestment {
+  region: string;
+  county: string;
+  nodes_requiring_upgrade: number;
+  estimated_investment_cost: number;
+  avoided_damage_potential: number;
+  roi_percent: number;
+  priority: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+}
+
 interface CascadeAnalysisDashboardProps {
   scenarios: CascadeScenario[];
   cascadeResult: CascadeResult | null;
@@ -82,6 +107,8 @@ interface CascadeAnalysisDashboardProps {
   onLoadPredictions: () => Promise<void>;
   visible: boolean;
   onToggleVisibility: () => void;
+  isEmbedded?: boolean; // When true, renders without outer container (for embedding in CascadeControlPanel)
+  isSideBySide?: boolean; // When true, uses compact responsive layout for side-by-side panels
 }
 
 // Wave breakdown data extraction
@@ -335,33 +362,34 @@ function WaveBreakdownPanel({ waveBreakdown }: { waveBreakdown: CascadeWaveBreak
   );
 }
 
-// High-risk nodes table
-function HighRiskNodesTable({ highRiskNodes }: { highRiskNodes: CascadeNode[] }) {
+// High-risk nodes table - responsive for side-by-side mode
+function HighRiskNodesTable({ highRiskNodes, isSideBySide = false }: { highRiskNodes: CascadeNode[]; isSideBySide?: boolean }) {
   return (
     <Card sx={{ bgcolor: 'rgba(239, 68, 68, 0.05)', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
-      <CardContent>
-        <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3, color: '#EF4444' }}>
-          <Warning /> High-Risk Nodes (Patient Zero Candidates)
+      <CardContent sx={{ p: isSideBySide ? 1.5 : 2, '&:last-child': { pb: isSideBySide ? 1.5 : 2 } }}>
+        <Typography variant={isSideBySide ? 'subtitle2' : 'h6'} sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: isSideBySide ? 1.5 : 3, color: '#EF4444' }}>
+          <Warning sx={{ fontSize: isSideBySide ? 16 : 24 }} /> High-Risk Nodes {!isSideBySide && '(Patient Zero Candidates)'}
         </Typography>
         
         {highRiskNodes.length === 0 ? (
-          <Alert severity="info" sx={{ bgcolor: 'rgba(59, 130, 246, 0.1)' }}>
-            Click "Load ML Predictions" to identify high-risk nodes using graph centrality analysis.
+          <Alert severity="info" sx={{ bgcolor: 'rgba(59, 130, 246, 0.1)', '& .MuiAlert-message': { fontSize: isSideBySide ? '0.7rem' : '0.875rem' } }}>
+            Click "Load ML Predictions" to identify high-risk nodes.
           </Alert>
         ) : (
-          <TableContainer sx={{ maxHeight: 300 }}>
-            <Table size="small" stickyHeader>
+          <TableContainer sx={{ maxHeight: isSideBySide ? 200 : 300 }}>
+            <Table size="small" stickyHeader sx={{ tableLayout: isSideBySide ? 'auto' : 'fixed' }}>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600 }}>Node ID</TableCell>
-                  <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600 }}>Name</TableCell>
-                  <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600 }}>Type</TableCell>
-                  <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600 }} align="right">Risk Score</TableCell>
-                  <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600 }} align="right">Cascade Risk</TableCell>
+                  <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600, fontSize: isSideBySide ? '0.65rem' : '0.875rem', py: isSideBySide ? 0.5 : 1, px: isSideBySide ? 0.75 : 2 }}>
+                    {isSideBySide ? 'Node' : 'Node ID'}
+                  </TableCell>
+                  {!isSideBySide && <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600 }}>Name</TableCell>}
+                  <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600, fontSize: isSideBySide ? '0.65rem' : '0.875rem', py: isSideBySide ? 0.5 : 1, px: isSideBySide ? 0.75 : 2 }}>Type</TableCell>
+                  <TableCell sx={{ bgcolor: '#1E293B', fontWeight: 600, fontSize: isSideBySide ? '0.65rem' : '0.875rem', py: isSideBySide ? 0.5 : 1, px: isSideBySide ? 0.75 : 2 }} align="right">Risk</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {highRiskNodes.slice(0, 15).map((node, idx) => (
+                {highRiskNodes.slice(0, isSideBySide ? 8 : 15).map((node, idx) => (
                   <TableRow 
                     key={node.node_id}
                     sx={{ 
@@ -369,45 +397,72 @@ function HighRiskNodesTable({ highRiskNodes }: { highRiskNodes: CascadeNode[] })
                       bgcolor: idx < 3 ? alpha('#EF4444', 0.05) : 'transparent'
                     }}
                   >
-                    <TableCell sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
-                      {node.node_id.slice(0, 15)}...
+                    <TableCell sx={{ py: isSideBySide ? 0.5 : 1, px: isSideBySide ? 0.75 : 2 }}>
+                      {isSideBySide ? (
+                        <Box>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, fontSize: '0.7rem' }}>
+                            {node.node_name || node.node_id.slice(0, 12)}
+                          </Typography>
+                          <Typography variant="caption" sx={{ fontSize: '0.6rem', color: 'text.secondary' }}>
+                            {node.node_id.slice(0, 10)}...
+                          </Typography>
+                        </Box>
+                      ) : (
+                        <Typography sx={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>
+                          {node.node_id.slice(0, 15)}...
+                        </Typography>
+                      )}
                     </TableCell>
-                    <TableCell>{node.node_name || '-'}</TableCell>
-                    <TableCell>
+                    {!isSideBySide && <TableCell>{node.node_name || '-'}</TableCell>}
+                    <TableCell sx={{ py: isSideBySide ? 0.5 : 1, px: isSideBySide ? 0.75 : 2 }}>
                       <Chip 
-                        label={node.node_type} 
+                        label={isSideBySide ? (node.node_type === 'SUBSTATION' ? 'SUB' : 'XFMR') : node.node_type} 
                         size="small"
                         sx={{ 
                           bgcolor: node.node_type === 'SUBSTATION' ? alpha('#FBBF24', 0.2) : alpha('#3B82F6', 0.2),
                           color: node.node_type === 'SUBSTATION' ? '#FBBF24' : '#3B82F6',
-                          fontSize: '0.7rem'
+                          fontSize: isSideBySide ? '0.55rem' : '0.7rem',
+                          height: isSideBySide ? 18 : 24,
+                          '& .MuiChip-label': { px: isSideBySide ? 0.5 : 1 }
                         }}
                       />
                     </TableCell>
-                    <TableCell align="right">
-                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 1 }}>
-                        <Box sx={{ 
-                          width: 60, 
-                          height: 8, 
-                          bgcolor: alpha('#EF4444', 0.2),
-                          borderRadius: 1,
-                          overflow: 'hidden'
-                        }}>
+                    <TableCell align="right" sx={{ py: isSideBySide ? 0.5 : 1, px: isSideBySide ? 0.75 : 2 }}>
+                      {isSideBySide ? (
+                        <Chip 
+                          label={`${(node.criticality_score * 100).toFixed(0)}%`}
+                          size="small"
+                          sx={{ 
+                            height: 18,
+                            bgcolor: node.criticality_score > 0.7 ? alpha('#EF4444', 0.2) : 
+                                     node.criticality_score > 0.4 ? alpha('#FBBF24', 0.2) : alpha('#22C55E', 0.2),
+                            color: node.criticality_score > 0.7 ? '#EF4444' : 
+                                   node.criticality_score > 0.4 ? '#FBBF24' : '#22C55E',
+                            fontWeight: 600,
+                            fontSize: '0.6rem',
+                            '& .MuiChip-label': { px: 0.5 }
+                          }}
+                        />
+                      ) : (
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 1 }}>
                           <Box sx={{ 
-                            width: `${node.criticality_score * 100}%`, 
-                            height: '100%', 
-                            bgcolor: node.criticality_score > 0.7 ? '#EF4444' : node.criticality_score > 0.4 ? '#FBBF24' : '#22C55E'
-                          }} />
+                            width: 60, 
+                            height: 8, 
+                            bgcolor: alpha('#EF4444', 0.2),
+                            borderRadius: 1,
+                            overflow: 'hidden'
+                          }}>
+                            <Box sx={{ 
+                              width: `${node.criticality_score * 100}%`, 
+                              height: '100%', 
+                              bgcolor: node.criticality_score > 0.7 ? '#EF4444' : node.criticality_score > 0.4 ? '#FBBF24' : '#22C55E'
+                            }} />
+                          </Box>
+                          <Typography variant="body2" sx={{ minWidth: 40 }}>
+                            {(node.criticality_score * 100).toFixed(0)}%
+                          </Typography>
                         </Box>
-                        <Typography variant="body2" sx={{ minWidth: 40 }}>
-                          {(node.criticality_score * 100).toFixed(0)}%
-                        </Typography>
-                      </Box>
-                    </TableCell>
-                    <TableCell align="right">
-                      <Typography variant="body2" color="text.secondary">
-                        {node.cascade_risk?.toFixed(4) || node.criticality_score.toFixed(4)}
-                      </Typography>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -642,6 +697,890 @@ function RegionalAnalysisPanel({ highRiskNodes, cascadeResult }: { highRiskNodes
   );
 }
 
+// Cross-Region Power Flow Sankey Visualization - P1 Gap Resolution
+// UI/UX Refined: Improved flow visualization, gradient effects, better spacing
+function CrossRegionSankeyPanel({ highRiskNodes, cascadeResult }: { highRiskNodes: CascadeNode[]; cascadeResult: CascadeResult | null }) {
+  const [expanded, setExpanded] = useState(true);
+  const [hoveredFlow, setHoveredFlow] = useState<number | null>(null);
+  
+  // Generate cross-region flow data based on cascade propagation patterns
+  const crossRegionFlows = useMemo<CrossRegionFlow[]>(() => {
+    // Define region connections (based on utility service territory topology)
+    const regionConnections: CrossRegionFlow[] = [
+      { source_region: 'Houston Metro', target_region: 'North', flow_capacity_mw: 2400, connection_count: 12, vulnerability_score: 0.72 },
+      { source_region: 'Houston Metro', target_region: 'Southwest', flow_capacity_mw: 1800, connection_count: 8, vulnerability_score: 0.45 },
+      { source_region: 'Houston Metro', target_region: 'Coastal', flow_capacity_mw: 2100, connection_count: 15, vulnerability_score: 0.68 },
+      { source_region: 'Houston Metro', target_region: 'East', flow_capacity_mw: 950, connection_count: 5, vulnerability_score: 0.35 },
+      { source_region: 'Houston Metro', target_region: 'West', flow_capacity_mw: 720, connection_count: 4, vulnerability_score: 0.28 },
+      { source_region: 'North', target_region: 'West', flow_capacity_mw: 450, connection_count: 3, vulnerability_score: 0.22 },
+      { source_region: 'Southwest', target_region: 'Coastal', flow_capacity_mw: 680, connection_count: 4, vulnerability_score: 0.38 },
+      { source_region: 'Coastal', target_region: 'East', flow_capacity_mw: 520, connection_count: 3, vulnerability_score: 0.42 },
+    ];
+    
+    // Adjust vulnerability based on cascade results if available
+    if (cascadeResult?.cascade_order) {
+      const affectedRegions = new Set<string>();
+      cascadeResult.cascade_order.forEach(node => {
+        const id = node.node_id.toUpperCase();
+        if (id.includes('HOU')) affectedRegions.add('Houston Metro');
+        else if (id.includes('GAL') || id.includes('BRA') || id.includes('CHA')) affectedRegions.add('Coastal');
+        else if (id.includes('MON')) affectedRegions.add('North');
+        else if (id.includes('FBN') || id.includes('FTB')) affectedRegions.add('Southwest');
+        else if (id.includes('WAL')) affectedRegions.add('West');
+        else if (id.includes('LIB')) affectedRegions.add('East');
+      });
+      
+      return regionConnections.map(conn => ({
+        ...conn,
+        vulnerability_score: (affectedRegions.has(conn.source_region) || affectedRegions.has(conn.target_region))
+          ? Math.min(conn.vulnerability_score * 1.5, 1.0)
+          : conn.vulnerability_score
+      }));
+    }
+    
+    return regionConnections;
+  }, [cascadeResult]);
+
+  const maxCapacity = Math.max(...crossRegionFlows.map(f => f.flow_capacity_mw));
+  const totalCapacity = crossRegionFlows.reduce((sum, f) => sum + f.flow_capacity_mw, 0);
+  const totalConnections = crossRegionFlows.reduce((sum, f) => sum + f.connection_count, 0);
+  const criticalCount = crossRegionFlows.filter(f => f.vulnerability_score > 0.6).length;
+
+  // Region colors for Sankey nodes
+  const regionColors: Record<string, string> = {
+    'Houston Metro': '#3B82F6',
+    'North': '#22C55E',
+    'Southwest': '#FBBF24',
+    'Coastal': '#06B6D4',
+    'East': '#8B5CF6',
+    'West': '#F97316',
+  };
+
+  // Region short names for compact display
+  const regionShortNames: Record<string, string> = {
+    'Houston Metro': 'Houston',
+    'North': 'North',
+    'Southwest': 'SW',
+    'Coastal': 'Coastal',
+    'East': 'East',
+    'West': 'West',
+  };
+
+  return (
+    <Card sx={{ 
+      bgcolor: 'rgba(6, 182, 212, 0.05)', 
+      border: '1px solid rgba(6, 182, 212, 0.2)',
+      transition: 'all 0.2s ease-in-out',
+      '&:hover': { borderColor: 'rgba(6, 182, 212, 0.4)' }
+    }}>
+      <CardContent sx={{ p: 2.5 }}>
+        <Box 
+          sx={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center', 
+            cursor: 'pointer',
+            userSelect: 'none'
+          }}
+          onClick={() => setExpanded(!expanded)}
+        >
+          <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, color: '#06B6D4' }}>
+            <SwapHoriz sx={{ fontSize: 24 }} /> Cross-Region Power Flow
+          </Typography>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            {criticalCount > 0 && (
+              <Chip 
+                icon={<Warning sx={{ fontSize: 14 }} />}
+                label={`${criticalCount} Critical`}
+                size="small"
+                sx={{ 
+                  bgcolor: alpha('#EF4444', 0.15), 
+                  color: '#EF4444',
+                  fontWeight: 600,
+                  '& .MuiChip-icon': { color: '#EF4444' }
+                }}
+              />
+            )}
+            <Chip 
+              label={`${(totalCapacity / 1000).toFixed(1)} GW`}
+              size="small"
+              sx={{ bgcolor: alpha('#06B6D4', 0.2), color: '#06B6D4', fontWeight: 600 }}
+            />
+            {expanded ? <ExpandLess sx={{ color: '#06B6D4' }} /> : <ExpandMore sx={{ color: '#06B6D4' }} />}
+          </Stack>
+        </Box>
+
+        <Collapse in={expanded}>
+          <Box sx={{ mt: 2.5 }}>
+            {/* Compact Summary Stats */}
+            <Grid container spacing={1.5} sx={{ mb: 2.5 }}>
+              <Grid item xs={4}>
+                <Paper sx={{ 
+                  p: 1.5, 
+                  textAlign: 'center', 
+                  bgcolor: alpha('#06B6D4', 0.08),
+                  border: '1px solid',
+                  borderColor: alpha('#06B6D4', 0.15)
+                }}>
+                  <Typography variant="h5" sx={{ color: '#06B6D4', fontWeight: 700, lineHeight: 1.2 }}>
+                    {crossRegionFlows.length}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                    Corridors
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={4}>
+                <Paper sx={{ 
+                  p: 1.5, 
+                  textAlign: 'center', 
+                  bgcolor: alpha('#22C55E', 0.08),
+                  border: '1px solid',
+                  borderColor: alpha('#22C55E', 0.15)
+                }}>
+                  <Typography variant="h5" sx={{ color: '#22C55E', fontWeight: 700, lineHeight: 1.2 }}>
+                    {totalConnections}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                    Lines
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={4}>
+                <Paper sx={{ 
+                  p: 1.5, 
+                  textAlign: 'center', 
+                  bgcolor: alpha('#FBBF24', 0.08),
+                  border: '1px solid',
+                  borderColor: alpha('#FBBF24', 0.15)
+                }}>
+                  <Typography variant="h5" sx={{ color: '#FBBF24', fontWeight: 700, lineHeight: 1.2 }}>
+                    {(totalCapacity / 1000).toFixed(1)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
+                    GW Total
+                  </Typography>
+                </Paper>
+              </Grid>
+            </Grid>
+
+            {/* Flow Visualization - Refined Sankey-style */}
+            <Box sx={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              gap: 1,
+              p: 2,
+              bgcolor: alpha('#0A1929', 0.5),
+              borderRadius: 2,
+              border: '1px solid',
+              borderColor: alpha('#06B6D4', 0.15)
+            }}>
+              {crossRegionFlows.map((flow, idx) => {
+                const widthPercent = (flow.flow_capacity_mw / maxCapacity) * 100;
+                const heightPx = Math.max(12, Math.min(28, widthPercent * 0.28));
+                const vulnerabilityColor = flow.vulnerability_score > 0.6 ? '#EF4444' : 
+                                          flow.vulnerability_score > 0.35 ? '#FBBF24' : '#22C55E';
+                const isHovered = hoveredFlow === idx;
+                const sourceColor = regionColors[flow.source_region] || '#666';
+                const targetColor = regionColors[flow.target_region] || '#666';
+                
+                return (
+                  <Box 
+                    key={idx} 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 1,
+                      py: 0.5,
+                      transition: 'all 0.15s ease-in-out',
+                      opacity: hoveredFlow !== null && !isHovered ? 0.4 : 1,
+                      transform: isHovered ? 'scale(1.01)' : 'scale(1)',
+                    }}
+                    onMouseEnter={() => setHoveredFlow(idx)}
+                    onMouseLeave={() => setHoveredFlow(null)}
+                  >
+                    {/* Source Region Node */}
+                    <Paper sx={{ 
+                      width: 72, 
+                      minWidth: 72,
+                      py: 0.75, 
+                      px: 1,
+                      textAlign: 'center',
+                      bgcolor: alpha(sourceColor, isHovered ? 0.25 : 0.15),
+                      border: '2px solid',
+                      borderColor: sourceColor,
+                      borderRadius: 1,
+                      transition: 'all 0.15s ease-in-out',
+                    }}>
+                      <Typography variant="caption" sx={{ 
+                        color: sourceColor, 
+                        fontWeight: 700,
+                        fontSize: '0.68rem',
+                        display: 'block',
+                        lineHeight: 1.2
+                      }}>
+                        {regionShortNames[flow.source_region]}
+                      </Typography>
+                    </Paper>
+                    
+                    {/* Flow Bar with Gradient */}
+                    <Tooltip 
+                      title={
+                        <Box sx={{ p: 0.5 }}>
+                          <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>
+                            {flow.source_region} → {flow.target_region}
+                          </Typography>
+                          <Typography variant="caption" sx={{ display: 'block', mt: 0.5 }}>
+                            Capacity: {flow.flow_capacity_mw.toLocaleString()} MW
+                          </Typography>
+                          <Typography variant="caption" sx={{ display: 'block' }}>
+                            Lines: {flow.connection_count} interconnections
+                          </Typography>
+                          <Typography variant="caption" sx={{ display: 'block', color: vulnerabilityColor }}>
+                            Vulnerability: {(flow.vulnerability_score * 100).toFixed(0)}%
+                          </Typography>
+                        </Box>
+                      }
+                      arrow
+                      placement="top"
+                    >
+                      <Box sx={{ 
+                        flex: 1, 
+                        position: 'relative',
+                        display: 'flex',
+                        alignItems: 'center',
+                        cursor: 'pointer'
+                      }}>
+                        {/* Flow gradient bar */}
+                        <Box sx={{ 
+                          height: heightPx,
+                          width: '100%',
+                          background: `linear-gradient(90deg, ${alpha(sourceColor, 0.6)} 0%, ${alpha(vulnerabilityColor, isHovered ? 0.7 : 0.45)} 50%, ${alpha(targetColor, 0.6)} 100%)`,
+                          borderRadius: 1,
+                          position: 'relative',
+                          overflow: 'visible',
+                          transition: 'all 0.15s ease-in-out',
+                          boxShadow: isHovered ? `0 0 12px ${alpha(vulnerabilityColor, 0.4)}` : 'none',
+                        }}>
+                          {/* Animated flow indicator */}
+                          <Box sx={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            background: `repeating-linear-gradient(90deg, transparent, transparent 20px, ${alpha('#fff', 0.08)} 20px, ${alpha('#fff', 0.08)} 40px)`,
+                            animation: isHovered ? 'flowAnimation 1s linear infinite' : 'none',
+                            '@keyframes flowAnimation': {
+                              '0%': { backgroundPosition: '0 0' },
+                              '100%': { backgroundPosition: '40px 0' },
+                            },
+                            borderRadius: 1,
+                          }} />
+                          {/* Arrow head */}
+                          <Box sx={{
+                            position: 'absolute',
+                            right: -6,
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            width: 0,
+                            height: 0,
+                            borderTop: `${heightPx / 2 + 2}px solid transparent`,
+                            borderBottom: `${heightPx / 2 + 2}px solid transparent`,
+                            borderLeft: `8px solid ${targetColor}`,
+                          }} />
+                        </Box>
+                        {/* Capacity label - positioned below bar */}
+                        <Typography sx={{ 
+                          position: 'absolute',
+                          bottom: -14,
+                          left: '50%',
+                          transform: 'translateX(-50%)',
+                          fontSize: '0.6rem',
+                          color: 'text.secondary',
+                          whiteSpace: 'nowrap',
+                          fontWeight: 500,
+                          opacity: 0.8
+                        }}>
+                          {flow.flow_capacity_mw >= 1000 
+                            ? `${(flow.flow_capacity_mw / 1000).toFixed(1)} GW` 
+                            : `${flow.flow_capacity_mw} MW`}
+                        </Typography>
+                      </Box>
+                    </Tooltip>
+                    
+                    {/* Target Region Node */}
+                    <Paper sx={{ 
+                      width: 72, 
+                      minWidth: 72,
+                      py: 0.75, 
+                      px: 1,
+                      textAlign: 'center',
+                      bgcolor: alpha(targetColor, isHovered ? 0.25 : 0.15),
+                      border: '2px solid',
+                      borderColor: targetColor,
+                      borderRadius: 1,
+                      transition: 'all 0.15s ease-in-out',
+                    }}>
+                      <Typography variant="caption" sx={{ 
+                        color: targetColor, 
+                        fontWeight: 700,
+                        fontSize: '0.68rem',
+                        display: 'block',
+                        lineHeight: 1.2
+                      }}>
+                        {regionShortNames[flow.target_region]}
+                      </Typography>
+                    </Paper>
+                    
+                    {/* Vulnerability Badge - Compact */}
+                    <Chip 
+                      label={`${(flow.vulnerability_score * 100).toFixed(0)}%`}
+                      size="small"
+                      sx={{ 
+                        minWidth: 44,
+                        height: 22,
+                        bgcolor: alpha(vulnerabilityColor, isHovered ? 0.3 : 0.2),
+                        color: vulnerabilityColor,
+                        fontWeight: 700,
+                        fontSize: '0.65rem',
+                        transition: 'all 0.15s ease-in-out',
+                        '& .MuiChip-label': { px: 1 }
+                      }}
+                    />
+                  </Box>
+                );
+              })}
+            </Box>
+
+            {/* Critical Corridor Alert */}
+            {criticalCount > 0 && (
+              <Alert 
+                severity="warning" 
+                icon={<Warning />}
+                sx={{ 
+                  mt: 2, 
+                  bgcolor: alpha('#FBBF24', 0.08), 
+                  border: '1px solid',
+                  borderColor: alpha('#FBBF24', 0.2),
+                  '& .MuiAlert-icon': { color: '#FBBF24' },
+                  py: 1
+                }}
+              >
+                <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                  <strong>{criticalCount} critical corridor{criticalCount > 1 ? 's' : ''}</strong> with vulnerability above 60%. 
+                  Failure could isolate regions and accelerate cascade propagation.
+                </Typography>
+              </Alert>
+            )}
+
+            {/* Compact Legend */}
+            <Stack 
+              direction="row" 
+              spacing={2} 
+              sx={{ 
+                mt: 2, 
+                pt: 1.5, 
+                borderTop: '1px solid', 
+                borderColor: alpha('#fff', 0.08),
+                justifyContent: 'center'
+              }}
+            >
+              {[
+                { color: '#EF4444', label: 'High (>60%)' },
+                { color: '#FBBF24', label: 'Moderate' },
+                { color: '#22C55E', label: 'Low (<35%)' },
+              ].map(item => (
+                <Stack key={item.label} direction="row" alignItems="center" spacing={0.75}>
+                  <Box sx={{ width: 10, height: 10, bgcolor: item.color, borderRadius: 0.5 }} />
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                    {item.label}
+                  </Typography>
+                </Stack>
+              ))}
+            </Stack>
+          </Box>
+        </Collapse>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Investment ROI Panel - P1 Gap Resolution
+// UI/UX Refined: Better data visualization, improved table styling, clearer hierarchy
+function InvestmentROIPanel({ highRiskNodes, cascadeResult }: { highRiskNodes: CascadeNode[]; cascadeResult: CascadeResult | null }) {
+  const [expanded, setExpanded] = useState(true);
+  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
+
+  // Calculate investment recommendations per region
+  const investmentData = useMemo<RegionalInvestment[]>(() => {
+    // Cost assumptions (per node upgrade)
+    const UPGRADE_COST_SUBSTATION = 5000000; // $5M per substation upgrade
+    const UPGRADE_COST_TRANSFORMER = 500000; // $500K per transformer upgrade
+    const DAMAGE_MULTIPLIER = 2.5; // Expected avoided damage = 2.5x investment
+    const CUSTOMER_DAMAGE_COST = 150; // $150 per customer affected per event
+    
+    // Group nodes by region
+    const regionMap = new Map<string, { 
+      region: string; 
+      county: string; 
+      substations: number; 
+      transformers: number;
+      highRiskSubstations: number;
+      highRiskTransformers: number;
+      totalCustomersAtRisk: number;
+      avgCriticality: number;
+    }>();
+    
+    const getRegionData = (nodeId: string, nodeName?: string): { region: string; county: string } => {
+      const id = nodeId.toUpperCase();
+      if (id.includes('HOU')) return { region: 'Houston Metro', county: 'Harris' };
+      if (id.includes('GAL')) return { region: 'Coastal', county: 'Galveston' };
+      if (id.includes('BRA')) return { region: 'Coastal', county: 'Brazoria' };
+      if (id.includes('MON')) return { region: 'North', county: 'Montgomery' };
+      if (id.includes('FBN') || id.includes('FTB')) return { region: 'Southwest', county: 'Fort Bend' };
+      if (id.includes('WAL')) return { region: 'West', county: 'Waller' };
+      if (id.includes('LIB')) return { region: 'East', county: 'Liberty' };
+      if (id.includes('CHA')) return { region: 'Coastal', county: 'Chambers' };
+      return { region: 'Houston Metro', county: 'Harris' };
+    };
+    
+    // Process high-risk nodes
+    highRiskNodes.forEach(node => {
+      const { region, county } = getRegionData(node.node_id, node.node_name || undefined);
+      const key = `${region}-${county}`;
+      
+      if (!regionMap.has(key)) {
+        regionMap.set(key, {
+          region, county,
+          substations: 0, transformers: 0,
+          highRiskSubstations: 0, highRiskTransformers: 0,
+          totalCustomersAtRisk: 0, avgCriticality: 0
+        });
+      }
+      
+      const data = regionMap.get(key)!;
+      const isSubstation = node.node_type === 'SUBSTATION';
+      const isHighRisk = node.criticality_score > 0.6;
+      
+      if (isSubstation) {
+        data.substations++;
+        if (isHighRisk) data.highRiskSubstations++;
+      } else {
+        data.transformers++;
+        if (isHighRisk) data.highRiskTransformers++;
+      }
+      
+      data.totalCustomersAtRisk += (node.downstream_transformers || 0) * 50;
+      const totalNodes = data.substations + data.transformers;
+      data.avgCriticality = ((data.avgCriticality * (totalNodes - 1)) + node.criticality_score) / totalNodes;
+    });
+    
+    // Calculate investment metrics
+    return Array.from(regionMap.values()).map(data => {
+      const nodesNeedingUpgrade = data.highRiskSubstations + data.highRiskTransformers;
+      const investmentCost = (data.highRiskSubstations * UPGRADE_COST_SUBSTATION) + 
+                            (data.highRiskTransformers * UPGRADE_COST_TRANSFORMER);
+      const avoidedDamage = (data.totalCustomersAtRisk * CUSTOMER_DAMAGE_COST * data.avgCriticality) + 
+                           (investmentCost * DAMAGE_MULTIPLIER * data.avgCriticality);
+      const roi = investmentCost > 0 ? ((avoidedDamage - investmentCost) / investmentCost) * 100 : 0;
+      
+      let priority: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+      if (data.avgCriticality > 0.7 || nodesNeedingUpgrade > 5) priority = 'CRITICAL';
+      else if (data.avgCriticality > 0.5 || nodesNeedingUpgrade > 3) priority = 'HIGH';
+      else if (data.avgCriticality > 0.3 || nodesNeedingUpgrade > 1) priority = 'MEDIUM';
+      else priority = 'LOW';
+      
+      return {
+        region: data.region,
+        county: data.county,
+        nodes_requiring_upgrade: nodesNeedingUpgrade,
+        estimated_investment_cost: investmentCost,
+        avoided_damage_potential: avoidedDamage,
+        roi_percent: roi,
+        priority
+      };
+    }).filter(inv => inv.nodes_requiring_upgrade > 0)
+      .sort((a, b) => b.roi_percent - a.roi_percent);
+  }, [highRiskNodes]);
+
+  const totalInvestment = investmentData.reduce((sum, d) => sum + d.estimated_investment_cost, 0);
+  const totalBenefit = investmentData.reduce((sum, d) => sum + d.avoided_damage_potential, 0);
+  const overallROI = totalInvestment > 0 ? ((totalBenefit - totalInvestment) / totalInvestment) * 100 : 0;
+  const maxROI = Math.max(...investmentData.map(d => d.roi_percent), 1);
+  const criticalCount = investmentData.filter(d => d.priority === 'CRITICAL').length;
+
+  const priorityColors = {
+    'CRITICAL': '#EF4444',
+    'HIGH': '#F97316',
+    'MEDIUM': '#FBBF24',
+    'LOW': '#22C55E'
+  };
+
+  const priorityIcons = {
+    'CRITICAL': <PriorityHigh sx={{ fontSize: 12 }} />,
+    'HIGH': null,
+    'MEDIUM': null,
+    'LOW': <CheckCircle sx={{ fontSize: 12 }} />
+  };
+
+  if (investmentData.length === 0) return null;
+
+  return (
+    <Card sx={{ 
+      bgcolor: 'rgba(139, 92, 246, 0.05)', 
+      border: '1px solid rgba(139, 92, 246, 0.2)',
+      transition: 'all 0.2s ease-in-out',
+      '&:hover': { borderColor: 'rgba(139, 92, 246, 0.4)' }
+    }}>
+      <CardContent sx={{ p: 2.5 }}>
+        <Box 
+          sx={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center', 
+            cursor: 'pointer',
+            userSelect: 'none'
+          }}
+          onClick={() => setExpanded(!expanded)}
+        >
+          <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1.5, color: '#8B5CF6' }}>
+            <AttachMoney sx={{ fontSize: 24 }} /> Investment ROI Analysis
+          </Typography>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            {criticalCount > 0 && (
+              <Chip 
+                icon={<PriorityHigh sx={{ fontSize: 14 }} />}
+                label={`${criticalCount} Critical`}
+                size="small"
+                sx={{ 
+                  bgcolor: alpha('#EF4444', 0.15), 
+                  color: '#EF4444',
+                  fontWeight: 600,
+                  '& .MuiChip-icon': { color: '#EF4444' }
+                }}
+              />
+            )}
+            <Chip 
+              label={`${overallROI.toFixed(0)}% ROI`}
+              size="small"
+              sx={{ 
+                bgcolor: alpha(overallROI > 100 ? '#22C55E' : '#FBBF24', 0.2), 
+                color: overallROI > 100 ? '#22C55E' : '#FBBF24',
+                fontWeight: 700
+              }}
+            />
+            {expanded ? <ExpandLess sx={{ color: '#8B5CF6' }} /> : <ExpandMore sx={{ color: '#8B5CF6' }} />}
+          </Stack>
+        </Box>
+
+        <Collapse in={expanded}>
+          <Box sx={{ mt: 2.5 }}>
+            {/* Compact Investment Summary Cards */}
+            <Grid container spacing={1.5} sx={{ mb: 2.5 }}>
+              <Grid item xs={4}>
+                <Paper sx={{ 
+                  p: 1.5, 
+                  textAlign: 'center', 
+                  bgcolor: alpha('#3B82F6', 0.08),
+                  border: '1px solid',
+                  borderColor: alpha('#3B82F6', 0.15)
+                }}>
+                  <AttachMoney sx={{ color: '#3B82F6', fontSize: 22, mb: 0.5 }} />
+                  <Typography variant="h5" sx={{ color: '#3B82F6', fontWeight: 700, lineHeight: 1.2 }}>
+                    ${(totalInvestment / 1000000).toFixed(1)}M
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                    Investment Needed
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={4}>
+                <Paper sx={{ 
+                  p: 1.5, 
+                  textAlign: 'center', 
+                  bgcolor: alpha('#22C55E', 0.08),
+                  border: '1px solid',
+                  borderColor: alpha('#22C55E', 0.15)
+                }}>
+                  <TrendingUp sx={{ color: '#22C55E', fontSize: 22, mb: 0.5 }} />
+                  <Typography variant="h5" sx={{ color: '#22C55E', fontWeight: 700, lineHeight: 1.2 }}>
+                    ${(totalBenefit / 1000000).toFixed(1)}M
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                    Expected Benefit
+                  </Typography>
+                </Paper>
+              </Grid>
+              <Grid item xs={4}>
+                <Paper sx={{ 
+                  p: 1.5, 
+                  textAlign: 'center', 
+                  bgcolor: alpha(overallROI > 100 ? '#22C55E' : '#FBBF24', 0.08),
+                  border: '1px solid',
+                  borderColor: alpha(overallROI > 100 ? '#22C55E' : '#FBBF24', 0.15)
+                }}>
+                  <CheckCircle sx={{ color: overallROI > 100 ? '#22C55E' : '#FBBF24', fontSize: 22, mb: 0.5 }} />
+                  <Typography variant="h5" sx={{ color: overallROI > 100 ? '#22C55E' : '#FBBF24', fontWeight: 700, lineHeight: 1.2 }}>
+                    {overallROI.toFixed(0)}%
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                    Overall ROI
+                  </Typography>
+                </Paper>
+              </Grid>
+            </Grid>
+
+            {/* Per-Region Investment Table - Enhanced */}
+            <Box sx={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center',
+              mb: 1.5
+            }}>
+              <Typography variant="subtitle2" sx={{ color: 'text.secondary', fontSize: '0.75rem' }}>
+                Investment Recommendations by Region
+              </Typography>
+              <Chip
+                label="Sorted by ROI"
+                size="small"
+                sx={{ 
+                  height: 18,
+                  bgcolor: alpha('#8B5CF6', 0.1),
+                  color: '#8B5CF6',
+                  fontSize: '0.6rem',
+                  '& .MuiChip-label': { px: 1 }
+                }}
+              />
+            </Box>
+            
+            <TableContainer sx={{ 
+              bgcolor: alpha('#0A1929', 0.5),
+              borderRadius: 2,
+              border: '1px solid',
+              borderColor: alpha('#8B5CF6', 0.15)
+            }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ 
+                      color: 'text.secondary', 
+                      fontWeight: 600, 
+                      fontSize: '0.7rem',
+                      borderBottom: `1px solid ${alpha('#8B5CF6', 0.2)}`,
+                      py: 1.25
+                    }}>
+                      Region
+                    </TableCell>
+                    <TableCell align="center" sx={{ 
+                      color: 'text.secondary', 
+                      fontWeight: 600, 
+                      fontSize: '0.7rem',
+                      borderBottom: `1px solid ${alpha('#8B5CF6', 0.2)}`,
+                      py: 1.25
+                    }}>
+                      Priority
+                    </TableCell>
+                    <TableCell align="right" sx={{ 
+                      color: 'text.secondary', 
+                      fontWeight: 600, 
+                      fontSize: '0.7rem',
+                      borderBottom: `1px solid ${alpha('#8B5CF6', 0.2)}`,
+                      py: 1.25
+                    }}>
+                      Cost
+                    </TableCell>
+                    <TableCell align="right" sx={{ 
+                      color: 'text.secondary', 
+                      fontWeight: 600, 
+                      fontSize: '0.7rem',
+                      borderBottom: `1px solid ${alpha('#8B5CF6', 0.2)}`,
+                      py: 1.25,
+                      width: 160
+                    }}>
+                      ROI
+                    </TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {investmentData.slice(0, 6).map((inv, idx) => {
+                    const isHovered = hoveredRow === idx;
+                    const isTop = idx === 0;
+                    const roiBarWidth = (inv.roi_percent / maxROI) * 100;
+                    
+                    return (
+                      <TableRow 
+                        key={`${inv.region}-${inv.county}`} 
+                        onMouseEnter={() => setHoveredRow(idx)}
+                        onMouseLeave={() => setHoveredRow(null)}
+                        sx={{ 
+                          bgcolor: isTop ? alpha('#8B5CF6', 0.12) : isHovered ? alpha('#8B5CF6', 0.06) : 'transparent',
+                          transition: 'background-color 0.15s ease-in-out',
+                          '&:last-child td': { borderBottom: 0 }
+                        }}
+                      >
+                        <TableCell sx={{ 
+                          py: 1.25,
+                          borderBottom: `1px solid ${alpha('#fff', 0.05)}`
+                        }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            {isTop && (
+                              <Box sx={{ 
+                                width: 4, 
+                                height: 28, 
+                                bgcolor: '#8B5CF6', 
+                                borderRadius: 1 
+                              }} />
+                            )}
+                            <Box>
+                              <Typography variant="body2" sx={{ 
+                                fontWeight: isTop ? 700 : 500,
+                                fontSize: '0.8rem',
+                                lineHeight: 1.3
+                              }}>
+                                {inv.county}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                                {inv.region} · {inv.nodes_requiring_upgrade} upgrade{inv.nodes_requiring_upgrade > 1 ? 's' : ''}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        </TableCell>
+                        <TableCell align="center" sx={{ 
+                          py: 1.25,
+                          borderBottom: `1px solid ${alpha('#fff', 0.05)}`
+                        }}>
+                          <Chip 
+                            icon={priorityIcons[inv.priority] || undefined}
+                            label={inv.priority.slice(0, 4)}
+                            size="small"
+                            sx={{ 
+                              bgcolor: alpha(priorityColors[inv.priority], 0.15),
+                              color: priorityColors[inv.priority],
+                              fontWeight: 700,
+                              fontSize: '0.6rem',
+                              height: 20,
+                              '& .MuiChip-icon': { 
+                                color: priorityColors[inv.priority],
+                                ml: 0.5
+                              },
+                              '& .MuiChip-label': { px: 0.75 }
+                            }}
+                          />
+                        </TableCell>
+                        <TableCell align="right" sx={{ 
+                          py: 1.25,
+                          borderBottom: `1px solid ${alpha('#fff', 0.05)}`
+                        }}>
+                          <Typography variant="body2" sx={{ color: '#3B82F6', fontWeight: 600, fontSize: '0.75rem' }}>
+                            ${(inv.estimated_investment_cost / 1000000).toFixed(1)}M
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right" sx={{ 
+                          py: 1.25,
+                          borderBottom: `1px solid ${alpha('#fff', 0.05)}`
+                        }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, justifyContent: 'flex-end' }}>
+                            {/* ROI Bar Visualization */}
+                            <Box sx={{ 
+                              flex: 1,
+                              height: 6,
+                              bgcolor: alpha('#fff', 0.08),
+                              borderRadius: 1,
+                              overflow: 'hidden',
+                              maxWidth: 80
+                            }}>
+                              <Box sx={{ 
+                                height: '100%',
+                                width: `${roiBarWidth}%`,
+                                bgcolor: inv.roi_percent > 100 ? '#22C55E' : '#FBBF24',
+                                borderRadius: 1,
+                                transition: 'width 0.3s ease-in-out'
+                              }} />
+                            </Box>
+                            <Typography 
+                              variant="body2" 
+                              sx={{ 
+                                color: inv.roi_percent > 100 ? '#22C55E' : '#FBBF24',
+                                fontWeight: 700,
+                                fontSize: '0.8rem',
+                                minWidth: 45,
+                                textAlign: 'right'
+                              }}
+                            >
+                              {inv.roi_percent.toFixed(0)}%
+                            </Typography>
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+
+            {/* Top Recommendation - More Prominent */}
+            {investmentData.length > 0 && (
+              <Box sx={{ 
+                mt: 2,
+                p: 2,
+                bgcolor: alpha('#8B5CF6', 0.08),
+                border: '1px solid',
+                borderColor: alpha('#8B5CF6', 0.25),
+                borderRadius: 2,
+                borderLeft: '4px solid #8B5CF6'
+              }}>
+                <Stack direction="row" spacing={1.5} alignItems="flex-start">
+                  <TrendingUp sx={{ color: '#8B5CF6', fontSize: 20, mt: 0.25 }} />
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 700, color: '#8B5CF6', mb: 0.5, fontSize: '0.8rem' }}>
+                      Top Investment Recommendation
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontSize: '0.75rem', lineHeight: 1.5 }}>
+                      Prioritize <strong>{investmentData[0].county} County</strong> ({investmentData[0].region}) - 
+                      <Box component="span" sx={{ color: '#3B82F6', fontWeight: 600 }}> ${(investmentData[0].estimated_investment_cost / 1000000).toFixed(1)}M </Box>
+                      investment yields 
+                      <Box component="span" sx={{ color: '#22C55E', fontWeight: 700 }}> ${(investmentData[0].avoided_damage_potential / 1000000).toFixed(1)}M </Box>
+                      benefit ({investmentData[0].roi_percent.toFixed(0)}% ROI)
+                    </Typography>
+                  </Box>
+                </Stack>
+              </Box>
+            )}
+
+            {/* Compact Legend */}
+            <Stack 
+              direction="row" 
+              spacing={2} 
+              sx={{ 
+                mt: 2, 
+                pt: 1.5, 
+                borderTop: '1px solid', 
+                borderColor: alpha('#fff', 0.08),
+                justifyContent: 'center'
+              }}
+            >
+              {[
+                { color: '#EF4444', label: 'Critical' },
+                { color: '#F97316', label: 'High' },
+                { color: '#FBBF24', label: 'Medium' },
+                { color: '#22C55E', label: 'Low' },
+              ].map(item => (
+                <Stack key={item.label} direction="row" alignItems="center" spacing={0.75}>
+                  <Box sx={{ width: 10, height: 10, bgcolor: item.color, borderRadius: 0.5 }} />
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6rem' }}>
+                    {item.label}
+                  </Typography>
+                </Stack>
+              ))}
+            </Stack>
+          </Box>
+        </Collapse>
+      </CardContent>
+    </Card>
+  );
+}
+
 // Main dashboard component
 export function CascadeAnalysisDashboard({
   scenarios,
@@ -654,6 +1593,8 @@ export function CascadeAnalysisDashboard({
   onLoadPredictions,
   visible,
   onToggleVisibility,
+  isEmbedded = false,
+  isSideBySide = false,
 }: CascadeAnalysisDashboardProps) {
   const [selectedScenario, setSelectedScenario] = useState<string>(scenarios[0]?.name || '');
   const [selectedPatientZero, setSelectedPatientZero] = useState<string>('');
@@ -728,34 +1669,44 @@ export function CascadeAnalysisDashboard({
   const selectedScenarioData = scenarios.find(s => s.name === selectedScenario);
 
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 3, p: 3, overflow: 'auto' }}>
-      {/* Header */}
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Box>
-          <Typography variant="h4" sx={{ color: '#FF6B6B', fontWeight: 300, display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Timeline sx={{ fontSize: 36 }} />
-            Cascade Failure Analysis
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            ML-powered cascade propagation simulation using NetworkX graph centrality analysis
-          </Typography>
+    <Box sx={{ 
+      height: '100%', 
+      display: 'flex', 
+      flexDirection: 'column', 
+      gap: isEmbedded ? 2 : 3, 
+      p: isEmbedded ? 2 : 3, 
+      overflow: 'auto',
+      bgcolor: isEmbedded ? 'transparent' : undefined,
+    }}>
+      {/* Header - simpler when embedded */}
+      {!isEmbedded && (
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Box>
+            <Typography variant="h4" sx={{ color: '#FF6B6B', fontWeight: 300, display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Timeline sx={{ fontSize: 36 }} />
+              Cascade Failure Analysis
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              ML-powered cascade propagation simulation using NetworkX graph centrality analysis
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={2}>
+            <Button
+              variant={visible ? 'contained' : 'outlined'}
+              startIcon={<Layers />}
+              onClick={onToggleVisibility}
+              sx={{
+                bgcolor: visible ? alpha('#FF6B6B', 0.2) : 'transparent',
+                borderColor: '#FF6B6B',
+                color: '#FF6B6B',
+                '&:hover': { bgcolor: alpha('#FF6B6B', 0.3) }
+              }}
+            >
+              {visible ? 'Hide Map Layers' : 'Show Map Layers'}
+            </Button>
+          </Stack>
         </Box>
-        <Stack direction="row" spacing={2}>
-          <Button
-            variant={visible ? 'contained' : 'outlined'}
-            startIcon={<Layers />}
-            onClick={onToggleVisibility}
-            sx={{
-              bgcolor: visible ? alpha('#FF6B6B', 0.2) : 'transparent',
-              borderColor: '#FF6B6B',
-              color: '#FF6B6B',
-              '&:hover': { bgcolor: alpha('#FF6B6B', 0.3) }
-            }}
-          >
-            {visible ? 'Hide Map Layers' : 'Show Map Layers'}
-          </Button>
-        </Stack>
-      </Box>
+      )}
 
       {/* Simulation Controls */}
       <Card sx={{ bgcolor: 'rgba(41, 181, 232, 0.05)', border: '1px solid rgba(41, 181, 232, 0.2)' }}>
@@ -1158,11 +2109,19 @@ export function CascadeAnalysisDashboard({
               <WaveBreakdownPanel waveBreakdown={waveBreakdown} />
             </Grid>
             <Grid item xs={12} md={6}>
-              <HighRiskNodesTable highRiskNodes={highRiskNodes} />
+<HighRiskNodesTable highRiskNodes={highRiskNodes} isSideBySide={isSideBySide} />
             </Grid>
             {/* Regional Analysis Panel */}
             <Grid item xs={12}>
               <RegionalAnalysisPanel highRiskNodes={highRiskNodes} cascadeResult={cascadeResult} />
+            </Grid>
+            {/* Cross-Region Power Flow - P1 Gap Resolution */}
+            <Grid item xs={12}>
+              <CrossRegionSankeyPanel highRiskNodes={highRiskNodes} cascadeResult={cascadeResult} />
+            </Grid>
+            {/* Investment ROI Analysis - P1 Gap Resolution */}
+            <Grid item xs={12}>
+              <InvestmentROIPanel highRiskNodes={highRiskNodes} cascadeResult={cascadeResult} />
             </Grid>
           </Grid>
         </>
@@ -1172,7 +2131,7 @@ export function CascadeAnalysisDashboard({
       {!cascadeResult && (
         <Grid container spacing={3}>
           <Grid item xs={12} md={6}>
-            <HighRiskNodesTable highRiskNodes={highRiskNodes} />
+            <HighRiskNodesTable highRiskNodes={highRiskNodes} isSideBySide={isSideBySide} />
           </Grid>
           <Grid item xs={12} md={6}>
             <Card sx={{ bgcolor: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.2)', height: '100%' }}>
@@ -1208,6 +2167,14 @@ export function CascadeAnalysisDashboard({
           {/* Regional Analysis Panel - shown even without simulation results */}
           <Grid item xs={12}>
             <RegionalAnalysisPanel highRiskNodes={highRiskNodes} cascadeResult={null} />
+          </Grid>
+          {/* Cross-Region Power Flow - P1 Gap Resolution (always visible) */}
+          <Grid item xs={12}>
+            <CrossRegionSankeyPanel highRiskNodes={highRiskNodes} cascadeResult={null} />
+          </Grid>
+          {/* Investment ROI Analysis - P1 Gap Resolution (always visible) */}
+          <Grid item xs={12}>
+            <InvestmentROIPanel highRiskNodes={highRiskNodes} cascadeResult={null} />
           </Grid>
         </Grid>
       )}

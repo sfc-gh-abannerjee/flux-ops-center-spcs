@@ -13,6 +13,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Box,
   Paper,
@@ -39,7 +40,10 @@ import {
   TableHead,
   TableRow,
   CircularProgress,
-  Collapse
+  Collapse,
+  Menu,
+  ListItemIcon,
+  ListItemText
 } from '@mui/material';
 import {
   Warning,
@@ -69,8 +73,31 @@ import {
   Description,
   Storage,
   Calculate,
-  Waves
+  Waves,
+  SwapHoriz,
+  AttachMoney,
+  PriorityHigh,
+  CheckCircle,
+  OpenInFull,
+  CloseFullscreen,
+  ViewSidebar,
+  DockOutlined,
+  KeyboardArrowLeft,
+  KeyboardArrowRight,
+  KeyboardArrowUp,
+  KeyboardArrowDown,
+  DragIndicator,
+  Minimize,
+  Close,
 } from '@mui/icons-material';
+import { LAYOUT } from '../layoutConstants';
+import { CascadeAnalysisDashboard } from './CascadeAnalysisDashboard';
+
+// Layout mode type for docking functionality
+// Simplified: Only overlay (map panel) and docked-bottom (Gmail-style)
+export type CascadeLayoutMode = 'overlay' | 'docked-bottom';
+// Size state for docked panels (Gmail/Slack style)
+export type DockedPanelSize = 'minimized' | 'compact' | 'expanded' | 'fullscreen';
 import type { CascadeScenario, CascadeResult, CascadeNode, CascadeWaveBreakdown, CortexExplanation } from '../types';
 
 interface CascadeControlPanelProps {
@@ -89,6 +116,14 @@ interface CascadeControlPanelProps {
   onOpenFullDashboard?: () => void;
   focusedWave: number | null;
   onFocusWave: (wave: number | null) => void;
+  // Gmail-style dock coordination
+  isDocked?: boolean;
+  dockedSize?: DockedPanelSize;
+  onDockedSizeChange?: (size: DockedPanelSize) => void;
+  onDockChange?: (docked: boolean) => void;
+  // Other panel states for side-by-side coordination
+  otherPanelDocked?: boolean;
+  otherPanelSize?: DockedPanelSize;
 }
 
 // Wave breakdown calculation hook
@@ -133,38 +168,82 @@ function formatCustomerCount(count: number): string {
   return count.toLocaleString();
 }
 
+// Official Snowflake Logo Icon (inline SVG) - generic snowflake
+const SnowflakeIcon = ({ size = 12, color = '#29B5E8' }: { size?: number; color?: string }) => (
+  <svg width={size} height={size} viewBox="0 0 256 255" fill={color} style={{ display: 'block' }}>
+    <path d="M100.211702,161.190001 C108.361987,161.768743 114.819378,168.444268 114.987899,176.631939 L114.991274,176.960242 L114.991274,239.05522 C114.991274,247.806283 107.825253,254.896935 99.0263033,254.896935 C90.2913434,254.896935 83.2133764,247.976113 83.0440909,239.370791 L83.0409894,239.05522 L83.0409894,204.320372 L52.633017,221.703374 C45.0083699,226.099982 35.2570326,223.497571 30.8298183,215.939585 C26.4801783,208.459856 28.963909,198.900148 36.3712482,194.444964 L36.6661961,194.271769 L90.9411815,163.257269 C93.8556716,161.574865 97.0956384,160.926095 100.211702,161.190001 Z M164.664258,163.043676 L165.046166,163.257269 L219.310056,194.271769 C226.956895,198.648217 229.551457,208.361439 225.155681,215.939585 C220.807865,223.399415 211.240891,226.031551 203.652816,221.871133 L203.354331,221.703374 L172.966701,204.320372 L172.966701,239.05522 C172.966701,247.806283 165.822871,254.896935 156.981387,254.896935 C148.246427,254.896935 141.18651,247.976113 141.01766,239.370791 L141.014566,239.05522 L141.014566,176.960242 C141.014566,168.623365 147.516691,161.77646 155.794139,161.190001 C158.765877,160.937569 161.850978,161.520176 164.664258,163.043676 Z M23.6714423,82.5093782 L23.9707798,82.6760126 L78.2050804,113.710673 C82.0183286,115.889734 84.5629599,119.346174 85.6374007,123.214969 C85.9943147,124.461194 86.157053,125.705586 86.2199292,126.951811 C86.2606135,128.6727 86.0349995,130.415582 85.4931558,132.107149 C84.3865987,135.660966 82.0289233,138.838025 78.5671295,140.931444 L78.2050804,141.144111 L23.9707798,172.198931 C16.3146948,176.566215 6.55411109,173.982131 2.16018402,166.425978 C-2.21027119,158.926896 0.27477397,149.413214 7.70459069,144.951419 L7.99656187,144.780154 L38.302823,127.457631 L7.99656187,110.087458 C0.340476864,105.709177 -2.27627683,96.0472707 2.16018402,88.4819536 C6.49704711,81.0040344 16.0620783,78.3770205 23.6714423,82.5093782 Z M253.847506,88.4819536 C258.272871,96.0472707 255.656117,105.709177 248.001882,110.087458 L217.693712,127.457631 L248.001882,144.780154 C255.656117,149.188668 258.272871,158.838342 253.847506,166.425978 C249.500538,173.903898 239.936397,176.53048 232.328211,172.370731 L232.027134,172.198931 L177.79698,141.144111 C173.983732,138.965051 171.43997,135.508611 170.36553,131.639816 C170.008616,130.393591 169.845876,129.149199 169.783,127.902974 C169.742316,126.182086 169.967913,124.439186 170.509774,122.747637 C171.616331,119.193819 173.973939,116.01676 177.435733,113.923341 L177.79698,113.710673 L232.027134,82.6760126 C239.682247,78.2994279 249.421679,80.902007 253.847506,88.4819536 Z M128.015985,83.1109162 C152.410613,83.1109162 172.195048,102.800698 172.195048,127.076856 C172.195048,151.353014 152.410613,171.042796 128.015985,171.042796 C103.621357,171.042796 83.8369227,151.353014 83.8369227,127.076856 C83.8369227,102.800698 103.621357,83.1109162 128.015985,83.1109162 Z M156.981387,0 C165.730971,0 172.966701,7.08785582 172.966701,15.8417254 L172.966701,50.5859033 L203.354331,33.2029008 C210.979979,28.806293 220.730316,31.4087037 225.155681,38.9668341 C229.505296,46.4465533 227.021566,56.0062613 219.614227,60.4614453 L219.310056,60.6346359 L165.046166,91.6486266 C162.131676,93.3310306 158.891709,93.9797999 155.775645,93.7158943 C147.625361,93.1371518 141.167969,86.4616269 140.999449,78.2739553 L140.996073,77.9456529 L140.996073,15.8417254 C140.996073,7.08785582 148.18439,0 156.981387,0 Z M99.0263033,0 C107.775887,0 114.991274,7.08785582 114.991274,15.8417254 L114.991274,77.9456529 C114.991274,86.2825301 108.489149,93.1294351 100.211702,93.7158943 C97.2399632,93.9683263 94.1548616,93.3857192 91.3415816,91.8622195 L90.9595725,91.6486266 L36.6661961,60.6346359 C29.0100358,56.2667889 26.3937734,46.5448672 30.8298183,38.9668341 C35.1776281,31.5070641 44.7445152,28.8748487 52.3532128,33.0351525 L52.6518699,33.2029008 L83.0227023,50.5859033 L83.0227023,15.8417254 C83.0227023,7.08785582 90.2273187,0 99.0263033,0 Z"/>
+  </svg>
+);
+
+// Service-specific icon components using official Snowflake icons
+const SnowparkIcon = ({ size = 14 }: { size?: number }) => (
+  <img src="/icons/Snowflake_ICON_Snowpark.svg" alt="Snowpark" width={size} height={size} style={{ display: 'block' }} />
+);
+
+const CortexCompleteIcon = ({ size = 14 }: { size?: number }) => (
+  <img src="/icons/Snowflake_ICON_LLM.svg" alt="Cortex Complete" width={size} height={size} style={{ display: 'block' }} />
+);
+
 // Snowflake ML Provenance Badge - shows where ML is being used
 function SnowflakeMLBadge({ 
   feature, 
-  tooltip 
+  tooltip,
+  compact = false  // Icon-only mode for floating panels
 }: { 
-  feature: 'cortex' | 'snowpark' | 'ml-model' | 'feature-store';
+  feature: 'cortex-complete' | 'snowpark' | 'ml-model' | 'feature-store';
   tooltip: string;
+  compact?: boolean;
 }) {
   const configs = {
-    'cortex': { icon: <AutoAwesome sx={{ fontSize: 10 }} />, label: 'Cortex LLM', color: '#29B5E8' },
-    'snowpark': { icon: <Hub sx={{ fontSize: 10 }} />, label: 'Snowpark', color: '#29B5E8' },
-    'ml-model': { icon: <Psychology sx={{ fontSize: 10 }} />, label: 'ML Model', color: '#29B5E8' },
-    'feature-store': { icon: <Science sx={{ fontSize: 10 }} />, label: 'Feature Store', color: '#29B5E8' },
+    'cortex-complete': { label: 'Cortex Complete', color: '#29B5E8' },
+    'snowpark': { label: 'Snowpark', color: '#29B5E8' },
+    'ml-model': { label: 'ML Model', color: '#29B5E8' },
+    'feature-store': { label: 'Feature Store', color: '#29B5E8' },
   };
   const config = configs[feature];
   
+  // Render service-specific icon
+  const renderIcon = () => {
+    switch (feature) {
+      case 'cortex-complete':
+        return <CortexCompleteIcon size={12} />;
+      case 'snowpark':
+        return <SnowparkIcon size={12} />;
+      default:
+        return <SnowflakeIcon size={12} color={config.color} />;
+    }
+  };
+  
   return (
-    <Tooltip title={tooltip} arrow placement="top">
-      <Chip
-        icon={config.icon}
-        label={config.label}
-        size="small"
+    <Tooltip title={compact ? config.label : tooltip} arrow placement="top">
+      <Box
         sx={{
-          height: 18,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: compact ? 0 : 0.5,
+          height: 20,
+          width: compact ? 24 : 'auto',  // Fixed width for icon-only
+          px: compact ? 0 : 0.75,
+          py: 0.25,
+          borderRadius: compact ? '50%' : '10px',  // Circle for icon-only
           fontSize: '0.6rem',
-          bgcolor: alpha(config.color, 0.15),
+          fontWeight: 600,
+          bgcolor: alpha(config.color, 0.12),
           color: config.color,
-          border: `1px solid ${alpha(config.color, 0.3)}`,
-          '& .MuiChip-icon': { color: config.color, ml: 0.5 },
-          '& .MuiChip-label': { px: 0.75 },
+          border: `1px solid ${alpha(config.color, 0.25)}`,
+          whiteSpace: 'nowrap',
+          cursor: 'default',
+          transition: 'all 0.15s ease',
+          '&:hover': {
+            bgcolor: alpha(config.color, 0.18),
+            borderColor: alpha(config.color, 0.4),
+          },
         }}
-      />
+      >
+        {renderIcon()}
+        {!compact && <span>{config.label}</span>}
+      </Box>
     </Tooltip>
   );
 }
@@ -267,7 +346,7 @@ function CortexExplanationPanel({
           <Typography variant="subtitle2" sx={{ color: '#29B5E8', fontWeight: 600 }}>
             AI Insights
           </Typography>
-          <SnowflakeMLBadge feature="cortex" tooltip="Powered by Snowflake Cortex Complete (Claude 4.5 Sonnet)" />
+          <SnowflakeMLBadge feature="cortex-complete" tooltip="Powered by Snowflake Cortex Complete (Claude 4.5 Sonnet)" />
         </Box>
         <IconButton size="small" sx={{ p: 0.25 }}>
           {expanded ? <ExpandLess sx={{ fontSize: 18 }} /> : <ExpandMore sx={{ fontSize: 18 }} />}
@@ -693,6 +772,480 @@ function CascadeChildNodes({ cascadeResult }: { cascadeResult: CascadeResult }) 
   );
 }
 
+// Cross-Region Flow data interface
+interface CrossRegionFlow {
+  source_region: string;
+  target_region: string;
+  flow_capacity_mw: number;
+  connection_count: number;
+  vulnerability_score: number;
+}
+
+// Engineering: Compact Cross-Region Flow Panel for drawer integration
+// Shows inter-regional power flows without requiring full-page context switch
+function CrossRegionFlowCompact({ highRiskNodes, cascadeResult }: { highRiskNodes: CascadeNode[]; cascadeResult: CascadeResult | null }) {
+  const [hoveredFlow, setHoveredFlow] = useState<number | null>(null);
+  
+  // Generate cross-region flow data based on cascade propagation patterns
+  const crossRegionFlows = useMemo<CrossRegionFlow[]>(() => {
+    const regionConnections: CrossRegionFlow[] = [
+      { source_region: 'Houston Metro', target_region: 'North', flow_capacity_mw: 2400, connection_count: 12, vulnerability_score: 0.72 },
+      { source_region: 'Houston Metro', target_region: 'Southwest', flow_capacity_mw: 1800, connection_count: 8, vulnerability_score: 0.45 },
+      { source_region: 'Houston Metro', target_region: 'Coastal', flow_capacity_mw: 2100, connection_count: 15, vulnerability_score: 0.68 },
+      { source_region: 'Houston Metro', target_region: 'East', flow_capacity_mw: 950, connection_count: 5, vulnerability_score: 0.35 },
+      { source_region: 'North', target_region: 'West', flow_capacity_mw: 450, connection_count: 3, vulnerability_score: 0.22 },
+      { source_region: 'Southwest', target_region: 'Coastal', flow_capacity_mw: 680, connection_count: 4, vulnerability_score: 0.38 },
+    ];
+    
+    if (cascadeResult?.cascade_order) {
+      const affectedRegions = new Set<string>();
+      cascadeResult.cascade_order.forEach(node => {
+        const id = node.node_id.toUpperCase();
+        if (id.includes('HOU')) affectedRegions.add('Houston Metro');
+        else if (id.includes('GAL') || id.includes('BRA') || id.includes('CHA')) affectedRegions.add('Coastal');
+        else if (id.includes('MON')) affectedRegions.add('North');
+        else if (id.includes('FBN') || id.includes('FTB')) affectedRegions.add('Southwest');
+        else if (id.includes('WAL')) affectedRegions.add('West');
+        else if (id.includes('LIB')) affectedRegions.add('East');
+      });
+      
+      return regionConnections.map(conn => ({
+        ...conn,
+        vulnerability_score: (affectedRegions.has(conn.source_region) || affectedRegions.has(conn.target_region))
+          ? Math.min(conn.vulnerability_score * 1.5, 1.0)
+          : conn.vulnerability_score
+      }));
+    }
+    
+    return regionConnections;
+  }, [cascadeResult]);
+
+  const maxCapacity = Math.max(...crossRegionFlows.map(f => f.flow_capacity_mw));
+  const totalCapacity = crossRegionFlows.reduce((sum, f) => sum + f.flow_capacity_mw, 0);
+  const criticalCount = crossRegionFlows.filter(f => f.vulnerability_score > 0.6).length;
+
+  const regionShortNames: Record<string, string> = {
+    'Houston Metro': 'HOU',
+    'North': 'N',
+    'Southwest': 'SW',
+    'Coastal': 'CST',
+    'East': 'E',
+    'West': 'W',
+  };
+
+  return (
+    <Box sx={{ height: 280, overflow: 'auto' }}>
+      {/* Summary Header */}
+      <Stack direction="row" spacing={1} sx={{ mb: 1.5 }}>
+        <Box sx={{ flex: 1, p: 1, bgcolor: alpha('#06B6D4', 0.1), borderRadius: 1, textAlign: 'center' }}>
+          <Typography variant="h6" sx={{ color: '#06B6D4', fontWeight: 700, fontSize: '1rem' }}>
+            {crossRegionFlows.length}
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.55rem' }}>Corridors</Typography>
+        </Box>
+        <Box sx={{ flex: 1, p: 1, bgcolor: alpha('#22C55E', 0.1), borderRadius: 1, textAlign: 'center' }}>
+          <Typography variant="h6" sx={{ color: '#22C55E', fontWeight: 700, fontSize: '1rem' }}>
+            {(totalCapacity / 1000).toFixed(1)}
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.55rem' }}>GW Total</Typography>
+        </Box>
+        <Box sx={{ flex: 1, p: 1, bgcolor: alpha('#EF4444', 0.1), borderRadius: 1, textAlign: 'center' }}>
+          <Typography variant="h6" sx={{ color: '#EF4444', fontWeight: 700, fontSize: '1rem' }}>
+            {criticalCount}
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.55rem' }}>Critical</Typography>
+        </Box>
+      </Stack>
+
+      {/* Flow List - Compact */}
+      <Stack spacing={0.75}>
+        {crossRegionFlows.map((flow, idx) => {
+          const widthPercent = (flow.flow_capacity_mw / maxCapacity) * 100;
+          const vulnerabilityColor = flow.vulnerability_score > 0.6 ? '#EF4444' : 
+                                    flow.vulnerability_score > 0.35 ? '#FBBF24' : '#22C55E';
+          const isHovered = hoveredFlow === idx;
+          
+          return (
+            <Tooltip
+              key={idx}
+              title={
+                <Box sx={{ p: 0.5 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>
+                    {flow.source_region} → {flow.target_region}
+                  </Typography>
+                  <Typography variant="caption" sx={{ display: 'block' }}>
+                    {flow.flow_capacity_mw.toLocaleString()} MW • {flow.connection_count} lines
+                  </Typography>
+                  <Typography variant="caption" sx={{ display: 'block', color: vulnerabilityColor }}>
+                    Vulnerability: {(flow.vulnerability_score * 100).toFixed(0)}%
+                  </Typography>
+                </Box>
+              }
+              arrow
+              placement="left"
+            >
+              <Box 
+                sx={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: 1,
+                  p: 0.75,
+                  bgcolor: isHovered ? alpha('#06B6D4', 0.1) : alpha('#0A1929', 0.5),
+                  borderRadius: 1,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease-in-out',
+                }}
+                onMouseEnter={() => setHoveredFlow(idx)}
+                onMouseLeave={() => setHoveredFlow(null)}
+              >
+                {/* Source */}
+                <Typography variant="caption" sx={{ 
+                  width: 32, 
+                  fontWeight: 600, 
+                  color: '#06B6D4',
+                  fontSize: '0.65rem'
+                }}>
+                  {regionShortNames[flow.source_region]}
+                </Typography>
+                
+                {/* Flow Bar */}
+                <Box sx={{ flex: 1, position: 'relative' }}>
+                  <Box sx={{ 
+                    height: 8, 
+                    bgcolor: alpha('#fff', 0.1), 
+                    borderRadius: 1, 
+                    overflow: 'hidden' 
+                  }}>
+                    <Box sx={{ 
+                      height: '100%',
+                      width: `${widthPercent}%`,
+                      background: `linear-gradient(90deg, ${alpha('#06B6D4', 0.6)}, ${alpha(vulnerabilityColor, 0.6)})`,
+                      borderRadius: 1,
+                    }} />
+                  </Box>
+                </Box>
+                
+                {/* Target */}
+                <Typography variant="caption" sx={{ 
+                  width: 32, 
+                  fontWeight: 600, 
+                  color: '#06B6D4',
+                  fontSize: '0.65rem',
+                  textAlign: 'right'
+                }}>
+                  {regionShortNames[flow.target_region]}
+                </Typography>
+                
+                {/* Vulnerability Chip */}
+                <Chip 
+                  label={`${(flow.vulnerability_score * 100).toFixed(0)}%`}
+                  size="small"
+                  sx={{ 
+                    height: 18,
+                    minWidth: 38,
+                    bgcolor: alpha(vulnerabilityColor, 0.2),
+                    color: vulnerabilityColor,
+                    fontWeight: 700,
+                    fontSize: '0.6rem',
+                    '& .MuiChip-label': { px: 0.5 }
+                  }}
+                />
+              </Box>
+            </Tooltip>
+          );
+        })}
+      </Stack>
+
+      {/* Critical Alert */}
+      {criticalCount > 0 && (
+        <Alert 
+          severity="warning" 
+          icon={<Warning sx={{ fontSize: 16 }} />}
+          sx={{ 
+            mt: 1.5, 
+            py: 0.5,
+            bgcolor: alpha('#FBBF24', 0.08),
+            '& .MuiAlert-icon': { color: '#FBBF24' },
+            '& .MuiAlert-message': { fontSize: '0.65rem' }
+          }}
+        >
+          {criticalCount} critical corridor{criticalCount > 1 ? 's' : ''} could accelerate cascade spread
+        </Alert>
+      )}
+    </Box>
+  );
+}
+
+// Investment ROI data interface
+interface RegionalInvestment {
+  region: string;
+  county: string;
+  nodes_requiring_upgrade: number;
+  estimated_investment_cost: number;
+  avoided_damage_potential: number;
+  roi_percent: number;
+  priority: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+}
+
+// Engineering: Compact Investment ROI Panel for drawer integration
+// Shows ROI calculations without requiring full-page context switch
+function InvestmentROICompact({ 
+  highRiskNodes, 
+  cascadeResult,
+  isSideBySide = false 
+}: { 
+  highRiskNodes: CascadeNode[]; 
+  cascadeResult: CascadeResult | null;
+  isSideBySide?: boolean;
+}) {
+  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
+
+  // Calculate investment recommendations per region
+  const investmentData = useMemo<RegionalInvestment[]>(() => {
+    const UPGRADE_COST_SUBSTATION = 5000000;
+    const UPGRADE_COST_TRANSFORMER = 500000;
+    const DAMAGE_MULTIPLIER = 2.5;
+    const CUSTOMER_DAMAGE_COST = 150;
+    
+    const regionMap = new Map<string, { 
+      region: string; county: string; 
+      substations: number; transformers: number;
+      highRiskSubstations: number; highRiskTransformers: number;
+      totalCustomersAtRisk: number; avgCriticality: number;
+    }>();
+    
+    const getRegionData = (nodeId: string): { region: string; county: string } => {
+      const id = nodeId.toUpperCase();
+      if (id.includes('HOU')) return { region: 'Houston Metro', county: 'Harris' };
+      if (id.includes('GAL')) return { region: 'Coastal', county: 'Galveston' };
+      if (id.includes('BRA')) return { region: 'Coastal', county: 'Brazoria' };
+      if (id.includes('MON')) return { region: 'North', county: 'Montgomery' };
+      if (id.includes('FBN') || id.includes('FTB')) return { region: 'Southwest', county: 'Fort Bend' };
+      if (id.includes('WAL')) return { region: 'West', county: 'Waller' };
+      if (id.includes('LIB')) return { region: 'East', county: 'Liberty' };
+      return { region: 'Houston Metro', county: 'Harris' };
+    };
+    
+    highRiskNodes.forEach(node => {
+      const { region, county } = getRegionData(node.node_id);
+      const key = `${region}-${county}`;
+      
+      if (!regionMap.has(key)) {
+        regionMap.set(key, {
+          region, county,
+          substations: 0, transformers: 0,
+          highRiskSubstations: 0, highRiskTransformers: 0,
+          totalCustomersAtRisk: 0, avgCriticality: 0
+        });
+      }
+      
+      const data = regionMap.get(key)!;
+      const isSubstation = node.node_type === 'SUBSTATION';
+      const isHighRisk = node.criticality_score > 0.6;
+      
+      if (isSubstation) {
+        data.substations++;
+        if (isHighRisk) data.highRiskSubstations++;
+      } else {
+        data.transformers++;
+        if (isHighRisk) data.highRiskTransformers++;
+      }
+      
+      data.totalCustomersAtRisk += (node.downstream_transformers || 0) * 50;
+      const totalNodes = data.substations + data.transformers;
+      data.avgCriticality = ((data.avgCriticality * (totalNodes - 1)) + node.criticality_score) / totalNodes;
+    });
+    
+    return Array.from(regionMap.values()).map(data => {
+      const nodesNeedingUpgrade = data.highRiskSubstations + data.highRiskTransformers;
+      const investmentCost = (data.highRiskSubstations * UPGRADE_COST_SUBSTATION) + 
+                            (data.highRiskTransformers * UPGRADE_COST_TRANSFORMER);
+      const avoidedDamage = (data.totalCustomersAtRisk * CUSTOMER_DAMAGE_COST * data.avgCriticality) + 
+                           (investmentCost * DAMAGE_MULTIPLIER * data.avgCriticality);
+      const roi = investmentCost > 0 ? ((avoidedDamage - investmentCost) / investmentCost) * 100 : 0;
+      
+      let priority: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+      if (data.avgCriticality > 0.7 || nodesNeedingUpgrade > 5) priority = 'CRITICAL';
+      else if (data.avgCriticality > 0.5 || nodesNeedingUpgrade > 3) priority = 'HIGH';
+      else if (data.avgCriticality > 0.3 || nodesNeedingUpgrade > 1) priority = 'MEDIUM';
+      else priority = 'LOW';
+      
+      return {
+        region: data.region,
+        county: data.county,
+        nodes_requiring_upgrade: nodesNeedingUpgrade,
+        estimated_investment_cost: investmentCost,
+        avoided_damage_potential: avoidedDamage,
+        roi_percent: roi,
+        priority
+      };
+    }).filter(inv => inv.nodes_requiring_upgrade > 0)
+      .sort((a, b) => b.roi_percent - a.roi_percent);
+  }, [highRiskNodes]);
+
+  const totalInvestment = investmentData.reduce((sum, d) => sum + d.estimated_investment_cost, 0);
+  const totalBenefit = investmentData.reduce((sum, d) => sum + d.avoided_damage_potential, 0);
+  const overallROI = totalInvestment > 0 ? ((totalBenefit - totalInvestment) / totalInvestment) * 100 : 0;
+  const maxROI = Math.max(...investmentData.map(d => d.roi_percent), 1);
+  const criticalCount = investmentData.filter(d => d.priority === 'CRITICAL').length;
+
+  const priorityColors = {
+    'CRITICAL': '#EF4444',
+    'HIGH': '#F97316',
+    'MEDIUM': '#FBBF24',
+    'LOW': '#22C55E'
+  };
+
+  if (investmentData.length === 0) {
+    return (
+      <Box sx={{ p: 2, textAlign: 'center' }}>
+        <AttachMoney sx={{ fontSize: 32, color: alpha('#8B5CF6', 0.3), mb: 1 }} />
+        <Typography variant="body2" color="text.secondary">
+          Load high-risk nodes to see investment recommendations
+        </Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ height: 280, overflow: 'auto' }}>
+      {/* Summary Header */}
+      <Stack direction="row" spacing={1} sx={{ mb: 1.5 }}>
+        <Box sx={{ flex: 1, p: 1, bgcolor: alpha('#3B82F6', 0.1), borderRadius: 1, textAlign: 'center' }}>
+          <AttachMoney sx={{ color: '#3B82F6', fontSize: 16 }} />
+          <Typography variant="h6" sx={{ color: '#3B82F6', fontWeight: 700, fontSize: '0.9rem' }}>
+            ${(totalInvestment / 1000000).toFixed(1)}M
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.5rem' }}>Investment</Typography>
+        </Box>
+        <Box sx={{ flex: 1, p: 1, bgcolor: alpha('#22C55E', 0.1), borderRadius: 1, textAlign: 'center' }}>
+          <TrendingUp sx={{ color: '#22C55E', fontSize: 16 }} />
+          <Typography variant="h6" sx={{ color: '#22C55E', fontWeight: 700, fontSize: '0.9rem' }}>
+            ${(totalBenefit / 1000000).toFixed(1)}M
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.5rem' }}>Benefit</Typography>
+        </Box>
+        <Box sx={{ flex: 1, p: 1, bgcolor: alpha(overallROI > 100 ? '#22C55E' : '#FBBF24', 0.1), borderRadius: 1, textAlign: 'center' }}>
+          <CheckCircle sx={{ color: overallROI > 100 ? '#22C55E' : '#FBBF24', fontSize: 16 }} />
+          <Typography variant="h6" sx={{ color: overallROI > 100 ? '#22C55E' : '#FBBF24', fontWeight: 700, fontSize: '0.9rem' }}>
+            {overallROI.toFixed(0)}%
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.5rem' }}>ROI</Typography>
+        </Box>
+      </Stack>
+
+      {/* Investment Table - Responsive for side-by-side mode */}
+      <TableContainer sx={{ bgcolor: alpha('#0A1929', 0.5), borderRadius: 1 }}>
+        <Table size="small" sx={{ tableLayout: isSideBySide ? 'auto' : 'fixed' }}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ fontSize: isSideBySide ? '0.55rem' : '0.6rem', py: 0.5, color: 'text.secondary', fontWeight: 600, px: isSideBySide ? 0.5 : 1 }}>County</TableCell>
+              <TableCell align="center" sx={{ fontSize: isSideBySide ? '0.55rem' : '0.6rem', py: 0.5, color: 'text.secondary', fontWeight: 600, px: isSideBySide ? 0.5 : 1 }}>Priority</TableCell>
+              <TableCell align="right" sx={{ fontSize: isSideBySide ? '0.55rem' : '0.6rem', py: 0.5, color: 'text.secondary', fontWeight: 600, px: isSideBySide ? 0.5 : 1 }}>Cost</TableCell>
+              <TableCell align="right" sx={{ fontSize: isSideBySide ? '0.55rem' : '0.6rem', py: 0.5, color: 'text.secondary', fontWeight: 600, px: isSideBySide ? 0.5 : 1, width: isSideBySide ? 'auto' : 80 }}>ROI</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {investmentData.slice(0, 5).map((inv, idx) => {
+              const isHovered = hoveredRow === idx;
+              const isTop = idx === 0;
+              const roiBarWidth = (inv.roi_percent / maxROI) * 100;
+              
+              return (
+                <TableRow 
+                  key={`${inv.region}-${inv.county}`}
+                  onMouseEnter={() => setHoveredRow(idx)}
+                  onMouseLeave={() => setHoveredRow(null)}
+                  sx={{ 
+                    bgcolor: isTop ? alpha('#8B5CF6', 0.12) : isHovered ? alpha('#8B5CF6', 0.06) : 'transparent',
+                    '&:last-child td': { borderBottom: 0 }
+                  }}
+                >
+                  <TableCell sx={{ py: 0.5, fontSize: isSideBySide ? '0.6rem' : '0.7rem', px: isSideBySide ? 0.5 : 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      {isTop && <Box sx={{ width: 2, height: 16, bgcolor: '#8B5CF6', borderRadius: 0.5 }} />}
+                      <Box>
+                        <Typography variant="caption" sx={{ fontWeight: isTop ? 700 : 500, fontSize: isSideBySide ? '0.6rem' : '0.7rem', display: 'block', whiteSpace: 'nowrap' }}>
+                          {inv.county}
+                        </Typography>
+                        {!isSideBySide && (
+                          <Typography variant="caption" sx={{ fontSize: '0.55rem', color: 'text.secondary' }}>
+                            {inv.nodes_requiring_upgrade} upgrades
+                          </Typography>
+                        )}
+                      </Box>
+                    </Box>
+                  </TableCell>
+                  <TableCell align="center" sx={{ py: 0.5, px: isSideBySide ? 0.5 : 1 }}>
+                    <Chip 
+                      label={isSideBySide ? inv.priority.slice(0, 3) : inv.priority.slice(0, 4)}
+                      size="small"
+                      sx={{ 
+                        bgcolor: alpha(priorityColors[inv.priority], 0.15),
+                        color: priorityColors[inv.priority],
+                        fontWeight: 700,
+                        fontSize: isSideBySide ? '0.5rem' : '0.55rem',
+                        height: isSideBySide ? 16 : 18,
+                        '& .MuiChip-label': { px: isSideBySide ? 0.25 : 0.5 }
+                      }}
+                    />
+                  </TableCell>
+                  <TableCell align="right" sx={{ py: 0.5, px: isSideBySide ? 0.5 : 1 }}>
+                    <Typography variant="caption" sx={{ color: '#3B82F6', fontWeight: 600, fontSize: isSideBySide ? '0.55rem' : '0.65rem', whiteSpace: 'nowrap' }}>
+                      ${(inv.estimated_investment_cost / 1000000).toFixed(1)}M
+                    </Typography>
+                  </TableCell>
+                  <TableCell align="right" sx={{ py: 0.5, px: isSideBySide ? 0.5 : 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, justifyContent: 'flex-end' }}>
+                      {!isSideBySide && (
+                        <Box sx={{ flex: 1, height: 4, bgcolor: alpha('#fff', 0.08), borderRadius: 0.5, maxWidth: 40 }}>
+                          <Box sx={{ 
+                            height: '100%',
+                            width: `${roiBarWidth}%`,
+                            bgcolor: inv.roi_percent > 100 ? '#22C55E' : '#FBBF24',
+                            borderRadius: 0.5
+                          }} />
+                        </Box>
+                      )}
+                      <Typography variant="caption" sx={{ 
+                        color: inv.roi_percent > 100 ? '#22C55E' : '#FBBF24', 
+                        fontWeight: 700,
+                        fontSize: isSideBySide ? '0.55rem' : '0.65rem',
+                        minWidth: isSideBySide ? 24 : 32
+                      }}>
+                        {inv.roi_percent.toFixed(0)}%
+                      </Typography>
+                    </Box>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+
+      {/* Top Recommendation Callout */}
+      {investmentData[0] && (
+        <Box sx={{ 
+          mt: 1.5, 
+          p: 1, 
+          bgcolor: alpha('#8B5CF6', 0.1), 
+          borderRadius: 1,
+          borderLeft: '3px solid #8B5CF6'
+        }}>
+          <Typography variant="caption" sx={{ fontWeight: 700, color: '#8B5CF6', fontSize: '0.65rem' }}>
+            TOP RECOMMENDATION
+          </Typography>
+          <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.6rem', mt: 0.25 }}>
+            {investmentData[0].county} County: ${(investmentData[0].estimated_investment_cost / 1000000).toFixed(1)}M investment 
+            yields {investmentData[0].roi_percent.toFixed(0)}% ROI
+          </Typography>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 export function CascadeControlPanel({
   scenarios,
   cascadeResult,
@@ -708,6 +1261,12 @@ export function CascadeControlPanel({
   onToggleVisibility,
   focusedWave,
   onFocusWave,
+  isDocked = false,
+  dockedSize = 'compact',
+  onDockedSizeChange,
+  onDockChange,
+  otherPanelDocked = false,
+  otherPanelSize = 'minimized',
 }: CascadeControlPanelProps) {
   // visible prop now controls expanded state - toggle is in LAYERS panel
   const expanded = visible;
@@ -716,12 +1275,261 @@ export function CascadeControlPanel({
   const [activeTab, setActiveTab] = useState(0);
   const waveBreakdown = useWaveBreakdown(cascadeResult);
   
+  // Helper functions for dock size management
+  const setDockSize = (size: DockedPanelSize) => {
+    onDockedSizeChange?.(size);
+  };
+  
+  const toggleDock = () => {
+    onDockChange?.(!isDocked);
+    if (!isDocked) {
+      // When docking, start at compact size
+      setDockSize('compact');
+    }
+  };
+  
+  // Derived state for fullscreen handling
+  const isFullscreen = isDocked && dockedSize === 'fullscreen';
+  const isMinimized = isDocked && dockedSize === 'minimized';
+  
+  // Dock menu state
+  const [dockMenuAnchor, setDockMenuAnchor] = useState<null | HTMLElement>(null);
+  
+  // Explanation section state (for expanded view)
+  const [showExplanation, setShowExplanation] = useState(true);
+  
+  // Dragging refs and state (for undocked mode)
+  const paperRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
+  const originPosition = useRef({ x: 0, y: 0 });
+  const startPosition = useRef({ x: 0, y: 0 });
+  const currentPosition = useRef({ x: 0, y: 0 });
+  const rafId = useRef<number | null>(null);
+  const velocityHistory = useRef<Array<{ x: number; y: number; time: number }>>([]);
+  const momentumAnimationRef = useRef<number | null>(null);
+  
   // Load high-risk nodes when panel expands
   useEffect(() => {
     if (visible && highRiskNodes.length === 0) {
       onLoadHighRisk();
     }
   }, [visible, highRiskNodes.length, onLoadHighRisk]);
+
+  // Panel dimensions for dragging constraints (undocked mode)
+  const panelWidth = 420;
+  const panelHeight = 500;
+  const constrainedRight = 24;
+  const constrainedBottom = 24;
+
+  // Helper to calculate drag position
+  const calculatePosition = () => {
+    const deltaX = currentPosition.current.x - startPosition.current.x;
+    const deltaY = currentPosition.current.y - startPosition.current.y;
+    return {
+      x: originPosition.current.x + deltaX,
+      y: originPosition.current.y + deltaY
+    };
+  };
+
+  // Request animation frame update for smooth dragging
+  const requestUpdate = () => {
+    if (rafId.current) return;
+    rafId.current = requestAnimationFrame(() => {
+      rafId.current = null;
+      if (paperRef.current) {
+        const pos = calculatePosition();
+        paperRef.current.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0)`;
+      }
+    });
+  };
+
+  // Dragging functionality for undocked mode
+  useEffect(() => {
+    if (isDocked) return; // Only enable dragging when undocked
+    
+    const header = headerRef.current;
+    if (!header || !visible) return;
+
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!e.isPrimary || isDraggingRef.current) return;
+      
+      const target = e.target as HTMLElement;
+      if (target.closest('button') || target.closest('[role="button"]')) {
+        return;
+      }
+      
+      e.preventDefault();
+      e.stopPropagation();
+      
+      if (momentumAnimationRef.current) {
+        cancelAnimationFrame(momentumAnimationRef.current);
+        momentumAnimationRef.current = null;
+      }
+      
+      isDraggingRef.current = true;
+      velocityHistory.current = [];
+      
+      if (paperRef.current) {
+        paperRef.current.style.willChange = 'transform';
+        paperRef.current.style.backdropFilter = 'none';
+        paperRef.current.style.webkitBackdropFilter = 'none';
+      }
+      
+      startPosition.current = { x: e.clientX, y: e.clientY };
+      currentPosition.current = { x: e.clientX, y: e.clientY };
+      
+      header.setPointerCapture(e.pointerId);
+      document.addEventListener('pointermove', handlePointerMove, { passive: true });
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!e.isPrimary || !isDraggingRef.current) return;
+      
+      currentPosition.current = { x: e.clientX, y: e.clientY };
+      
+      const pos = calculatePosition();
+      
+      const minX = -(window.innerWidth - panelWidth - constrainedRight);
+      const maxX = constrainedRight;
+      const minY = -(window.innerHeight - panelHeight - constrainedBottom);
+      const maxY = constrainedBottom;
+      
+      const clampedX = Math.max(minX, Math.min(maxX, pos.x));
+      const clampedY = Math.max(minY, Math.min(maxY, pos.y));
+      
+      originPosition.current = { x: clampedX, y: clampedY };
+      startPosition.current = currentPosition.current;
+      
+      velocityHistory.current.push({
+        x: clampedX,
+        y: clampedY,
+        time: Date.now()
+      });
+      
+      if (velocityHistory.current.length > 5) {
+        velocityHistory.current.shift();
+      }
+      
+      requestUpdate();
+    };
+
+    const cleanup = (e: PointerEvent) => {
+      if (!e.isPrimary || !isDraggingRef.current) return;
+      
+      isDraggingRef.current = false;
+      
+      if (paperRef.current) {
+        paperRef.current.style.willChange = 'auto';
+        paperRef.current.style.backdropFilter = 'blur(20px) saturate(180%)';
+        paperRef.current.style.webkitBackdropFilter = 'blur(20px) saturate(180%)';
+      }
+      
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = null;
+      }
+      
+      const finalPos = calculatePosition();
+      originPosition.current = finalPos;
+      
+      let velocityX = 0;
+      let velocityY = 0;
+      
+      if (velocityHistory.current.length >= 2) {
+        const recent = velocityHistory.current[velocityHistory.current.length - 1];
+        const previous = velocityHistory.current[0];
+        const timeDelta = recent.time - previous.time;
+        
+        if (timeDelta > 0) {
+          velocityX = (recent.x - previous.x) / timeDelta * 16;
+          velocityY = (recent.y - previous.y) / timeDelta * 16;
+        }
+      }
+      
+      const friction = 0.94;
+      const minVelocity = 0.3;
+      let lastTimestamp = performance.now();
+      
+      const applyMomentum = (timestamp: number) => {
+        const deltaTime = Math.min((timestamp - lastTimestamp) / 16.667, 2);
+        lastTimestamp = timestamp;
+        
+        const frictionFactor = Math.pow(friction, deltaTime);
+        velocityX *= frictionFactor;
+        velocityY *= frictionFactor;
+        
+        if (Math.abs(velocityX) < minVelocity && Math.abs(velocityY) < minVelocity) {
+          momentumAnimationRef.current = null;
+          return;
+        }
+        
+        const deltaX = (velocityX / 60) * deltaTime;
+        const deltaY = (velocityY / 60) * deltaTime;
+        
+        let newX = originPosition.current.x + deltaX;
+        let newY = originPosition.current.y + deltaY;
+        
+        const minX = -(window.innerWidth - panelWidth - constrainedRight);
+        const maxX = constrainedRight;
+        const minY = -(window.innerHeight - panelHeight - constrainedBottom);
+        const maxY = constrainedBottom;
+        
+        if (newX < minX || newX > maxX) {
+          newX = Math.max(minX, Math.min(maxX, newX));
+          velocityX = 0;
+        }
+        
+        if (newY < minY || newY > maxY) {
+          newY = Math.max(minY, Math.min(maxY, newY));
+          velocityY = 0;
+        }
+        
+        originPosition.current = { x: newX, y: newY };
+        
+        if (paperRef.current) {
+          paperRef.current.style.transform = `translate3d(${newX}px, ${newY}px, 0)`;
+        }
+        
+        if (Math.abs(velocityX) > 0.1 || Math.abs(velocityY) > 0.1) {
+          momentumAnimationRef.current = requestAnimationFrame(applyMomentum);
+        } else {
+          momentumAnimationRef.current = null;
+        }
+      };
+      
+      if (Math.abs(velocityX) > 0.5 || Math.abs(velocityY) > 0.5) {
+        momentumAnimationRef.current = requestAnimationFrame(applyMomentum);
+      }
+      
+      document.removeEventListener('pointermove', handlePointerMove);
+    };
+
+    const releasePointer = (e: PointerEvent) => {
+      if (!e.isPrimary) return;
+      header.releasePointerCapture(e.pointerId);
+    };
+
+    header.addEventListener('pointerdown', handlePointerDown);
+    header.addEventListener('pointerup', releasePointer);
+    header.addEventListener('pointercancel', releasePointer);
+    header.addEventListener('lostpointercapture', cleanup);
+
+    return () => {
+      header.removeEventListener('pointerdown', handlePointerDown);
+      header.removeEventListener('pointerup', releasePointer);
+      header.removeEventListener('pointercancel', releasePointer);
+      header.removeEventListener('lostpointercapture', cleanup);
+      document.removeEventListener('pointermove', handlePointerMove);
+      
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+      }
+      if (momentumAnimationRef.current) {
+        cancelAnimationFrame(momentumAnimationRef.current);
+      }
+    };
+  }, [isDocked, visible]);
 
   const handleSimulate = async () => {
     const scenario = scenarios.find(s => s.name === selectedScenario);
@@ -737,76 +1545,615 @@ export function CascadeControlPanel({
     return '⚡';
   };
 
-  const drawerWidth = 380;
+  // Tab positioning constants - must match ChatDrawer's tab width
+  const CHAT_TAB_WIDTH = 180; // Width of Grid Intelligence tab
+  const CASCADE_TAB_WIDTH = 180; // Width of Cascade Analysis tab (same as Chat tab for consistency)
+  const TAB_GAP = 8; // Gap between tabs
+  const TAB_MARGIN = 16; // Right margin from edge
 
-  // Don't render anything if not visible
-  if (!visible) return null;
+  // Constants for Gmail-style dock layout (same as ChatDrawer for consistency)
+  const DOCK = {
+    gap: 16,
+    margin: 16,
+    compact: { width: 380, height: 350 }, // Small panel with content visible
+    // Dynamic expanded width - calculated based on other panel state
+    expanded: { height: 'calc(40vh)' }, // Height stays the same
+    fullscreen: { width: '50vw' as const, height: '100vh' as const },
+  };
 
-  return (
-    <>
-      {/* Slide-out Drawer - controlled by LAYERS panel toggle */}
-      <Paper
-        sx={{
-          position: 'absolute',
-          top: 12,
+  // Calculate dynamic expanded width based on other panel state
+  // IMPORTANT: Must account for minimized tabs to avoid overlap
+  const getExpandedWidth = (): string => {
+    if (otherPanelDocked && otherPanelSize !== 'minimized') {
+      if (otherPanelSize === 'expanded') {
+        // Both expanded: split 50/50
+        return 'calc(50vw - 24px)';
+      } else {
+        // Other is compact (380px): take remaining space
+        // Full width - compact panel width - margins - gap
+        return `calc(100vw - ${DOCK.compact.width}px - ${DOCK.margin * 2}px - ${DOCK.gap}px)`;
+      }
+    }
+    // Other panel is minimized: leave room for its tab
+    // Tab is at right: 16, width: 180, so leave 16 + 180 + 8 = 204 pixels on right
+    const tabReservedSpace = TAB_MARGIN + CHAT_TAB_WIDTH + TAB_GAP;
+    return `calc(100vw - ${DOCK.margin}px - ${tabReservedSpace}px)`;
+  };
+
+  // Layout dimensions based on dock state
+  // Gmail-style side-by-side positioning with ChatDrawer
+  const getLayoutStyles = (): React.CSSProperties => {
+    // Fullscreen mode - special handling
+    if (isFullscreen) {
+      const otherIsFullscreen = otherPanelDocked && otherPanelSize === 'fullscreen';
+      
+      if (otherIsFullscreen) {
+        // Split-pane mode: CascadePanel takes left half
+        return {
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: '50%',
+          bottom: 0,
+          width: '50vw',
+          height: '100vh',
+          borderRadius: 0,
+          maxHeight: 'none',
+          borderRight: '1px solid rgba(51, 65, 85, 0.8)',
+        };
+      } else {
+        // Solo fullscreen: take entire viewport
+        return {
+          position: 'fixed',
+          top: 0,
+          left: 0,
           right: 0,
-          width: drawerWidth,
-          maxHeight: 'calc(100vh - 180px)',
-          bgcolor: alpha('#1E293B', 0.97),
-          backdropFilter: 'blur(12px)',
-          borderRadius: '12px 0 0 12px',
-          border: '1px solid',
-          borderRight: 'none',
-          borderColor: alpha('#FF6B6B', 0.3),
+          bottom: 0,
+          width: 'auto',
+          height: 'auto',
+          borderRadius: 0,
+          maxHeight: 'none',
+        };
+      }
+    }
+    
+    // Docked modes (compact, expanded, minimized)
+    if (isDocked) {
+      // For minimized, we hide the panel but keep it in DOM
+      if (dockedSize === 'minimized') {
+        return {
+          position: 'fixed',
+          right: 0,
+          bottom: -500, // Off-screen
+          width: 360,
+          height: 350,
+          borderRadius: '12px 12px 0 0',
+          maxHeight: 'none',
+          transition: 'all 0.3s ease',
+        };
+      }
+      
+      // Calculate dimensions based on size - now with dynamic expanded width
+      const isExpanded = dockedSize === 'expanded';
+      const width = isExpanded ? getExpandedWidth() : DOCK.compact.width;
+      const height = isExpanded ? DOCK.expanded.height : DOCK.compact.height;
+      
+      // Cascade panel is always positioned from the LEFT when expanded, from RIGHT when compact
+      if (isExpanded) {
+        // Expanded mode: position from left for cleaner layout
+        return {
+          position: 'fixed',
+          left: DOCK.margin,
+          bottom: 0,
+          width: width,
+          height: height,
+          borderRadius: '12px 12px 0 0',
+          borderTop: '1px solid rgba(51, 65, 85, 0.8)',
+          borderLeft: '1px solid rgba(51, 65, 85, 0.8)',
+          borderRight: '1px solid rgba(51, 65, 85, 0.8)',
+          maxHeight: 'none',
+          transition: 'all 0.3s ease',
+        };
+      }
+      
+      // Compact mode: position relative to ChatDrawer
+      // IMPORTANT: Must leave room for minimized tabs
+      let rightPosition: number | string = DOCK.margin;
+      
+      if (otherPanelDocked && otherPanelSize !== 'minimized') {
+        if (otherPanelSize === 'expanded') {
+          // Other panel expanded - this compact panel sits at its left edge
+          // Other panel takes calc(100vw - 380px - 48px), so position this at that width + gap from right
+          rightPosition = `calc(100vw - ${DOCK.compact.width}px - ${DOCK.margin}px)`;
+        } else {
+          // Both compact - position to left of ChatDrawer
+          rightPosition = DOCK.margin + DOCK.compact.width + DOCK.gap;
+        }
+      } else if (!otherPanelDocked || otherPanelSize === 'minimized') {
+        // Other panel not docked OR minimized: leave room for the minimized tab on the right
+        // Grid Intelligence tab: right: 16, width: 180 → need to start at 16 + 180 + 8 = 204
+        rightPosition = TAB_MARGIN + CHAT_TAB_WIDTH + TAB_GAP;
+      }
+      
+      return {
+        position: 'fixed',
+        right: rightPosition,
+        bottom: 0,
+        width: width,
+        height: height,
+        borderRadius: '12px 12px 0 0',
+        borderTop: '1px solid rgba(51, 65, 85, 0.8)',
+        borderLeft: '1px solid rgba(51, 65, 85, 0.8)',
+        borderRight: '1px solid rgba(51, 65, 85, 0.8)',
+        maxHeight: 'none',
+        transition: 'all 0.3s ease',
+      };
+    }
+    
+    // Floating mode (default) - centered floating window like Grid Intelligence
+    return {
+      position: 'fixed',
+      top: '50%',
+      left: '50%',
+      transform: 'translate(-70%, -50%)', // Offset left to avoid center of screen
+      width: 420,
+      height: 500,
+      borderRadius: '16px',
+      maxHeight: 'calc(100vh - 100px)',
+    };
+  };
+
+  // Dock toggle button for minimized state (Gmail-style tab at bottom)
+  // Uses tab positioning constants defined above for coordination
+  const renderDockToggle = () => {
+    if (isDocked && dockedSize === 'minimized') {
+      // If Grid Intelligence is fullscreen OR expanded, hide this tab
+      // (When expanded, Grid Intelligence takes most of the viewport, leaving no room for tab on RIGHT)
+      if (otherPanelDocked && (otherPanelSize === 'fullscreen' || otherPanelSize === 'expanded')) {
+        return null;
+      }
+      
+      // Calculate position based on Grid Intelligence state
+      // Cascade tab is ALWAYS on the RIGHT side, positioned to avoid overlapping
+      // with Grid Intelligence panel or tab
+      let rightPosition: number;
+      
+      if (!otherPanelDocked) {
+        // Grid Intelligence not docked - Cascade tab at right edge
+        rightPosition = TAB_MARGIN;
+      } else if (otherPanelSize === 'minimized') {
+        // Both minimized: Cascade tab to the LEFT of Grid Intelligence tab
+        // Grid Intelligence tab: right: 16, width: 180 → occupies 16-196 from right
+        // Cascade tab should start at: 16 + 180 + 8 = 204 from right
+        rightPosition = TAB_MARGIN + CHAT_TAB_WIDTH + TAB_GAP;
+      } else {
+        // Grid Intelligence compact (380px panel from right)
+        // Position Cascade tab to the left of the compact panel
+        rightPosition = TAB_MARGIN + DOCK.compact.width + TAB_GAP;
+      }
+      
+      return createPortal(
+        <Box
+          onClick={() => setDockSize('compact')}
+          sx={{
+            position: 'fixed',
+            bottom: 0,
+            right: rightPosition,
+            width: CASCADE_TAB_WIDTH,
+            bgcolor: 'rgba(15, 23, 42, 0.95)', // Dark background - distinct from Grid Intelligence's blue
+            borderTopLeftRadius: 8,
+            borderTopRightRadius: 8,
+            px: 2,
+            py: 0.75,
+            cursor: 'pointer',
+            zIndex: 1300,
+            border: '1px solid',
+            borderColor: '#F59E0B', // Amber accent border
+            borderBottom: 'none',
+            '&:hover': { bgcolor: 'rgba(30, 41, 59, 1)' },
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 1,
+            boxShadow: '0 -4px 12px rgba(245, 158, 11, 0.2)', // Amber glow
+            transition: 'all 0.2s ease',
+          }}
+        >
+          <Warning sx={{ color: '#F59E0B', fontSize: 16 }} />
+          <Typography variant="caption" sx={{ color: '#F59E0B', fontWeight: 600, whiteSpace: 'nowrap' }}>
+            Cascade Analysis
+          </Typography>
+          <KeyboardArrowUp sx={{ color: '#F59E0B', fontSize: 16 }} />
+        </Box>,
+        document.body
+      );
+    }
+    return null;
+  };
+
+  // Panel is always docked - when minimized, just show the tab
+  // When not minimized, show the full panel
+  if (isDocked && dockedSize === 'minimized') {
+    return renderDockToggle();
+  }
+
+  const layoutStyles = getLayoutStyles();
+
+  // Determine if we're in a docked mode
+  const isDockedMode = isDocked;
+  const isFullWidth = isDocked && (dockedSize === 'fullscreen' || dockedSize === 'expanded');
+
+  // Accent color for Cascade panel - amber/orange for warning theme but in matching design language
+  const accentColor = '#F59E0B'; // Amber - warning but not aggressive
+
+  // Wrap in portal for docked modes (to escape parent positioning context)
+  const panelContent = (
+    <>
+      {renderDockToggle()}
+      {/* Main Panel */}
+      <Paper
+        ref={paperRef}
+        sx={{
+          ...layoutStyles,
+          bgcolor: 'rgba(15, 23, 42, 0.95)', // Match Grid Intelligence
+          backdropFilter: 'blur(20px) saturate(180%)', // Match Grid Intelligence
+          WebkitBackdropFilter: 'blur(20px) saturate(180%)', // Safari support
           overflow: 'hidden',
-          zIndex: 14, // Above map
+          zIndex: isFullscreen ? 1400 : (isDocked ? 1299 : 1300),
           display: 'flex',
           flexDirection: 'column',
-          animation: 'slideIn 0.3s ease-out',
-          '@keyframes slideIn': {
-            from: { transform: 'translateX(100%)' },
-            to: { transform: 'translateX(0)' }
-          }
+          boxShadow: !isDocked 
+            ? '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(245, 158, 11, 0.2), 0 0 40px rgba(245, 158, 11, 0.1)'
+            : '0 0 20px rgba(0, 0, 0, 0.5)', // Match Grid Intelligence docked shadow
+          border: !isDocked ? '1px solid rgba(51, 65, 85, 0.5)' : 'none', // Match Grid Intelligence
+          cursor: 'default',
         }}
       >
-        {/* Header with close button */}
-        <Box sx={{ 
-          p: 2, 
-          borderBottom: '1px solid', 
-          borderColor: alpha('#fff', 0.1),
-          bgcolor: alpha('#FF6B6B', 0.05),
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between'
-        }}>
-          <Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
-              <Typography variant="h6" sx={{ color: '#FF6B6B', fontWeight: 600 }}>
-                Cascade Failure Analysis
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-              <Typography variant="caption" color="text.secondary">
-                Powered by
-              </Typography>
-              <SnowflakeMLBadge feature="snowpark" tooltip="Graph analysis via Snowpark Python UDFs" />
-              <SnowflakeMLBadge feature="cortex" tooltip="AI explanations via Cortex Complete" />
-            </Box>
+        {/* Header with dock controls - matching ChatDrawer style */}
+        <Box 
+          ref={headerRef}
+          sx={{ 
+            p: isDocked ? 1.5 : 2, 
+            borderBottom: '1px solid rgba(51, 65, 85, 0.5)',
+            bgcolor: 'rgba(15, 23, 42, 0.6)',
+            backdropFilter: 'blur(10px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexShrink: 0,
+            cursor: !isDocked ? 'grab' : 'default',
+            '&:active': !isDocked ? { cursor: 'grabbing' } : {},
+            touchAction: 'none',
+          }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Warning sx={{ color: accentColor, fontSize: isFullscreen ? 24 : (isDocked && dockedSize === 'compact' ? 18 : 20) }} />
+            <Typography 
+              variant="h6" 
+              sx={{ 
+                color: accentColor, 
+                fontWeight: 600,
+                fontSize: isDocked && dockedSize === 'compact' ? '15px' : '18px',
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Cascade{isDocked && dockedSize !== 'compact' ? ' Failure' : ''} Analysis
+            </Typography>
           </Box>
-          <IconButton 
-            size="small" 
-            onClick={onToggleVisibility}
-            sx={{ color: 'text.secondary', '&:hover': { color: '#FF6B6B' } }}
-          >
-            <ChevronRight />
-          </IconButton>
+          
+          {/* Header controls: Size controls + Dock + Close */}
+          <Box sx={{ 
+            display: 'flex', 
+            gap: 0.5, 
+            flexDirection: 'row',
+            alignItems: 'center',
+            flexShrink: 0,
+          }}>
+            {/* Service badges - always visible except compact mode, icon-only when floating */}
+            {(!isDocked || dockedSize !== 'compact') && (
+              <>
+                <SnowflakeMLBadge 
+                  feature="snowpark" 
+                  tooltip="Graph analysis via Snowpark Python UDFs"
+                  compact={!isDocked}  // Icon-only when floating
+                />
+                <SnowflakeMLBadge 
+                  feature="cortex-complete" 
+                  tooltip="AI explanations via Cortex Complete"
+                  compact={!isDocked}  // Icon-only when floating
+                />
+                <Box sx={{ width: '1px', height: 16, bgcolor: 'rgba(51, 65, 85, 0.5)', mx: 0.5 }} />
+              </>
+            )}
+            
+            {/* Size controls for docked mode */}
+            {isDocked && (
+              <>
+                {/* Compact/Expanded toggle */}
+                <Tooltip title={dockedSize === 'expanded' ? 'Compact view' : 'Expand panel'}>
+                  <IconButton
+                    size="small"
+                    onClick={() => setDockSize(dockedSize === 'expanded' ? 'compact' : 'expanded')}
+                    sx={{ 
+                      color: dockedSize === 'expanded' ? accentColor : '#64748b',
+                      '&:hover': { color: accentColor }
+                    }}
+                  >
+                    {dockedSize === 'expanded' ? <KeyboardArrowDown sx={{ fontSize: 18 }} /> : <KeyboardArrowUp sx={{ fontSize: 18 }} />}
+                  </IconButton>
+                </Tooltip>
+                
+                {/* Fullscreen toggle */}
+                <Tooltip title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+                  <IconButton
+                    size="small"
+                    onClick={() => setDockSize(isFullscreen ? 'expanded' : 'fullscreen')}
+                    sx={{ 
+                      color: isFullscreen ? accentColor : '#64748b',
+                      '&:hover': { color: accentColor }
+                    }}
+                  >
+                    {isFullscreen ? <CloseFullscreen sx={{ fontSize: 18 }} /> : <OpenInFull sx={{ fontSize: 18 }} />}
+                  </IconButton>
+                </Tooltip>
+              </>
+            )}
+            
+            {/* Fullscreen button for overlay mode */}
+            {!isDocked && (
+              <Tooltip title="Fullscreen">
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    toggleDock();
+                    setTimeout(() => setDockSize('fullscreen'), 50);
+                  }}
+                  sx={{ 
+                    color: '#64748b',
+                    '&:hover': { color: accentColor }
+                  }}
+                >
+                  <OpenInFull sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Tooltip>
+            )}
+            
+            {/* Dock/Undock toggle */}
+            <Tooltip title={isDocked ? 'Undock to overlay' : 'Dock to bottom'}>
+              <IconButton
+                size="small"
+                onClick={toggleDock}
+                sx={{ 
+                  color: isDocked ? accentColor : '#64748b',
+                  '&:hover': { color: accentColor }
+                }}
+              >
+                <DockOutlined 
+                  sx={{ 
+                    fontSize: 18, 
+                    transform: 'rotate(-90deg)' // Bottom dock orientation
+                  }} 
+                />
+              </IconButton>
+            </Tooltip>
+            
+            {/* Minimize button - works from both docked and floating modes */}
+            {!isFullscreen && (
+              <Tooltip title="Minimize to tab">
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    if (!isDocked) {
+                      // If floating, dock first then minimize
+                      toggleDock();
+                      setTimeout(() => setDockSize('minimized'), 50);
+                    } else {
+                      setDockSize('minimized');
+                    }
+                  }}
+                  sx={{ 
+                    color: '#64748b',
+                    '&:hover': { color: accentColor }
+                  }}
+                >
+                  <Minimize sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Tooltip>
+            )}
+          </Box>
         </Box>
 
-        {/* Scrollable Content */}
-        <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-          
-          {/* ML vs Gen AI EXPLAINER - Clear separation */}
-          <Box sx={{ mb: 2 }}>
+        {/* Scrollable Content - Hide only when minimized, show for compact/expanded/fullscreen/overlay */}
+        {(dockedSize !== 'minimized' || !isDocked) && (
+          <Box sx={{ flex: 1, overflow: 'auto', p: isFullWidth ? 0 : 2 }}>
+            
+            {/* FULL DASHBOARD VIEW - when docked with expanded/fullscreen size */}
+            {isFullWidth && (
+              <Box sx={{ height: '100%', overflow: 'auto' }}>
+                {/* HOW THIS ANALYSIS WORKS - Collapsible Section */}
+                <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'rgba(255,255,255,0.1)' }}>
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'space-between', 
+                      cursor: 'pointer',
+                      '&:hover': { opacity: 0.8 }
+                    }}
+                    onClick={() => setShowExplanation(!showExplanation)}
+                  >
+                    <Typography variant="caption" sx={{ 
+                      fontWeight: 700, 
+                      color: 'text.secondary', 
+                      textTransform: 'uppercase',
+                      letterSpacing: 1
+                    }}>
+                      How This Analysis Works
+                    </Typography>
+                    <IconButton size="small" sx={{ color: 'text.secondary' }}>
+                      {showExplanation ? <ExpandLess sx={{ fontSize: 18 }} /> : <ExpandMore sx={{ fontSize: 18 }} />}
+                    </IconButton>
+                  </Box>
+                  
+                  <Collapse in={showExplanation}>
+                    <Stack spacing={1.5} sx={{ mt: 1.5 }}>
+                      {/* SECTION A: Graph ML (Purple) */}
+                      <Box sx={{ 
+                        p: 1.5, 
+                        bgcolor: alpha('#8B5CF6', 0.1), 
+                        borderRadius: 2,
+                        border: '2px solid',
+                        borderColor: '#8B5CF6'
+                      }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                          <Hub sx={{ color: '#8B5CF6', fontSize: 20 }} />
+                          <Typography variant="subtitle2" sx={{ color: '#8B5CF6', fontWeight: 700 }}>
+                            Graph ML Analysis
+                          </Typography>
+                          <Chip 
+                            label="NetworkX + Snowpark" 
+                            size="small" 
+                            sx={{ 
+                              height: 18, 
+                              fontSize: '0.6rem', 
+                              bgcolor: alpha('#8B5CF6', 0.2), 
+                              color: '#8B5CF6',
+                              ml: 'auto'
+                            }} 
+                          />
+                        </Box>
+                        
+                        <Stack direction="row" spacing={2} flexWrap="wrap">
+                          <Box sx={{ flex: '1 1 200px' }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                              <Storage sx={{ color: '#8B5CF6', fontSize: 14 }} />
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: '#8B5CF6', fontSize: '0.65rem' }}>
+                                1. Graph Construction
+                              </Typography>
+                            </Box>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.6rem', display: 'block' }}>
+                              1,873 nodes with capacity, load factor, customer count
+                            </Typography>
+                          </Box>
+                          <Box sx={{ flex: '1 1 200px' }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                              <FiberManualRecord sx={{ color: '#8B5CF6', fontSize: 14 }} />
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: '#8B5CF6', fontSize: '0.65rem' }}>
+                                2. Centrality Scoring
+                              </Typography>
+                            </Box>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.6rem', display: 'block' }}>
+                              Betweenness (60%) + Degree (40%) centrality
+                            </Typography>
+                          </Box>
+                          <Box sx={{ flex: '1 1 200px' }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                              <Waves sx={{ color: '#8B5CF6', fontSize: 14 }} />
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: '#8B5CF6', fontSize: '0.65rem' }}>
+                                3. BFS Propagation
+                              </Typography>
+                            </Box>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.6rem', display: 'block' }}>
+                              Wave-by-wave failure spread simulation
+                            </Typography>
+                          </Box>
+                          <Box sx={{ flex: '1 1 200px' }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                              <Calculate sx={{ color: '#8B5CF6', fontSize: 14 }} />
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: '#8B5CF6', fontSize: '0.65rem' }}>
+                                4. Impact Calculation
+                              </Typography>
+                            </Box>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.6rem', display: 'block' }}>
+                              Capacity lost, affected nodes, customers impacted
+                            </Typography>
+                          </Box>
+                        </Stack>
+                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.disabled', fontSize: '0.55rem' }}>
+                          Executes as Snowpark Python UDF • Source: NODE_CENTRALITY_FEATURES_V2
+                        </Typography>
+                      </Box>
+                      
+                      {/* SECTION B: Gen AI (Cyan) */}
+                      <Box sx={{ 
+                        p: 1.5, 
+                        bgcolor: alpha('#29B5E8', 0.1), 
+                        borderRadius: 2,
+                        border: '2px solid',
+                        borderColor: '#29B5E8'
+                      }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                          <AutoAwesome sx={{ color: '#29B5E8', fontSize: 20 }} />
+                          <Typography variant="subtitle2" sx={{ color: '#29B5E8', fontWeight: 700 }}>
+                            Generative AI Insights
+                          </Typography>
+                          <Chip 
+                            label="Cortex LLM" 
+                            size="small" 
+                            sx={{ 
+                              height: 18, 
+                              fontSize: '0.6rem', 
+                              bgcolor: alpha('#29B5E8', 0.2), 
+                              color: '#29B5E8',
+                              ml: 'auto'
+                            }} 
+                          />
+                        </Box>
+                        
+                        <Stack direction="row" spacing={2}>
+                          <Box sx={{ flex: 1, p: 1, bgcolor: alpha('#29B5E8', 0.1), borderRadius: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                              <Description sx={{ color: '#29B5E8', fontSize: 14 }} />
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: '#29B5E8', fontSize: '0.65rem' }}>
+                                Summary
+                              </Typography>
+                            </Box>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.55rem' }}>
+                              Translates graph metrics into plain English
+                            </Typography>
+                          </Box>
+                          <Box sx={{ flex: 1, p: 1, bgcolor: alpha('#29B5E8', 0.1), borderRadius: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+                              <Lightbulb sx={{ color: '#29B5E8', fontSize: 14 }} />
+                              <Typography variant="caption" sx={{ fontWeight: 600, color: '#29B5E8', fontSize: '0.65rem' }}>
+                                Recommendations
+                              </Typography>
+                            </Box>
+                            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.55rem' }}>
+                              Actionable mitigation steps from results
+                            </Typography>
+                          </Box>
+                        </Stack>
+                        <Typography variant="caption" sx={{ display: 'block', mt: 1, color: 'text.disabled', fontSize: '0.55rem' }}>
+                          Powered by Snowflake Cortex Complete (Claude 4.5 Sonnet)
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </Collapse>
+                </Box>
+                
+                <CascadeAnalysisDashboard
+                  scenarios={scenarios}
+                  cascadeResult={cascadeResult}
+                  highRiskNodes={highRiskNodes}
+                  isSimulating={isSimulating}
+                  onSimulate={onSimulate}
+                  onClear={onClear}
+                  onLoadHighRisk={onLoadHighRisk}
+                  onLoadPredictions={onLoadPredictions}
+                  visible={true}
+                  onToggleVisibility={() => {}}
+                  isEmbedded={true}
+                  isSideBySide={isDocked && dockedSize === 'expanded' && otherPanelDocked && otherPanelSize === 'expanded'}
+                />
+              </Box>
+            )}
+            
+            {/* COMPACT VIEW - for overlay mode OR docked compact size */}
+            {!isFullWidth && (
+            <>
+              {/* ML vs Gen AI EXPLAINER - Clear separation */}
+              <Box sx={{ mb: 2 }}>
             {/* Section Header */}
             <Typography variant="caption" sx={{ 
               fontWeight: 700, 
@@ -1242,22 +2589,29 @@ export function CascadeControlPanel({
               <Tabs 
                 value={activeTab} 
                 onChange={(_, v) => setActiveTab(v)}
+                variant="scrollable"
+                scrollButtons="auto"
                 sx={{ 
                   minHeight: 32,
                   mb: 1,
-                  '& .MuiTab-root': { minHeight: 32, py: 0.5, fontSize: '0.65rem', minWidth: 'auto', px: 1 }
+                  '& .MuiTab-root': { minHeight: 32, py: 0.5, fontSize: '0.6rem', minWidth: 'auto', px: 0.75 },
+                  '& .MuiTabs-scrollButtons': { width: 24 }
                 }}
               >
-                <Tab label="Flow" icon={<AccountTree sx={{ fontSize: 14 }} />} iconPosition="start" />
-                <Tab label="Waves" icon={<BarChart sx={{ fontSize: 14 }} />} iconPosition="start" />
-                <Tab label="Children" icon={<ElectricalServices sx={{ fontSize: 14 }} />} iconPosition="start" />
-                <Tab label="At Risk" icon={<Warning sx={{ fontSize: 14 }} />} iconPosition="start" />
+                <Tab label="Flow" icon={<AccountTree sx={{ fontSize: 12 }} />} iconPosition="start" />
+                <Tab label="Waves" icon={<BarChart sx={{ fontSize: 12 }} />} iconPosition="start" />
+                <Tab label="Nodes" icon={<ElectricalServices sx={{ fontSize: 12 }} />} iconPosition="start" />
+                <Tab label="Risk" icon={<Warning sx={{ fontSize: 12 }} />} iconPosition="start" />
+                <Tab label="Regions" icon={<SwapHoriz sx={{ fontSize: 12 }} />} iconPosition="start" sx={{ color: '#06B6D4' }} />
+                <Tab label="ROI" icon={<AttachMoney sx={{ fontSize: 12 }} />} iconPosition="start" sx={{ color: '#8B5CF6' }} />
               </Tabs>
 
               {activeTab === 0 && <CompactFlowDiagram cascadeResult={cascadeResult} waveBreakdown={waveBreakdown} focusedWave={focusedWave} onFocusWave={onFocusWave} />}
               {activeTab === 1 && <WaveBreakdownMini waveBreakdown={waveBreakdown} />}
               {activeTab === 2 && <CascadeChildNodes cascadeResult={cascadeResult} />}
               {activeTab === 3 && <HighRiskNodesCompact nodes={highRiskNodes} onSelect={setSelectedPatientZero} />}
+              {activeTab === 4 && <CrossRegionFlowCompact highRiskNodes={highRiskNodes} cascadeResult={cascadeResult} />}
+              {activeTab === 5 && <InvestmentROICompact highRiskNodes={highRiskNodes} cascadeResult={cascadeResult} isSideBySide={isDocked && dockedSize === 'expanded' && otherPanelDocked && otherPanelSize === 'expanded'} />}
               
               {/* Cortex AI Insights - available after simulation */}
               <CortexExplanationPanel cascadeResult={cascadeResult} visible={true} />
@@ -1268,28 +2622,33 @@ export function CascadeControlPanel({
           {!cascadeResult && (
             <HighRiskNodesCompact nodes={highRiskNodes} onSelect={setSelectedPatientZero} />
           )}
+          </>
+          )}
         </Box>
+        )}
 
-        {/* Footer Actions - simplified */}
-        <Box sx={{ 
-          p: 1.5, 
-          borderTop: '1px solid', 
-          borderColor: alpha('#fff', 0.1),
-          bgcolor: alpha('#000', 0.2)
-        }}>
-          <Tooltip title="Refresh high-risk node rankings (graph centrality scores)">
-            <Button
-              variant="text"
-              size="small"
-              fullWidth
-              onClick={onLoadHighRisk}
-              startIcon={<Refresh sx={{ fontSize: 14 }} />}
-              sx={{ fontSize: '0.7rem', color: 'text.secondary' }}
-            >
-              Refresh Node Rankings
-            </Button>
-          </Tooltip>
-        </Box>
+        {/* Footer Actions - only show in overlay mode (not docked) */}
+        {!isDocked && !isFullWidth && (
+          <Box sx={{ 
+            p: 1.5, 
+            borderTop: '1px solid', 
+            borderColor: alpha('#fff', 0.1),
+            bgcolor: alpha('#000', 0.2),
+          }}>
+            <Tooltip title="Refresh high-risk node rankings (graph centrality scores)">
+              <Button
+                variant="text"
+                size="small"
+                fullWidth
+                onClick={onLoadHighRisk}
+                startIcon={<Refresh sx={{ fontSize: 14 }} />}
+                sx={{ fontSize: '0.7rem', color: 'text.secondary' }}
+              >
+                Refresh Node Rankings
+              </Button>
+            </Tooltip>
+          </Box>
+        )}
       </Paper>
       
       {/* CSS for pulse animation */}
@@ -1301,6 +2660,10 @@ export function CascadeControlPanel({
       `}</style>
     </>
   );
+
+  // Always use portal so the panel can appear as a floating window or docked panel
+  // This ensures it escapes the map's positioning context
+  return createPortal(panelContent, document.body);
 }
 
 export default CascadeControlPanel;

@@ -28,6 +28,7 @@ import { LAYOUT } from './layoutConstants';
 import { logger } from './utils/logger';
 import { useWeatherLayers, useHeatmapLayers, usePowerLineGlowLayers, useCascadeLayers } from './hooks';
 import CascadeControlPanel from './components/CascadeControlPanel';
+import { CascadeAnalysisDashboard } from './components/CascadeAnalysisDashboard';
 import type { 
   Asset,
   SubstationStatus,
@@ -581,9 +582,20 @@ function KPICard({ title, value, subtitle, icon, color, trend, sx }: KPICardProp
 
 function App() {
   const [currentTab, setCurrentTab] = useState(0);
-  const [chatDrawerOpen, setChatDrawerOpen] = useState(false);
+  const [chatDrawerOpen, setChatDrawerOpen] = useState(true);
   const [fabPosition, setFabPosition] = useState({ x: window.innerWidth - 100, y: window.innerHeight - 100 });
   const [fabSpinning, setFabSpinning] = useState(false);
+  
+  // Gmail-style dock coordination state - size-based system
+  // Each panel: isDocked (boolean) + dockedSize ('minimized' | 'compact' | 'expanded' | 'fullscreen')
+  type DockedPanelSize = 'minimized' | 'compact' | 'expanded' | 'fullscreen';
+  // Cascade panel is ALWAYS docked (minimized tab always visible at bottom like Gmail)
+  // When "closed", it just minimizes to the tab instead of hiding completely
+  const [cascadeIsDocked, setCascadeIsDocked] = useState(true);
+  const [cascadeDockedSize, setCascadeDockedSize] = useState<DockedPanelSize>('minimized');
+  const [chatDrawerIsDocked, setChatDrawerIsDocked] = useState(true);
+  const [chatDrawerDockedSize, setChatDrawerDockedSize] = useState<DockedPanelSize>('minimized');
+  
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isSpinning, setIsSpinning] = useState(true);
   const [isSlowingDown, setIsSlowingDown] = useState(false);
@@ -1197,7 +1209,7 @@ function App() {
     powerLines: false,
     vegetation: false,
     waterBodies: false,
-    cascadeAnalysis: false  // # Cascade failure analysis layer
+    cascadeAnalysis: true  // # Always enabled - panel is always visible as minimized tab
   });
   const [layersPanelExpanded, setLayersPanelExpanded] = useState(true);
   const [spatialPanelExpanded, setSpatialPanelExpanded] = useState(true);
@@ -7063,29 +7075,6 @@ function App() {
                         </Box>
                       )}
 
-                      {/* Cascade Analysis Toggle */}
-                      <Divider sx={{ my: 0.5, borderColor: 'rgba(255,255,255,0.08)' }} />
-                      
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <IconButton 
-                          size="small"
-                          onClick={() => setLayersVisible({...layersVisible, cascadeAnalysis: !layersVisible.cascadeAnalysis})}
-                          sx={{ 
-                            color: layersVisible.cascadeAnalysis ? '#FF6B6B' : 'rgba(255,255,255,0.3)',
-                            '&:hover': { bgcolor: 'rgba(255, 107, 107, 0.1)' }
-                          }}
-                        >
-                          <Timeline sx={{ fontSize: 18 }} />
-                        </IconButton>
-                        <Box sx={{ flex: 1 }}>
-                          <Typography variant="caption" sx={{ color: layersVisible.cascadeAnalysis ? '#FF6B6B' : 'rgba(255,255,255,0.5)', display: 'block', lineHeight: 1.2 }}>
-                            Cascade Analysis
-                          </Typography>
-                          <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 9, display: 'block', mt: 0.25 }}>
-                            ML risk simulation
-                          </Typography>
-                        </Box>
-                      </Box>
                         </Stack>
                       </Collapse>
                     </Stack>
@@ -7525,6 +7514,12 @@ function App() {
                   onToggleVisibility={() => setLayersVisible(prev => ({ ...prev, cascadeAnalysis: !prev.cascadeAnalysis }))}
                   focusedWave={cascadeControls.state.focusedWave}
                   onFocusWave={cascadeControls.setFocusedWave}
+                  isDocked={cascadeIsDocked}
+                  dockedSize={cascadeDockedSize}
+                  onDockedSizeChange={setCascadeDockedSize}
+                  onDockChange={setCascadeIsDocked}
+                  otherPanelDocked={chatDrawerIsDocked}
+                  otherPanelSize={chatDrawerDockedSize}
                 />
 
                 {/* Pinned Asset Cards - OPTIMIZED: translate3d GPU acceleration, pointer-events optimization */}
@@ -11597,50 +11592,37 @@ function App() {
               )}
               
               {currentTab === 4 && (
-                // Outage Management - Map + list skeleton
-                <Box sx={{ display: 'flex', gap: 3, height: '100%' }}>
-                  <Card sx={{ flex: 3, bgcolor: 'rgba(239, 68, 68, 0.03)', border: '1px solid rgba(239, 68, 68, 0.1)' }}>
-                    <CardContent sx={{ height: '100%' }}>
-                      <Box sx={{ height: '100%', bgcolor: 'rgba(239, 68, 68, 0.08)', borderRadius: 2, position: 'relative' }}>
-                        {[0, 1, 2, 3].map((i) => (
-                          <Box key={i} sx={{ 
-                            position: 'absolute', 
-                            top: `${20 + i * 20}%`, 
-                            left: `${15 + i * 20}%`, 
-                            width: 40, 
-                            height: 40, 
-                            bgcolor: 'rgba(239, 68, 68, 0.4)', 
-                            borderRadius: '50%', 
-                            animation: 'pulse 2s ease-in-out infinite',
-                            animationDelay: `${i * 0.3}s`
-                          }} />
-                        ))}
-                      </Box>
-                    </CardContent>
-                  </Card>
-                  <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {[0, 1, 2, 3, 4].map((i) => (
-                      <Card key={i} sx={{ bgcolor: 'rgba(239, 68, 68, 0.03)', border: '1px solid rgba(239, 68, 68, 0.1)' }}>
-                        <CardContent sx={{ py: 1.5 }}>
-                          <Box sx={{ height: 16, width: '80%', bgcolor: 'rgba(239, 68, 68, 0.2)', borderRadius: 1, mb: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.15}s` }} />
-                          <Box sx={{ height: 12, width: '50%', bgcolor: 'rgba(239, 68, 68, 0.15)', borderRadius: 1, animation: 'pulse 2s ease-in-out infinite', animationDelay: `${i * 0.15 + 0.1}s` }} />
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </Box>
+                // Outage Management - Full Cascade Analysis Dashboard
+                <Box sx={{ height: 'calc(100vh - 240px)', overflow: 'auto' }}>
+                  <CascadeAnalysisDashboard
+                    scenarios={cascadeControls.scenarios}
+                    cascadeResult={cascadeControls.state.cascadeResult}
+                    highRiskNodes={cascadeControls.state.highRiskNodes}
+                    isSimulating={cascadeControls.state.isSimulating}
+                    onSimulate={cascadeControls.simulateCascade}
+                    onClear={cascadeControls.clearCascade}
+                    onLoadHighRisk={cascadeControls.loadHighRiskNodes}
+                    onLoadPredictions={cascadeControls.loadRiskPredictions}
+                    visible={true}
+                    onToggleVisibility={() => {}}
+                  />
                 </Box>
               )}
               
-              <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', mt: 2, fontStyle: 'italic' }}>
-                Coming Soon - Feature
-              </Typography>
+              {/* Only show "Coming Soon" for tabs 2 and 3 (Asset Health, AMI Analytics) */}
+              {(currentTab === 2 || currentTab === 3) && (
+                <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', mt: 2, fontStyle: 'italic' }}>
+                  Coming Soon - Feature
+                </Typography>
+              )}
             </Box>
           )}
         </Box>
 
         {/* Draggable FAB - Grid Intelligence Assistant */}
+        {/* Only show FAB when chat is undocked AND closed - otherwise the minimized tab serves as the entry point */}
         <DraggableFab
-          visible={!chatDrawerOpen}
+          visible={!chatDrawerOpen && !chatDrawerIsDocked}
           spinning={fabSpinning}
           onPositionChange={setFabPosition}
           onClick={() => {
@@ -11677,6 +11659,12 @@ function App() {
               setTimeout(() => setFabSpinning(false), 1000);
             }}
             fabPosition={fabPosition}
+            isDocked={chatDrawerIsDocked}
+            dockedSize={chatDrawerDockedSize}
+            onDockedSizeChange={setChatDrawerDockedSize}
+            onDockChange={setChatDrawerIsDocked}
+            otherPanelDocked={cascadeIsDocked}
+            otherPanelSize={cascadeDockedSize}
           />
         </Suspense>
 
