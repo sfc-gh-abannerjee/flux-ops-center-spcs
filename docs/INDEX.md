@@ -1,132 +1,79 @@
-# Cascade Failure Analysis Documentation Index
+# Flux Operations Center - Documentation
 
-## Overview
-
-This directory contains comprehensive documentation for the Grid Operations cascade failure analysis system integrated with Snowflake Cortex Agent.
+**Utility Grid Operations Platform**
 
 ---
 
-## Documentation Files
+## Architecture
 
-### 1. Evaluation Report
-**File**: `CASCADE_ML_TOOLS_EVALUATION_REPORT.md` (625 lines)
-
-Comprehensive technical evaluation comparing Cortex Agent performance with and without ML-backed cascade tools.
-
-**Key Sections**:
-- Executive Summary
-- Test Methodology
-- Detailed Test Results (3 test cases)
-- Quantitative Comparison
-- Technical Deep Dive
-- Operational Implications
-- Recommendations
-
-**Key Finding**: Without ML tools, customer impact is underestimated by **11.7x** (5,552 vs 64,800 customers).
+| Document | Description |
+|----------|-------------|
+| **[ARCHITECTURE_INTERNAL.md](../ARCHITECTURE_INTERNAL.md)** | **Full 4-layer architecture** - Internal version with resource IDs |
+| **[ARCHITECTURE_PUBLIC.md](../ARCHITECTURE_PUBLIC.md)** | **Public-facing version** - De-identified, preview features marked |
 
 ---
 
-### 2. Quick Reference Guide
-**File**: `CASCADE_QUICK_REFERENCE.md` (216 lines)
+## Documentation
 
-Practical guide for using cascade analysis tools.
-
-**Contents**:
-- Tool descriptions and example queries
-- Key metrics explained
-- Common query patterns
-- API endpoints
-- Direct SQL procedures
-
----
-
-### 3. Implementation Summary
-**File**: `../backend/scripts/CASCADE_IMPLEMENTATION_SUMMARY.md` (287 lines)
-
-Technical implementation details for the cascade analysis system.
-
-**Contents**:
-- Resolved compromises (6 total)
-- Files created/modified
-- Database tables
-- API endpoints
-- Execution instructions
+| Document | Description |
+|----------|-------------|
+| **[LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md)** | **START HERE** - Local dev setup, PAT auth, troubleshooting |
+| **[DATA_LOADING_GUIDE.md](./DATA_LOADING_GUIDE.md)** | **Load AMI data (7.1B rows)** - S3 stage access, bulk loading |
+| [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) | Cascade failure analysis tools, API, ML model |
+| [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) | Snowflake→Postgres sync architecture |
+| [VEGETATION_RISK_ARCHITECTURE.md](./VEGETATION_RISK_ARCHITECTURE.md) | Vegetation risk analysis |
 
 ---
 
 ## Quick Links
 
-| Topic | Document | Section |
-|-------|----------|---------|
-| What tools are available? | Quick Reference | Available Tools |
-| How accurate are the tools? | Evaluation Report | Quantitative Comparison |
-| What's the customer impact of SUB-HOU-124 failure? | Evaluation Report | Test T2 |
-| How do I run a Winter Storm Uri simulation? | Quick Reference | cascade_scenarios |
-| Why can't I use SQL for centrality? | Evaluation Report | Technical Deep Dive |
-| What stored procedures exist? | Quick Reference | Stored Procedures |
+| Task | Document |
+|------|----------|
+| Set up local dev | [LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md) |
+| Load AMI data (7.1B rows) | [DATA_LOADING_GUIDE.md](./DATA_LOADING_GUIDE.md) |
+| Fix topology not loading | [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) |
+| Use cascade analysis | [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) |
+| Deploy to SPCS | [../CENTERPOINT_ARCHITECTURE.md](../CENTERPOINT_ARCHITECTURE.md) |
 
 ---
 
-## Key Statistics
+## Key Snowflake Objects
 
-| Metric | Value |
-|--------|-------|
-| Grid Nodes | 91,829 |
-| Grid Edges | 2.5M |
-| Nodes with True Centrality | 1,873 |
-| Top Risk Node | SUB-HOU-124 (Rayford Substation) |
-| Highest Betweenness | 0.906 |
-| Max Customer Impact | 64,800 |
-
----
-
-## Tool Summary
-
-| Tool | Type | Purpose |
-|------|------|---------|
-| `cascade_patient_zeros` | Stored Procedure | Find high-risk nodes by centrality |
-| `cascade_impact` | Stored Procedure | Estimate node failure impact |
-| `cascade_scenarios` | Stored Procedure | Get simulation parameters |
-| `/api/cascade/simulate-realtime` | REST API | BFS simulation |
+| Object | Type | Purpose |
+|--------|------|---------|
+| `SI_DEMOS.APPLICATIONS` | Schema | Main app tables, sync procedures |
+| `SI_DEMOS.CASCADE_ANALYSIS` | Schema | Cascade analysis tables |
+| `SI_DEMOS.ML_DEMO` | Schema | ML models, grid topology |
+| `SYNC_TOPOLOGY_TO_POSTGRES()` | Procedure | Sync topology to Postgres |
+| `CASCADE_ANALYSIS_AGENT` | Agent | Cortex Agent for cascade queries |
 
 ---
 
-## Files in Repository
+## File Structure
 
 ```
 flux_ops_center_spcs/
-├── docs/
-│   ├── INDEX.md                              # This file
-│   ├── CASCADE_ML_TOOLS_EVALUATION_REPORT.md # Full evaluation report
-│   └── CASCADE_QUICK_REFERENCE.md            # Quick reference guide
-│
+├── README.md                    # Project overview
+├── CENTERPOINT_ARCHITECTURE.md  # Full architecture
 ├── backend/
-│   ├── scripts/
-│   │   ├── CASCADE_IMPLEMENTATION_SUMMARY.md # Implementation details
-│   │   ├── compute_graph_centrality.py       # NetworkX centrality computation
-│   │   ├── cascade_simulator.py              # BFS cascade simulation
-│   │   └── train_gnn_model.py               # GNN training pipeline
-│   │
-│   ├── sql/
-│   │   ├── create_cascade_agent.sql         # Agent stored procedures
-│   │   ├── update_agent_cascade_tools.sql   # Agent update script
-│   │   └── priority5_cascade_agent_tools_v2.sql # Alternative UDF implementation
-│   │
-│   └── server_fastapi.py                    # FastAPI with cascade endpoints
-│
-├── test_cascade_agent.py                    # Agent tool verification
-└── test_cascade_with_without_ml.py          # ML vs non-ML comparison test
+│   ├── server_fastapi.py        # FastAPI server
+│   └── ml/ML_DEMO_REFERENCE.md  # ML model reference
+├── src/                         # React frontend
+├── scripts/
+│   └── seed_data/               # Data loading scripts
+│       └── load_ami_from_s3.sql # Load 7.1B AMI rows
+├── docs/                        # Documentation
+│   ├── INDEX.md                 # This file
+│   ├── LOCAL_DEVELOPMENT_GUIDE.md
+│   ├── DATA_LOADING_GUIDE.md    # AMI data loading
+│   ├── CASCADE_ANALYSIS.md
+│   ├── POSTGRES_SYNC_RELIABILITY.md
+│   └── VEGETATION_RISK_ARCHITECTURE.md
+└── archive/                     # Historical docs
+    ├── evaluations/             # Evaluation reports
+    └── backend_docs/            # Old backend docs
 ```
 
 ---
 
-## Contact
-
-For questions or issues with cascade analysis:
-- Review documentation in this directory
-- Check stored procedure definitions in `backend/sql/`
-- Run test scripts to verify tool functionality
-
----
-
-*Documentation generated: January 25, 2026*
+*Last Updated: January 28, 2026*

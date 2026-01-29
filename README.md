@@ -1,227 +1,102 @@
 # Flux Operations Center
-## Grid Operations Grid Operations Platform
 
-**Competitive Response to Palantir Grid 360**
-
----
-
-## Quick Links
-
-| Document | Purpose |
-|----------|---------|
-| **[CENTERPOINT_ARCHITECTURE.md](./CENTERPOINT_ARCHITECTURE.md)** | **PRIMARY** - Full architecture, deployment guides, use case mapping |
-| [LOCAL_DEV_SETUP.md](./LOCAL_DEV_SETUP.md) | PAT setup for local development |
+**Grid Operations Grid Operations Platform** - Snowflake's competitive response to Palantir Grid 360
 
 ---
 
 ## Live Demo
 
-**Endpoint:** https://bqbm57vg-sfsehol-si-ae-enablement-retail-hmjrfl.snowflakecomputing.app  
+**URL:** https://bqbm57vg-sfsehol-si-ae-enablement-retail-hmjrfl.snowflakecomputing.app  
 **Status:** RUNNING (MIN_INSTANCES=1, always-on)
 
 ---
 
-## Architecture Overview
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| **[docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md)** | Complete local dev setup, authentication, troubleshooting |
+| **[docs/DATA_LOADING_GUIDE.md](./docs/DATA_LOADING_GUIDE.md)** | Load AMI data (7.1B rows) from S3 |
+| [docs/INDEX.md](./docs/INDEX.md) | Documentation index |
+| [docs/POSTGRES_SYNC_RELIABILITY.md](./docs/POSTGRES_SYNC_RELIABILITY.md) | Snowflake→Postgres sync architecture |
+| [docs/CASCADE_QUICK_REFERENCE.md](./docs/CASCADE_QUICK_REFERENCE.md) | Cascade analysis tools |
+| [CENTERPOINT_ARCHITECTURE.md](./CENTERPOINT_ARCHITECTURE.md) | Full architecture & deployment guides |
+
+---
+
+## Quick Start (Local Development)
+
+```bash
+# Terminal 1 - Backend (FastAPI)
+cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
+SNOWFLAKE_CONNECTION_NAME=cpe_demo_CLI uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 --reload
+
+# Terminal 2 - Frontend (Vite)
+cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
+npm run dev
+```
+
+| Service | URL |
+|---------|-----|
+| Frontend | http://localhost:5173 |
+| Backend API | http://localhost:3001 |
+| Swagger Docs | http://localhost:3001/docs |
+
+See [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) for full setup instructions.
+
+---
+
+## Data Scale
+
+| Dataset | Rows | Description |
+|---------|------|-------------|
+| **AMI_INTERVAL_READINGS** | 7.1B | 15-min interval readings, 597K meters, 4 months (Jul/Aug 2024, Jul/Aug 2025) |
+| TRANSFORMER_HOURLY_LOAD | 415M | Hourly transformer load aggregations |
+| THERMAL_STRESS | 212M | Transformer thermal stress events |
+| CUSTOMERS | 686K | Customer master data |
+| METERS | 597K | Meter infrastructure |
+| SAP_WORK_ORDERS | 250K | Work order history |
+| TRANSFORMERS | 92K | Transformer metadata with GIS |
+| POLES | 62K | Pole infrastructure |
+| FEEDERS | 66K | Distribution feeder topology |
+
+**External Data (S3):** AMI data is exported to `s3://abannerjee-ami-demo/raw/ami/ami_interval_readings/` (78.7 GB, 385 parquet files). See [docs/DATA_LOADING_GUIDE.md](./docs/DATA_LOADING_GUIDE.md) for loading instructions.
+
+---
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    FLUX OPS CENTER - 4-LAYER ARCHITECTURE                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  LAYER 1: TRANSACTIONAL       Snowflake Postgres (PostgreSQL 17.7)         │
-│           <20ms queries       • ERM outage app    • Grid asset cache       │
-│                               • PostGIS geospatial                          │
-│                                                                             │
-│  LAYER 2: STREAMING           Demo: Synthetic generator                     │
-│           <1 min latency      PoC: Confluent Cloud                         │
-│                               Prod: CNP Kafka → OpenFlow SPCS              │
-│                                                                             │
-│  LAYER 3: ANALYTICS           Snowflake Core (7.1B AMI rows)               │
-│           <5s queries         • Dynamic Tables   • Cortex AI Agent         │
-│                               • ML models        • Semantic views           │
-│                                                                             │
-│  LAYER 4: APPLICATION         SPCS (React + DeckGL + Flask)                │
-│           ~3s load            • 66K feeder visualization                   │
-│                               • Real-time KPI dashboard                     │
-│                               • Grid Intelligence AI Chat                   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    FLUX OPS CENTER - 4-LAYER ARCHITECTURE               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  LAYER 1: TRANSACTIONAL       Snowflake Postgres (PostgreSQL 17)       │
+│           <20ms queries       • PostGIS geospatial • Grid asset cache  │
+│                                                                         │
+│  LAYER 2: STREAMING           OpenFlow / Kafka Connector               │
+│           <1 min latency      Demo: Synthetic generator                │
+│                                                                         │
+│  LAYER 3: ANALYTICS           Snowflake Core (7.1B AMI rows)           │
+│           <5s queries         • Dynamic Tables • Cortex AI Agent       │
+│                                                                         │
+│  LAYER 4: APPLICATION         SPCS (React + DeckGL + FastAPI)          │
+│           ~3s load            • 66K feeder visualization               │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Tech Stack
 
-### Frontend
-- **React 18** + TypeScript + Vite
-- **DeckGL 8.9** - Multi-layer visualization (66K feeders)
-- **MapLibre GL** - CartoDB Dark Matter basemap
-- **Material-UI 5** - Flux brand theme (cyan + amber)
-
-### Backend
-- **Flask** REST API (FastAPI migration recommended)
-- **Gunicorn** - 4 workers, 120s timeout
-- **Dual-backend**: Postgres (<20ms) + Snowflake (<5s)
-
-### Data
-- **Snowflake Postgres**: 12 tables, 1.1GB (real-time ops)
-- **Snowflake Warehouse**: 7.1B AMI rows (analytics)
-- **Dynamic Tables**: 1-minute TARGET_LAG
-
-### Deployment
-- **SPCS**: FLUX_INTERACTIVE_POOL
-- **Config**: MIN_INSTANCES=1, MAX_INSTANCES=5
-- **External Access**: FLUX_CARTO_INTEGRATION, FLUX_POSTGRES_INTEGRATION
-
----
-
-## Quick Start
-
-### View Service Status
-```bash
-snow sql -q "CALL SYSTEM\$GET_SERVICE_STATUS('SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER')" -c cpe_demo_CLI
-```
-
-### Get Endpoint
-```bash
-snow sql -q "SHOW ENDPOINTS IN SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER" -c cpe_demo_CLI
-```
-
-### Local Development
-
-#### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- Snowflake CLI (`snow`) configured with `cpe_demo_CLI` connection
-- PostgreSQL client (for direct PostGIS queries)
-
-#### Quick Start (Two Terminals)
-
-**Terminal 1 - Backend (FastAPI):**
-```bash
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs/backend
-python server_fastapi.py
-# Server starts on port 3001
-```
-
-**Terminal 2 - Frontend (Vite):**
-```bash
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
-npm run dev
-# Vite dev server on port 8081, proxies /api to port 3001
-```
-
-| Service | URL | Purpose |
-|---------|-----|---------|
-| Frontend | http://localhost:8081 | React + DeckGL Map UI |
-| Backend API | http://localhost:3001 | FastAPI REST endpoints |
-| API Docs | http://localhost:3001/docs | Swagger UI |
-
-#### #Local Testing Best Practices
-
-**1. Verify Services Before Testing**
-```bash
-# Check if backend is already running
-lsof -i:3001
-
-# Health check
-curl http://localhost:3001/api/health
-
-# Kill existing process if needed
-lsof -ti:3001 | xargs kill -9
-```
-
-**2. Test Spatial Endpoints Directly**
-```bash
-# Water bodies (Houston area)
-curl "http://localhost:3001/api/spatial/layers/water-bodies?min_lon=-95.5&max_lon=-95.2&min_lat=29.7&max_lat=30.0&zoom=14"
-
-# Vegetation risk
-curl "http://localhost:3001/api/spatial/layers/vegetation?min_lon=-95.5&max_lon=-95.2&min_lat=29.7&max_lat=30.0"
-
-# Power lines
-curl "http://localhost:3001/api/spatial/layers/power-lines?min_lon=-95.5&max_lon=-95.2&min_lat=29.7&max_lat=30.0"
-```
-
-**3. Direct PostGIS Queries (Data Quality Debugging)**
-```bash
-# Set password for session
-export PGPASSWORD="<REDACTED_PASSWORD>"
-
-# Connect to PostGIS
-psql -h <your_postgres_host> \
-     -U application -d postgres
-
-# Example: Check water body data quality
-SELECT water_type, COUNT(*), ROUND(AVG(acres)::numeric, 2) as avg_acres
-FROM osm_water GROUP BY water_type ORDER BY COUNT(*) DESC;
-```
-
-**4. Background Server (Long Sessions)**
-```bash
-# Start backend in background (survives terminal close)
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs/backend
-nohup python server_fastapi.py > /tmp/server.log 2>&1 & disown
-
-# Monitor logs
-tail -f /tmp/server.log
-```
-
-**5. Common Issues & Fixes**
-
-| Issue | Symptom | Fix |
-|-------|---------|-----|
-| Port in use | `Address already in use` | `lsof -ti:3001 \| xargs kill -9` |
-| Server dies after cache warm | Process exits after ~10s | Use `nohup ... & disown` pattern |
-| SSO token expired | `TokenRetrievalError` in logs | Run `snow connection test -c cpe_demo_CLI` |
-| Slow first request | 2-3s response time | Normal - cache warming on startup |
-
-#### Architecture: Local vs Production
-
-```
-LOCAL DEVELOPMENT                    PRODUCTION (SPCS)
-─────────────────                    ─────────────────
-localhost:8081 (Vite)                SPCS Container
-      │                                    │
-      ▼                                    ▼
-localhost:3001 (uvicorn)             Gunicorn (4 workers)
-      │                                    │
-      ├──► Snowflake Postgres ◄────────────┤
-      │    (PostGIS - <20ms)               │
-      │                                    │
-      └──► Snowflake Warehouse ◄───────────┘
-           (Analytics - <5s)
-```
-
-Both environments use the **same dual-backend pattern**:
-- **PostGIS** for fast spatial queries (water bodies, vegetation, power lines)
-- **Snowflake** for analytics queries (KPIs, historical data, AI/ML)
-
----
-
-## Deploy New Version
-
-```bash
-# 1. Build
-docker build --platform linux/amd64 \
-  -t sfsehol-si-ae-enablement-retail-hmjrfl.registry.snowflakecomputing.com/si_demos/applications/flux_ops_center_repo/flux_ops_center:latest \
-  -f Dockerfile.spcs .
-
-# 2. Push
-snow spcs image-registry login --connection cpe_demo_CLI
-docker push sfsehol-si-ae-enablement-retail-hmjrfl.registry.snowflakecomputing.com/si_demos/applications/flux_ops_center_repo/flux_ops_center:latest
-
-# 3. Recreate
-snow sql -q "DROP SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER" -c cpe_demo_CLI
-snow sql -q "CREATE SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER \
-  IN COMPUTE POOL FLUX_INTERACTIVE_POOL \
-  FROM SPECIFICATION \$\$$(cat service_spec_prod.yaml)\$\$ \
-  EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_CARTO_INTEGRATION, FLUX_POSTGRES_INTEGRATION)" \
-  -c cpe_demo_CLI
-
-# 4. Configure
-snow sql -q "ALTER SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER SET MIN_INSTANCES = 1" -c cpe_demo_CLI
-```
+| Layer | Technology |
+|-------|------------|
+| Frontend | React 18, TypeScript, DeckGL 8.9, MapLibre GL, Material-UI 5 |
+| Backend | FastAPI, Gunicorn (4 workers) |
+| Transactional DB | Snowflake Postgres (PostGIS) |
+| Analytics DB | Snowflake Warehouse |
+| Deployment | SPCS (FLUX_INTERACTIVE_POOL) |
 
 ---
 
@@ -229,11 +104,23 @@ snow sql -q "ALTER SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER SET MIN_INSTANC
 
 | Resource | Value |
 |----------|-------|
-| Snowflake Account | GZB42423 (SFSEHOL-SI_AE_ENABLEMENT_RETAIL_HMJRFL) |
-| Connection | cpe_demo_CLI |
+| Snowflake Account | GZB42423 |
+| Connection | `cpe_demo_CLI` |
 | Database | SI_DEMOS |
 | Warehouse | SI_DEMO_WH |
-| Region | AWS_US_WEST_2 |
+
+---
+
+## Common Issues
+
+| Issue | Fix |
+|-------|-----|
+| Port 3001 in use | `lsof -ti:3001 \| xargs kill -9` |
+| boto3 SSO error | Already handled in server_fastapi.py |
+| Topology 0 connections | `CALL SI_DEMOS.APPLICATIONS.SYNC_TOPOLOGY_TO_POSTGRES()` |
+| Cortex Agent 401/403 | Verify `$SNOWFLAKE_PAT` is set |
+
+See [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) for detailed troubleshooting.
 
 ---
 
@@ -241,48 +128,25 @@ snow sql -q "ALTER SERVICE SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER SET MIN_INSTANC
 
 ```
 flux_ops_center_spcs/
-├── CENTERPOINT_ARCHITECTURE.md  # PRIMARY architecture doc
-├── LOCAL_DEV_SETUP.md           # Dev environment setup
 ├── README.md                    # This file
+├── CENTERPOINT_ARCHITECTURE.md  # Full architecture doc
+├── backend/
+│   └── server_fastapi.py        # FastAPI server (port 3001)
 ├── src/                         # React frontend
-├── backend/                     # Flask API
-├── Dockerfile.spcs              # Container build
-├── service_spec_prod.yaml       # SPCS specification
-└── archive/                     # Superseded docs (reference only)
-    ├── ARCHITECTURE.md
-    ├── PROJECT_STATUS.md
-    └── FLUX_ARCHITECTURE_Jan8.md
+├── scripts/
+│   └── seed_data/               # Data loading scripts
+│       └── load_ami_from_s3.sql # Load 7.1B AMI rows
+├── docs/                        # Documentation
+│   ├── INDEX.md                 # Doc index
+│   ├── LOCAL_DEVELOPMENT_GUIDE.md
+│   ├── DATA_LOADING_GUIDE.md    # AMI data loading
+│   ├── POSTGRES_SYNC_RELIABILITY.md
+│   └── CASCADE_QUICK_REFERENCE.md
+├── Dockerfile.spcs              # SPCS container
+└── archive/                     # Superseded docs
 ```
 
 ---
 
-## Daniel Sumners Use Cases → Snowflake Solutions
-
-| Use Case | Solution | Status |
-|----------|----------|--------|
-| AMI Data Management | Dynamic Tables + OpenFlow | ✅ 7.1B rows |
-| ERM Outage App | Snowflake Postgres (<20ms) | ✅ Operational |
-| Digital Twin | DeckGL + PostGIS | ✅ 66K feeders |
-| Customer 360 | Cortex AI Embeddings | 🔄 Planned |
-| Conversational AI | Cortex Agent | ✅ Deployed |
-| Project Elevate | Cortex Search (PDFs) | 🔄 Planned |
-| Geospatial | PostGIS extension | ✅ Available |
-| SAP Integration | OpenFlow CDC | 🔄 Phase 2 |
-
----
-
-## Anti-Palantir Positioning
-
-> **"Snowflake is the analytics brain. Kafka is the nervous system. They work together."**
-
-| Palantir Grid 360 | Snowflake Platform |
-|-------------------|-------------------|
-| Proprietary Ontology | Standard SQL + Semantic Views |
-| Custom custom-built apps | Streamlit + SPCS (standard Python) |
-| Black-box AI models | Cortex AI (transparent, owned by CNP) |
-| Heavy lock-in | Open formats (Iceberg, Postgres) |
-
----
-
-**Last Updated:** January 21, 2026  
+**Last Updated:** January 28, 2026  
 **Author:** Abhinav Bannerjee (Senior SE - Enterprise Acquisition)

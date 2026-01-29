@@ -89,6 +89,13 @@ import {
   DragIndicator,
   Minimize,
   Close,
+  // Actionable cascade analysis icons
+  Shield,
+  RestartAlt,
+  LocalFireDepartment,
+  Engineering,
+  AccessTime,
+  MonetizationOn,
 } from '@mui/icons-material';
 import { LAYOUT } from '../layoutConstants';
 import { CascadeAnalysisDashboard } from './CascadeAnalysisDashboard';
@@ -99,6 +106,131 @@ export type CascadeLayoutMode = 'overlay' | 'docked-bottom';
 // Size state for docked panels (Gmail/Slack style)
 export type DockedPanelSize = 'minimized' | 'compact' | 'expanded' | 'fullscreen';
 import type { CascadeScenario, CascadeResult, CascadeNode, CascadeWaveBreakdown, CortexExplanation } from '../types';
+
+// =============================================================================
+// ACTIONABLE: Types for new actionable cascade analysis features
+// These interfaces match the actual backend API response structures
+// =============================================================================
+
+// Economic Impact - matches /api/cascade/economic-impact response
+interface EconomicImpactResponse {
+  economic_impact: {
+    total_estimated_cost: number;
+    breakdown: {
+      regulatory_penalties: { puct_customer_service: number; ercot_reliability: number; subtotal: number };
+      lost_revenue: { unserved_energy_mwh: number; subtotal: number };
+      restoration_costs: { crew_hours: number; crew_cost: number; equipment_cost: number; subtotal: number };
+    };
+    currency: string;
+  };
+  severity_assessment: {
+    tier: 'EMERGENCY' | 'CRITICAL' | 'HIGH' | 'MODERATE';
+    description: string;
+    customers_affected: number;
+    estimated_duration_hours: number;
+    thresholds: { media_attention: boolean; regulatory_scrutiny: boolean; emergency_declaration: boolean };
+  };
+  executive_summary: string;
+  query_time_ms: number;
+}
+
+// Mitigation Playbook - matches /api/cascade/mitigation-actions response
+interface MitigationPlaybookResponse {
+  playbook: {
+    immediate_actions: Array<{
+      priority: number;
+      action: string;
+      description: string;
+      time_target: string;
+      prevents: string;
+    }>;
+    choke_point_interventions: Array<{
+      node_id: string;
+      downstream_impact: number;
+      action: string;
+      rationale: string;
+    }>;
+    load_transfer_options: Array<{
+      from_node: string | null;
+      action: string;
+      capacity_recoverable_mw: number;
+    }>;
+    crew_dispatch: {
+      primary_location: {
+        node_id: string;
+        node_name: string;
+        lat: number;
+        lon: number;
+        reason: string;
+      };
+      secondary_locations: Array<{ node_id: string; reason: string }>;
+      estimated_crews_needed: number;
+      equipment_to_stage: string[];
+    };
+    containment_probability: {
+      with_immediate_action: number;
+      with_15min_delay: number;
+      with_30min_delay: number;
+      interpretation: string;
+    };
+  };
+  summary: string;
+  cascade_context: {
+    patient_zero: string;
+    total_at_risk_nodes: number;
+    wave_1_nodes: number;
+  };
+  query_time_ms: number;
+}
+
+// Restoration Sequence - matches /api/cascade/restoration-sequence response
+interface RestorationSequenceResponse {
+  restoration_sequence: Array<{
+    sequence: number;
+    node_id: string;
+    node_name: string;
+    node_type: string;
+    customers_restored: number;
+    cumulative_customers: number;
+    cumulative_hours: number;
+    priority_score: number;
+    estimated_hours: number;
+    depends_on: string | null;
+    rationale: string;
+  }>;
+  milestones: Array<{
+    milestone: string;
+    after_step: number;
+    node: string;
+    hours: number;
+  }>;
+  summary: {
+    total_nodes: number;
+    total_customers: number;
+    estimated_total_hours: number;
+    parallel_crews_recommended: number;
+  };
+  optimization_note: string;
+  query_time_ms: number;
+}
+
+// Realtime Risk - matches /api/cascade/realtime-risk response
+interface RealtimeRiskResponse {
+  realtime_risk: {
+    score: number;
+    level: 'CRITICAL' | 'HIGH' | 'ELEVATED' | 'NORMAL';
+    color: string;
+    recommended_action: string;
+  };
+  risk_factors: {
+    load_stress: { score: number; max: number; detail: string };
+    peak_hour: { score: number; max: number; detail: string };
+    equipment_stress: { score: number; max: number; detail: string };
+    network_vulnerability: { score: number; max: number; detail: string };
+  };
+  timestamp: string;
+  query_time_ms: number;
+}
 
 interface CascadeControlPanelProps {
   scenarios: CascadeScenario[];
@@ -1246,6 +1378,472 @@ function InvestmentROICompact({
   );
 }
 
+// =====================================================
+// ACTIONABLE CASCADE ANALYSIS COMPACT COMPONENTS
+// =====================================================
+
+/**
+ * MitigationActionsCompact - Operator decision support for immediate response
+ * Shows prioritized actions, crew dispatch, and containment probability
+ * Updated to match actual backend API response structure
+ */
+function MitigationActionsCompact({ 
+  playbookResponse, 
+  economicResponse,
+  loading 
+}: { 
+  playbookResponse: MitigationPlaybookResponse | null; 
+  economicResponse: EconomicImpactResponse | null;
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+        <CircularProgress size={24} sx={{ color: '#F97316' }} />
+      </Box>
+    );
+  }
+
+  // Access nested playbook from response
+  const playbook = playbookResponse?.playbook;
+  
+  if (!playbook) {
+    return (
+      <Box sx={{ p: 2, textAlign: 'center' }}>
+        <Shield sx={{ fontSize: 32, color: alpha('#fff', 0.3), mb: 1 }} />
+        <Typography variant="caption" color="text.secondary">
+          Run cascade simulation to see mitigation actions
+        </Typography>
+      </Box>
+    );
+  }
+
+  const severityColors: Record<string, string> = {
+    'EMERGENCY': '#EF4444',
+    'CRITICAL': '#F97316',
+    'HIGH': '#FBBF24',
+    'MODERATE': '#22C55E'
+  };
+
+  // Access nested economic_impact from response
+  const economicImpact = economicResponse?.economic_impact;
+  const severity = economicResponse?.severity_assessment?.tier || 'MODERATE';
+  const severityColor = severityColors[severity] || '#22C55E';
+
+  return (
+    <Box>
+      {/* Economic Impact Summary */}
+      {economicImpact && (
+        <Box sx={{ 
+          mb: 1.5, 
+          p: 1.25, 
+          bgcolor: alpha(severityColor, 0.1), 
+          borderRadius: 1,
+          border: '1px solid',
+          borderColor: alpha(severityColor, 0.3)
+        }}>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" mb={0.75}>
+            <Chip 
+              label={severity}
+              size="small"
+              sx={{ 
+                bgcolor: alpha(severityColor, 0.2),
+                color: severityColor,
+                fontWeight: 700,
+                fontSize: '0.6rem',
+                height: 20
+              }}
+            />
+            <Typography variant="h6" sx={{ fontWeight: 700, color: severityColor }}>
+              ${((economicImpact.total_estimated_cost || 0) / 1000000).toFixed(1)}M
+            </Typography>
+          </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6rem', display: 'block' }}>
+            {economicResponse?.executive_summary?.substring(0, 100)}...
+          </Typography>
+          <Stack direction="row" spacing={1} mt={1}>
+            <Box sx={{ flex: 1, textAlign: 'center' }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, color: '#EF4444', fontSize: '0.55rem' }}>
+                ${((economicImpact.breakdown?.regulatory_penalties?.subtotal || 0) / 1000).toFixed(0)}K
+              </Typography>
+              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.5rem' }}>
+                Penalties
+              </Typography>
+            </Box>
+            <Box sx={{ flex: 1, textAlign: 'center' }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, color: '#FBBF24', fontSize: '0.55rem' }}>
+                ${((economicImpact.breakdown?.lost_revenue?.subtotal || 0) / 1000).toFixed(0)}K
+              </Typography>
+              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.5rem' }}>
+                Lost Rev
+              </Typography>
+            </Box>
+            <Box sx={{ flex: 1, textAlign: 'center' }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, color: '#3B82F6', fontSize: '0.55rem' }}>
+                ${((economicImpact.breakdown?.restoration_costs?.subtotal || 0) / 1000).toFixed(0)}K
+              </Typography>
+              <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.5rem' }}>
+                Restore
+              </Typography>
+            </Box>
+          </Stack>
+        </Box>
+      )}
+
+      {/* Containment Probability Gauge - using correct field names from backend */}
+      {playbook.containment_probability && (
+        <Box sx={{ mb: 1.5, p: 1, bgcolor: alpha('#0A1929', 0.5), borderRadius: 1 }}>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" mb={0.5}>
+            <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.65rem' }}>
+              Containment Probability
+            </Typography>
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                fontWeight: 700, 
+                color: (playbook.containment_probability.with_immediate_action * 100) > 70 ? '#22C55E' : '#FBBF24',
+                fontSize: '0.7rem'
+              }}
+            >
+              {Math.round(playbook.containment_probability.with_immediate_action * 100)}%
+            </Typography>
+          </Stack>
+          <LinearProgress 
+            variant="determinate" 
+            value={playbook.containment_probability.with_immediate_action * 100}
+            sx={{ 
+              height: 6, 
+              borderRadius: 1,
+              bgcolor: alpha('#fff', 0.1),
+              '& .MuiLinearProgress-bar': {
+                bgcolor: (playbook.containment_probability.with_immediate_action * 100) > 70 ? '#22C55E' : '#FBBF24'
+              }
+            }}
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.5rem', mt: 0.5, display: 'block' }}>
+            Drops to {Math.round(playbook.containment_probability.with_30min_delay * 100)}% in 30 min
+          </Typography>
+        </Box>
+      )}
+
+      {/* Immediate Actions */}
+      <Typography variant="caption" sx={{ fontWeight: 700, color: '#F97316', mb: 0.75, display: 'block', fontSize: '0.65rem' }}>
+        IMMEDIATE ACTIONS
+      </Typography>
+      <Stack spacing={0.75}>
+        {playbook.immediate_actions?.slice(0, 4).map((action, idx) => (
+          <Box 
+            key={idx}
+            sx={{ 
+              p: 0.75, 
+              bgcolor: alpha('#F97316', idx === 0 ? 0.15 : 0.05), 
+              borderRadius: 1,
+              borderLeft: '3px solid',
+              borderColor: idx === 0 ? '#F97316' : alpha('#F97316', 0.3)
+            }}
+          >
+            <Stack direction="row" alignItems="flex-start" spacing={0.75}>
+              <Chip 
+                label={`P${action.priority}`}
+                size="small"
+                sx={{ 
+                  height: 16,
+                  minWidth: 24,
+                  bgcolor: idx === 0 ? '#F97316' : alpha('#F97316', 0.3),
+                  color: idx === 0 ? '#fff' : '#F97316',
+                  fontWeight: 700,
+                  fontSize: '0.5rem',
+                  '& .MuiChip-label': { px: 0.5 }
+                }}
+              />
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.6rem', display: 'block' }}>
+                  {action.action}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.5rem' }}>
+                  {action.time_target} • {action.prevents}
+                </Typography>
+              </Box>
+            </Stack>
+          </Box>
+        ))}
+      </Stack>
+
+      {/* Crew Dispatch Summary - using correct field names from backend */}
+      {playbook.crew_dispatch && (
+        <Box sx={{ mt: 1.5, p: 1, bgcolor: alpha('#3B82F6', 0.1), borderRadius: 1 }}>
+          <Stack direction="row" alignItems="center" spacing={0.5} mb={0.5}>
+            <Engineering sx={{ fontSize: 14, color: '#3B82F6' }} />
+            <Typography variant="caption" sx={{ fontWeight: 600, color: '#3B82F6', fontSize: '0.6rem' }}>
+              CREW DISPATCH
+            </Typography>
+          </Stack>
+          <Stack direction="row" spacing={1}>
+            <Box sx={{ flex: 1, textAlign: 'center' }}>
+              <Typography variant="h6" sx={{ fontWeight: 700, color: '#3B82F6' }}>
+                {playbook.crew_dispatch.estimated_crews_needed}
+              </Typography>
+              <Typography variant="caption" sx={{ fontSize: '0.5rem', color: 'text.secondary' }}>
+                Crews
+              </Typography>
+            </Box>
+            <Box sx={{ flex: 1, textAlign: 'center' }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, color: '#22C55E', fontSize: '0.6rem' }}>
+                {playbook.crew_dispatch.primary_location?.node_name || 'TBD'}
+              </Typography>
+              <Typography variant="caption" sx={{ display: 'block', fontSize: '0.5rem', color: 'text.secondary' }}>
+                Primary
+              </Typography>
+            </Box>
+          </Stack>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * RestorationSequenceCompact - Optimal restoration order with dependency awareness
+ * Shows milestones and progress tracking for recovery
+ * Updated to match actual backend API response structure
+ */
+function RestorationSequenceCompact({ 
+  sequenceResponse, 
+  loading 
+}: { 
+  sequenceResponse: RestorationSequenceResponse | null; 
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+        <CircularProgress size={24} sx={{ color: '#22C55E' }} />
+      </Box>
+    );
+  }
+
+  if (!sequenceResponse) {
+    return (
+      <Box sx={{ p: 2, textAlign: 'center' }}>
+        <RestartAlt sx={{ fontSize: 32, color: alpha('#fff', 0.3), mb: 1 }} />
+        <Typography variant="caption" color="text.secondary">
+          Run cascade simulation to see restoration plan
+        </Typography>
+      </Box>
+    );
+  }
+
+  const restorationSteps = sequenceResponse.restoration_sequence || [];
+  const totalSteps = restorationSteps.length;
+  const summary = sequenceResponse.summary;
+  const milestones = sequenceResponse.milestones || [];
+
+  return (
+    <Box>
+      {/* Summary Header */}
+      <Box sx={{ 
+        mb: 1.5, 
+        p: 1.25, 
+        bgcolor: alpha('#22C55E', 0.1), 
+        borderRadius: 1,
+        border: '1px solid',
+        borderColor: alpha('#22C55E', 0.3)
+      }}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center">
+          <Box>
+            <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.6rem', color: 'text.secondary' }}>
+              ESTIMATED FULL RESTORATION
+            </Typography>
+            <Typography variant="h5" sx={{ fontWeight: 700, color: '#22C55E' }}>
+              {summary?.estimated_total_hours ? `${summary.estimated_total_hours} hrs` : 'N/A'}
+            </Typography>
+          </Box>
+          <Box sx={{ textAlign: 'right' }}>
+            <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.55rem', color: 'text.secondary' }}>
+              STEPS
+            </Typography>
+            <Typography variant="h6" sx={{ fontWeight: 700, color: '#fff' }}>
+              {totalSteps}
+            </Typography>
+          </Box>
+        </Stack>
+      </Box>
+
+      {/* Milestones */}
+      {milestones.length > 0 && (
+        <>
+          <Typography variant="caption" sx={{ fontWeight: 700, color: '#06B6D4', mb: 0.75, display: 'block', fontSize: '0.65rem' }}>
+            KEY MILESTONES
+          </Typography>
+          <Stack spacing={0.75} sx={{ mb: 1.5 }}>
+            {milestones.slice(0, 3).map((milestone, idx) => (
+              <Box 
+                key={idx}
+                sx={{ 
+                  p: 0.75, 
+                  bgcolor: alpha('#06B6D4', 0.1), 
+                  borderRadius: 1,
+                  borderLeft: '3px solid #06B6D4'
+                }}
+              >
+                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                  <Box>
+                    <Typography variant="caption" sx={{ fontWeight: 600, fontSize: '0.6rem' }}>
+                      {milestone.milestone}
+                    </Typography>
+                    <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.5rem' }}>
+                      After step {milestone.after_step}: {milestone.node}
+                    </Typography>
+                  </Box>
+                  <Chip 
+                    label={`${milestone.hours}h`}
+                    size="small"
+                    sx={{ 
+                      bgcolor: alpha('#06B6D4', 0.2),
+                      color: '#06B6D4',
+                      fontWeight: 600,
+                      fontSize: '0.55rem',
+                      height: 18
+                    }}
+                  />
+                </Stack>
+              </Box>
+            ))}
+          </Stack>
+        </>
+      )}
+
+      {/* Restoration Steps */}
+      <Typography variant="caption" sx={{ fontWeight: 700, color: '#FBBF24', mb: 0.75, display: 'block', fontSize: '0.65rem' }}>
+        RESTORATION SEQUENCE ({totalSteps} steps)
+      </Typography>
+      <Box sx={{ position: 'relative' }}>
+        {/* Timeline line */}
+        <Box sx={{ 
+          position: 'absolute', 
+          left: 8, 
+          top: 12, 
+          bottom: 12, 
+          width: 2, 
+          bgcolor: alpha('#FBBF24', 0.3),
+          borderRadius: 1
+        }} />
+        
+        <Stack spacing={0.5}>
+          {restorationSteps.slice(0, 5).map((step, idx) => {
+            const isHighPriority = (step.priority_score || 0) > 1000;
+            return (
+              <Box 
+                key={idx}
+                sx={{ 
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 1,
+                  pl: 2.5,
+                  position: 'relative'
+                }}
+              >
+                {/* Timeline dot */}
+                <Box sx={{ 
+                  position: 'absolute',
+                  left: 4,
+                  top: 6,
+                  width: 10,
+                  height: 10,
+                  borderRadius: '50%',
+                  bgcolor: isHighPriority ? '#FBBF24' : alpha('#fff', 0.3),
+                  border: '2px solid',
+                  borderColor: isHighPriority ? '#FBBF24' : alpha('#fff', 0.2)
+                }} />
+                
+                <Box sx={{ 
+                  flex: 1, 
+                  p: 0.75, 
+                  bgcolor: alpha(isHighPriority ? '#FBBF24' : '#fff', 0.05), 
+                  borderRadius: 1 
+                }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="caption" sx={{ 
+                        fontWeight: 600, 
+                        fontSize: '0.6rem',
+                        color: isHighPriority ? '#FBBF24' : 'text.primary'
+                      }}>
+                        {step.sequence}. {step.node_name || step.node_id}
+                      </Typography>
+                      <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.5rem' }}>
+                        {step.rationale?.substring(0, 50) || step.node_type} • {step.estimated_hours || '?'}h
+                      </Typography>
+                      {step.depends_on && (
+                        <Typography variant="caption" sx={{ 
+                          fontSize: '0.45rem', 
+                          color: alpha('#fff', 0.4),
+                          display: 'block'
+                        }}>
+                          Requires: {step.depends_on}
+                        </Typography>
+                      )}
+                    </Box>
+                    <Chip 
+                      label={`${step.customers_restored?.toLocaleString() || '?'}`}
+                      size="small"
+                      sx={{ 
+                        height: 14,
+                        bgcolor: alpha('#22C55E', 0.2),
+                        color: '#22C55E',
+                        fontWeight: 600,
+                        fontSize: '0.45rem',
+                        '& .MuiChip-label': { px: 0.5 }
+                      }}
+                    />
+                  </Stack>
+                </Box>
+              </Box>
+            );
+          })}
+        </Stack>
+      </Box>
+
+      {/* Summary stats */}
+      {summary && (
+        <Box sx={{ mt: 1.5, p: 1, bgcolor: alpha('#22C55E', 0.05), borderRadius: 1 }}>
+          <Stack direction="row" spacing={2} justifyContent="center">
+            <Box sx={{ textAlign: 'center' }}>
+              <Typography variant="caption" sx={{ fontWeight: 700, color: '#22C55E' }}>
+                {summary.total_customers?.toLocaleString() || '?'}
+              </Typography>
+              <Typography variant="caption" sx={{ display: 'block', fontSize: '0.5rem', color: 'text.secondary' }}>
+                Customers
+              </Typography>
+            </Box>
+            <Box sx={{ textAlign: 'center' }}>
+              <Typography variant="caption" sx={{ fontWeight: 700, color: '#3B82F6' }}>
+                {summary.parallel_crews_recommended || '?'}
+              </Typography>
+              <Typography variant="caption" sx={{ display: 'block', fontSize: '0.5rem', color: 'text.secondary' }}>
+                Crews
+              </Typography>
+            </Box>
+          </Stack>
+        </Box>
+      )}
+
+      {/* Note about dependency ordering */}
+      <Alert 
+        severity="info" 
+        icon={<Info sx={{ fontSize: 14 }} />}
+        sx={{ 
+          mt: 1.5, 
+          py: 0.5,
+          '& .MuiAlert-message': { fontSize: '0.55rem' }
+        }}
+      >
+        {sequenceResponse.optimization_note || 'Sequence optimized for customer-hours'}
+      </Alert>
+    </Box>
+  );
+}
+
 export function CascadeControlPanel({
   scenarios,
   cascadeResult,
@@ -1298,6 +1896,19 @@ export function CascadeControlPanel({
   // Explanation section state (for expanded view)
   const [showExplanation, setShowExplanation] = useState(true);
   
+  // === ACTIONABLE CASCADE ANALYSIS STATE ===
+  const [economicImpact, setEconomicImpact] = useState<EconomicImpactResponse | null>(null);
+  const [mitigationPlaybook, setMitigationPlaybook] = useState<MitigationPlaybookResponse | null>(null);
+  const [restorationSequence, setRestorationSequence] = useState<RestorationSequenceResponse | null>(null);
+  const [realtimeRisk, setRealtimeRisk] = useState<RealtimeRiskResponse | null>(null);
+  const [actionableError, setActionableError] = useState<string | null>(null);
+  const [actionableLoading, setActionableLoading] = useState({
+    economic: false,
+    mitigation: false,
+    restoration: false,
+    risk: false
+  });
+  
   // Dragging refs and state (for undocked mode)
   const paperRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -1315,6 +1926,105 @@ export function CascadeControlPanel({
       onLoadHighRisk();
     }
   }, [visible, highRiskNodes.length, onLoadHighRisk]);
+
+  // === ACTIONABLE CASCADE ANALYSIS FETCH FUNCTIONS ===
+  
+  // Fetch economic impact when cascade result changes
+  const fetchEconomicImpact = async () => {
+    if (!cascadeResult) return;
+    setActionableLoading(prev => ({ ...prev, economic: true }));
+    try {
+      const response = await fetch('/api/cascade/economic-impact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cascadeResult)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setEconomicImpact(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch economic impact:', error);
+    } finally {
+      setActionableLoading(prev => ({ ...prev, economic: false }));
+    }
+  };
+
+  // Fetch mitigation playbook
+  const fetchMitigationPlaybook = async () => {
+    if (!cascadeResult) return;
+    setActionableLoading(prev => ({ ...prev, mitigation: true }));
+    try {
+      const response = await fetch('/api/cascade/mitigation-actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cascadeResult)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setMitigationPlaybook(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch mitigation playbook:', error);
+    } finally {
+      setActionableLoading(prev => ({ ...prev, mitigation: false }));
+    }
+  };
+
+  // Fetch restoration sequence
+  const fetchRestorationSequence = async () => {
+    if (!cascadeResult) return;
+    setActionableLoading(prev => ({ ...prev, restoration: true }));
+    try {
+      const response = await fetch('/api/cascade/restoration-sequence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cascadeResult)
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setRestorationSequence(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch restoration sequence:', error);
+    } finally {
+      setActionableLoading(prev => ({ ...prev, restoration: false }));
+    }
+  };
+
+  // Fetch real-time risk score
+  const fetchRealtimeRisk = async () => {
+    setActionableLoading(prev => ({ ...prev, risk: true }));
+    try {
+      const response = await fetch('/api/cascade/realtime-risk');
+      if (response.ok) {
+        const data = await response.json();
+        setRealtimeRisk(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch realtime risk:', error);
+    } finally {
+      setActionableLoading(prev => ({ ...prev, risk: false }));
+    }
+  };
+
+  // Auto-fetch actionable data when cascade result changes
+  useEffect(() => {
+    if (cascadeResult && visible) {
+      fetchEconomicImpact();
+      fetchMitigationPlaybook();
+      fetchRestorationSequence();
+    }
+  }, [cascadeResult, visible]);
+
+  // Fetch real-time risk periodically when panel is visible
+  useEffect(() => {
+    if (visible) {
+      fetchRealtimeRisk();
+      const interval = setInterval(fetchRealtimeRisk, 30000); // Every 30 seconds
+      return () => clearInterval(interval);
+    }
+  }, [visible]);
 
   // Panel dimensions for dragging constraints (undocked mode)
   const panelWidth = 420;
@@ -1839,6 +2549,59 @@ export function CascadeControlPanel({
             >
               Cascade{isDocked && dockedSize !== 'compact' ? ' Failure' : ''} Analysis
             </Typography>
+            {/* Current Risk Badge - using correct nested paths from RealtimeRiskResponse */}
+            {realtimeRisk?.realtime_risk && (
+              <Tooltip 
+                title={
+                  <Box sx={{ p: 0.5 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>
+                      Real-time Grid Risk
+                    </Typography>
+                    <Typography variant="caption" sx={{ display: 'block', fontSize: '0.65rem' }}>
+                      Score: {realtimeRisk.realtime_risk.score}/100
+                    </Typography>
+                    <Typography variant="caption" sx={{ display: 'block', fontSize: '0.6rem', color: 'text.secondary' }}>
+                      {realtimeRisk.realtime_risk.recommended_action}
+                    </Typography>
+                  </Box>
+                }
+                arrow
+              >
+                <Chip
+                  size="small"
+                  icon={realtimeRisk.realtime_risk.level === 'CRITICAL' || realtimeRisk.realtime_risk.level === 'HIGH' 
+                    ? <LocalFireDepartment sx={{ fontSize: 12 }} /> 
+                    : <Speed sx={{ fontSize: 12 }} />}
+                  label={realtimeRisk.realtime_risk.level}
+                  sx={{
+                    height: 20,
+                    ml: 0.5,
+                    bgcolor: alpha(
+                      realtimeRisk.realtime_risk.level === 'CRITICAL' ? '#EF4444' :
+                      realtimeRisk.realtime_risk.level === 'HIGH' ? '#F97316' :
+                      realtimeRisk.realtime_risk.level === 'ELEVATED' ? '#FBBF24' : '#22C55E',
+                      0.2
+                    ),
+                    color: realtimeRisk.realtime_risk.level === 'CRITICAL' ? '#EF4444' :
+                           realtimeRisk.realtime_risk.level === 'HIGH' ? '#F97316' :
+                           realtimeRisk.realtime_risk.level === 'ELEVATED' ? '#FBBF24' : '#22C55E',
+                    fontWeight: 700,
+                    fontSize: '0.55rem',
+                    animation: (realtimeRisk.realtime_risk.level === 'CRITICAL' || realtimeRisk.realtime_risk.level === 'HIGH') 
+                      ? 'pulse 2s infinite' : 'none',
+                    '@keyframes pulse': {
+                      '0%, 100%': { opacity: 1 },
+                      '50%': { opacity: 0.6 }
+                    },
+                    '& .MuiChip-icon': { 
+                      color: 'inherit',
+                      ml: 0.5
+                    },
+                    '& .MuiChip-label': { px: 0.75 }
+                  }}
+                />
+              </Tooltip>
+            )}
           </Box>
           
           {/* Header controls: Size controls + Dock + Close */}
@@ -2604,6 +3367,8 @@ export function CascadeControlPanel({
                 <Tab label="Risk" icon={<Warning sx={{ fontSize: 12 }} />} iconPosition="start" />
                 <Tab label="Regions" icon={<SwapHoriz sx={{ fontSize: 12 }} />} iconPosition="start" sx={{ color: '#06B6D4' }} />
                 <Tab label="ROI" icon={<AttachMoney sx={{ fontSize: 12 }} />} iconPosition="start" sx={{ color: '#8B5CF6' }} />
+                <Tab label="Actions" icon={<Shield sx={{ fontSize: 12 }} />} iconPosition="start" sx={{ color: '#F97316' }} />
+                <Tab label="Restore" icon={<RestartAlt sx={{ fontSize: 12 }} />} iconPosition="start" sx={{ color: '#22C55E' }} />
               </Tabs>
 
               {activeTab === 0 && <CompactFlowDiagram cascadeResult={cascadeResult} waveBreakdown={waveBreakdown} focusedWave={focusedWave} onFocusWave={onFocusWave} />}
@@ -2612,6 +3377,8 @@ export function CascadeControlPanel({
               {activeTab === 3 && <HighRiskNodesCompact nodes={highRiskNodes} onSelect={setSelectedPatientZero} />}
               {activeTab === 4 && <CrossRegionFlowCompact highRiskNodes={highRiskNodes} cascadeResult={cascadeResult} />}
               {activeTab === 5 && <InvestmentROICompact highRiskNodes={highRiskNodes} cascadeResult={cascadeResult} isSideBySide={isDocked && dockedSize === 'expanded' && otherPanelDocked && otherPanelSize === 'expanded'} />}
+              {activeTab === 6 && <MitigationActionsCompact playbookResponse={mitigationPlaybook} economicResponse={economicImpact} loading={actionableLoading.mitigation || actionableLoading.economic} />}
+              {activeTab === 7 && <RestorationSequenceCompact sequenceResponse={restorationSequence} loading={actionableLoading.restoration} />}
               
               {/* Cortex AI Insights - available after simulation */}
               <CortexExplanationPanel cascadeResult={cascadeResult} visible={true} />

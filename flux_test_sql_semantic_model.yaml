@@ -1,0 +1,221 @@
+name: FLUX_TEST_SQL_SEMANTIC_MODEL
+description: |
+  Flux Utility Solutions semantic model for grid operations analytics.
+  Covers substations, circuits, transformers, outages, and work orders.
+
+tables:
+  - name: SUBSTATIONS
+    description: Substation infrastructure with geographic and capacity information
+    base_table:
+      database: FLUX_TEST_SQL
+      schema: PRODUCTION
+      table: SUBSTATIONS
+    dimensions:
+      - name: SUBSTATION_ID
+        description: Unique substation identifier
+        expr: SUBSTATION_ID
+        data_type: VARCHAR
+      - name: SUBSTATION_NAME
+        synonyms:
+          - substation
+          - station name
+        description: Substation name
+        expr: SUBSTATION_NAME
+        data_type: VARCHAR
+      - name: REGION
+        description: Geographic region
+        expr: REGION
+        data_type: VARCHAR
+    facts:
+      - name: LATITUDE
+        description: Latitude coordinate
+        expr: LATITUDE
+        data_type: FLOAT
+      - name: LONGITUDE
+        description: Longitude coordinate
+        expr: LONGITUDE
+        data_type: FLOAT
+    primary_key:
+      columns:
+        - SUBSTATION_ID
+
+  - name: CIRCUIT_METADATA
+    synonyms:
+      - CIRCUITS
+      - FEEDERS
+    description: Circuit metadata with transformer and meter counts
+    base_table:
+      database: FLUX_TEST_SQL
+      schema: PRODUCTION
+      table: CIRCUIT_METADATA
+    dimensions:
+      - name: CIRCUIT_ID
+        description: Circuit identifier
+        expr: CIRCUIT_ID
+        data_type: VARCHAR
+      - name: CIRCUIT_NAME
+        synonyms:
+          - circuit
+          - feeder
+        description: Circuit name
+        expr: CIRCUIT_NAME
+        data_type: VARCHAR
+      - name: SUBSTATION_ID
+        description: Parent substation
+        expr: SUBSTATION_ID
+        data_type: VARCHAR
+    facts:
+      - name: VOLTAGE_LEVEL_KV
+        synonyms:
+          - voltage
+        description: Circuit voltage level in kV
+        expr: VOLTAGE_LEVEL_KV
+        data_type: NUMBER
+      - name: TRANSFORMER_COUNT
+        description: Number of transformers on circuit
+        expr: TRANSFORMER_COUNT
+        data_type: NUMBER
+      - name: METER_COUNT
+        description: Number of meters on circuit
+        expr: METER_COUNT
+        data_type: NUMBER
+    metrics:
+      - name: TOTAL_CIRCUITS
+        description: Total number of circuits
+        expr: COUNT(DISTINCT CIRCUIT_ID)
+      - name: AVG_TRANSFORMERS_PER_CIRCUIT
+        description: Average transformers per circuit
+        expr: AVG(TRANSFORMER_COUNT)
+      - name: TOTAL_METERS
+        description: Total meters across all circuits
+        expr: SUM(METER_COUNT)
+    primary_key:
+      columns:
+        - CIRCUIT_ID
+
+  - name: OUTAGE_EVENTS
+    synonyms:
+      - OUTAGES
+      - POWER_OUTAGES
+    description: Historical outage events with duration and customer impact
+    base_table:
+      database: FLUX_TEST_SQL
+      schema: PRODUCTION
+      table: OUTAGE_EVENTS
+    dimensions:
+      - name: OUTAGE_ID
+        description: Unique outage identifier
+        expr: OUTAGE_ID
+        data_type: VARCHAR
+      - name: OUTAGE_CAUSE
+        synonyms:
+          - cause
+          - reason
+        description: Root cause of outage
+        expr: OUTAGE_CAUSE
+        data_type: VARCHAR
+      - name: TRANSFORMER_ID
+        description: Affected transformer
+        expr: TRANSFORMER_ID
+        data_type: VARCHAR
+    time_dimensions:
+      - name: OUTAGE_START
+        synonyms:
+          - start time
+        description: Outage start timestamp
+        expr: OUTAGE_START
+        data_type: TIMESTAMP_NTZ
+      - name: OUTAGE_END
+        synonyms:
+          - end time
+        description: Outage end timestamp
+        expr: OUTAGE_END
+        data_type: TIMESTAMP_NTZ
+    facts:
+      - name: DURATION_MINUTES
+        synonyms:
+          - duration
+          - outage duration
+        description: Outage duration in minutes
+        expr: DURATION_MINUTES
+        data_type: NUMBER
+      - name: CUSTOMERS_AFFECTED
+        synonyms:
+          - affected customers
+          - customer impact
+        description: Number of customers affected
+        expr: CUSTOMERS_AFFECTED
+        data_type: NUMBER
+    metrics:
+      - name: TOTAL_OUTAGES
+        description: Total number of outage events
+        expr: COUNT(DISTINCT OUTAGE_ID)
+      - name: AVG_OUTAGE_DURATION
+        description: Average outage duration in minutes
+        expr: AVG(DURATION_MINUTES)
+      - name: TOTAL_CUSTOMERS_AFFECTED
+        description: Total customer-outage impacts
+        expr: SUM(CUSTOMERS_AFFECTED)
+    primary_key:
+      columns:
+        - OUTAGE_ID
+
+  - name: SAP_WORK_ORDERS
+    synonyms:
+      - WORK_ORDERS
+      - MAINTENANCE
+    description: SAP work orders for maintenance and repairs
+    base_table:
+      database: FLUX_TEST_SQL
+      schema: PRODUCTION
+      table: SAP_WORK_ORDERS
+    dimensions:
+      - name: WORK_ORDER_ID
+        description: Work order identifier
+        expr: WORK_ORDER_ID
+        data_type: VARCHAR
+      - name: WORK_ORDER_TYPE
+        synonyms:
+          - type
+          - order type
+        description: Type of work order
+        expr: WORK_ORDER_TYPE
+        data_type: VARCHAR
+      - name: STATUS
+        description: Work order status
+        expr: STATUS
+        data_type: VARCHAR
+      - name: PRIORITY
+        description: Priority level
+        expr: PRIORITY
+        data_type: VARCHAR
+    time_dimensions:
+      - name: CREATED_DATE
+        description: Work order creation date
+        expr: CREATED_DATE
+        data_type: DATE
+    facts:
+      - name: ESTIMATED_COST
+        description: Estimated cost
+        expr: ESTIMATED_COST
+        data_type: NUMBER
+    metrics:
+      - name: TOTAL_WORK_ORDERS
+        description: Total work orders
+        expr: COUNT(DISTINCT WORK_ORDER_ID)
+      - name: TOTAL_ESTIMATED_COST
+        description: Total estimated cost
+        expr: SUM(ESTIMATED_COST)
+    primary_key:
+      columns:
+        - WORK_ORDER_ID
+
+relationships:
+  - name: CIRCUIT_TO_SUBSTATION
+    left_table: CIRCUIT_METADATA
+    right_table: SUBSTATIONS
+    relationship_columns:
+      - left_column: SUBSTATION_ID
+        right_column: SUBSTATION_ID
+    join_type: inner
+    relationship_type: many_to_one

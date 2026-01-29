@@ -175,3 +175,9 @@ Browser → React (localhost:5173) → Flask (localhost:3001) → Agent REST API
 - [Snowflake Personal Access Tokens](https://docs.snowflake.com/en/user-guide/programmatic-access-tokens)
 - [Cortex Agent REST API](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-rest-api)
 - [Authenticating Snowflake REST APIs](https://docs.snowflake.com/en/developer-guide/sql-api/authenticating)
+- [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) - Complete local dev startup guide
+- [docs/POSTGRES_SYNC_RELIABILITY.md](./docs/POSTGRES_SYNC_RELIABILITY.md) - Snowflake→Postgres sync troubleshooting
+
+---
+
+*Last Updated: January 28, 2026*

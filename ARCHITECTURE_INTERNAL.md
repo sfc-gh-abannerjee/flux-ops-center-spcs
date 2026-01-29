@@ -1,4 +1,4 @@
-# Grid Operations Grid Operations Platform
+# Grid Operations Platform
 ## Comprehensive Architecture & Deployment Guide
 
 **Version:** 1.1  
@@ -17,46 +17,46 @@
 3. [Architecture Overview](#3-architecture-overview)
 4. [Demo Architecture (No Kafka)](#4-demo-architecture-no-kafka)
 5. [PoC Architecture (With Confluent Cloud)](#5-poc-architecture-with-confluent-cloud)
-6. [Production Architecture (CNP Systems)](#6-production-architecture-cnp-systems)
+6. [Production Architecture](#6-production-architecture)
 7. [Component Deep Dives](#7-component-deep-dives)
 8. [Deployment Guides](#8-deployment-guides)
 9. [Performance Targets](#9-performance-targets)
-10. [Anti-#Strategy](#10-anti-fde-strategy)
+10. [Strategic Value](#10-strategic-value)
 
 ---
 
 ## 1. Executive Summary
 
 ### Purpose
-This document provides end-to-end architecture guidance for the Flux Operations Center, Snowflake's competitive response to Palantir Grid 360 for Grid Operations (CNP).
+This document provides end-to-end architecture guidance for the Flux Operations Center, a unified grid operations platform.
 
 ### Core Thesis
-Snowflake provides a unified platform where CNP's existing teams can build and own superior applications faster than Palantir professional services teams, using standard SQL and Python.
+Snowflake provides a unified platform where existing teams can build and own superior applications using standard SQL and Python.
 
-### Key Differentiators
-| Capability | Palantir Grid 360 | Snowflake Platform |
-|------------|-------------------|-------------------|
-| Data Model | Proprietary Ontology | Standard SQL + Semantic Views |
-| App Framework | Custom (custom-built) | Streamlit + SPCS (standard Python) |
-| Geospatial | Custom #work | PostGIS (industry standard) |
-| Real-Time | Foundry pipelines | OpenFlow + Kafka Connector |
-| AI/ML | Black-box models | Cortex AI (transparent, owned by CNP) |
-| Lock-in | Heavy | Minimal (open formats: Iceberg, Postgres) |
+### Key Capabilities
+| Capability | Snowflake Platform |
+|------------|-------------------|
+| Data Model | Standard SQL + Semantic Views |
+| App Framework | SPCS (React + FastAPI) |
+| Geospatial | PostGIS (industry standard) |
+| Real-Time | OpenFlow + Kafka Connector |
+| AI/ML | Cortex AI (transparent, customer-owned) |
+| Portability | Open formats (Iceberg, Postgres) |
 
 ---
 
 ## 2. Use Case Mapping
 
-### Daniel Sumners' Stated Requirements (from Strategy Doc)
+### Utility Requirements
 
-| # | Use Case | CNP Requirement | Snowflake Solution | Demo Phase | PoC Phase | Production |
+| # | Use Case | Requirement | Snowflake Solution | Demo Phase | PoC Phase | Production |
 |---|----------|-----------------|-------------------|------------|-----------|------------|
-| 1 | **AMI Data Management** | 100B records/year, sub-minute streaming | Dynamic Tables + OpenFlow Kafka | Synthetic generator | Confluent Cloud | CNP Kafka |
+| 1 | **AMI Data Management** | 100B records/year, sub-minute streaming | Dynamic Tables + OpenFlow Kafka | Synthetic generator | Confluent Cloud | Production Kafka |
 | 2 | **ERM (Estimated Restoration Modeling)** | Sub-second response times (currently Redis) | Snowflake Postgres (<20ms) | Postgres cache | Postgres cache | Postgres cache |
 | 3 | **Digital Twin** | "Google Maps" view of grid | DeckGL + MapLibre + PostGIS | SPCS app | SPCS app | SPCS app |
-| 4 | **Customer 360** | Identity resolution in deregulated market | Cortex AI Vector Embeddings | Demo data | CNP sample data | Production data |
+| 4 | **Customer 360** | Identity resolution in deregulated market | Cortex AI Vector Embeddings | Demo data | Sample data | Production data |
 | 5 | **Conversational AI** | Natural language data marketplace | Cortex Agent + Analyst | Semantic model | Expanded model | Full model |
-| 6 | **Project Elevate** | 1-2% O&M reduction | Cortex Search on technical manuals | 100 PDFs | 1000 PDFs | Full corpus |
+| 6 | **O&M Optimization** | 1-2% O&M reduction | Cortex Search on technical manuals | 100 PDFs | 1000 PDFs | Full corpus |
 | 7 | **Geospatial Analysis** | Complex intersects (ESRI shop) | PostGIS + Snowflake Geospatial | Demo polygons | Real GIS data | Production GIS |
 | 8 | **SAP Integration** | S/4HANA migration | OpenFlow Oracle/SAP CDC | Not in demo | Future | Phase 2 |
 
@@ -68,8 +68,8 @@ Snowflake provides a unified platform where CNP's existing teams can build and o
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                          CENTERPOINT UNIFIED DATA PLATFORM                              │
-│                              (Anti-Palantir Architecture)                               │
+│                          UTILITY UNIFIED DATA PLATFORM                                  │
+│                              (Unified Grid Operations)                                  │
 ├─────────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────────────────────┐   │
@@ -95,7 +95,7 @@ Snowflake provides a unified platform where CNP's existing teams can build and o
 │  │                                                                                 │   │
 │  │  Demo:        Synthetic Generator → Direct Snowflake Write                      │   │
 │  │  PoC:         Confluent Cloud → Snowflake Kafka Connector                       │   │
-│  │  Production:  CNP Kafka → OpenFlow SPCS (zero-ops, visual canvas)               │   │
+│  │  Production:  Production Kafka → OpenFlow SPCS (zero-ops, visual canvas)             │   │
 │  │                                                                                 │   │
 │  │  Latency Target: <1 minute end-to-end                                           │   │
 │  └───────────────────────────────────────────────────────────────────┬─────────────┘   │
@@ -133,7 +133,7 @@ Snowflake provides a unified platform where CNP's existing teams can build and o
 ## 4. Demo Architecture (No Kafka)
 
 ### Overview
-For demonstrations without utility Kafka infrastructure, we use a synthetic data generator that writes directly to Snowflake and Postgres.
+For demonstrations without production Kafka infrastructure, we use a synthetic data generator that writes directly to Snowflake and Postgres.
 
 ### Architecture Diagram
 
@@ -234,7 +234,7 @@ CURRENT STATE (January 10, 2026):
 ## 5. PoC Architecture (With Confluent Cloud)
 
 ### Overview
-For the PoC phase, if you can provision a Confluent Cloud cluster, this architecture demonstrates production-like streaming without requiring CNP infrastructure access.
+For the PoC phase, if you can provision a Confluent Cloud cluster, this architecture demonstrates production-like streaming without requiring production infrastructure access.
 
 ### Prerequisites
 - Confluent Cloud account with Basic/Standard cluster
@@ -382,10 +382,10 @@ For the PoC phase, if you can provision a Confluent Cloud cluster, this architec
 
 ---
 
-## 6. Production Architecture (CNP Systems)
+## 6. Production Architecture
 
 ### Overview
-For production deployment with utility actual infrastructure, OpenFlow SPCS is recommended for zero-ops data integration.
+For production deployment with actual utility infrastructure, OpenFlow SPCS is recommended for zero-ops data integration.
 
 ### Why OpenFlow SPCS over Standalone Kafka Connector
 
@@ -397,20 +397,20 @@ For production deployment with utility actual infrastructure, OpenFlow SPCS is r
 | Schema Evolution | Manual | **Automatic** |
 | Multi-Source | Kafka only | **20+ sources** |
 | Scale to Zero | N/A | **Automatic** (600s idle) |
-| CNP Self-Sufficiency | Low | **High** |
+| Self-Sufficiency | Low | **High** |
 
 ### Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
-│                     PRODUCTION ARCHITECTURE (utility Systems)                       │
+│                     PRODUCTION ARCHITECTURE                                              │
 ├─────────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                         │
 │   ┌────────────────────────────────────────────────────────────────────────────────┐   │
-│   │                    CENTERPOINT EXISTING INFRASTRUCTURE                          │   │
+│   │                    EXISTING INFRASTRUCTURE                                      │   │
 │   │                                                                                 │   │
 │   │   ┌──────────────┐      ┌──────────────┐      ┌──────────────────────────┐     │   │
-│   │   │  2.7M AMI    │ RF   │  Itron/L+G   │ Kafka│  utility Kafka       │     │   │
+│   │   │  2.7M AMI    │ RF   │  Itron/L+G   │ Kafka│  Production Kafka        │     │   │
 │   │   │  Meters      │─────▶│  Head-End    │─────▶│  Cluster (Existing)      │     │   │
 │   │   │              │ Mesh │  System      │ <1s  │  - ami_readings topic    │     │   │
 │   │   └──────────────┘      └──────────────┘      │  - grid_events topic     │     │   │
@@ -434,12 +434,12 @@ For production deployment with utility actual infrastructure, OpenFlow SPCS is r
 │   │   │                                                                          │  │   │
 │   │   │   Runtime Sizing (from Snowflake OpenFlow docs):                         │  │   │
 │   │   │   ┌─────────────────────────────────────────────────────────────────┐   │  │   │
-│   │   │   │  Small (1 vCPU, 2GB):  Up to 10 MB/s  ← CNP steady-state       │   │  │   │
+│   │   │   │  Small (1 vCPU, 2GB):  Up to 10 MB/s  ← steady-state            │   │  │   │
 │   │   │   │  Medium (4 vCPU, 10GB): Up to 40 MB/s  ← Storm events          │   │  │   │
 │   │   │   │  Large (8 vCPU, 20GB):  Exceeding 40 MB/s                       │   │  │   │
 │   │   │   └─────────────────────────────────────────────────────────────────┘   │  │   │
 │   │   │                                                                          │  │   │
-│   │   │   CNP Volume Estimate:                                                   │  │   │
+│   │   │   Volume Estimate:                                                     │  │   │
 │   │   │   - 2.7M meters × 1 reading/15 min = 180K readings/min = 3,000/sec      │  │   │
 │   │   │   - Assuming 1KB/reading (JSON): ~3 MB/s sustained                       │  │   │
 │   │   │   - Storm spike (10x): ~30 MB/s → Medium runtime                         │  │   │
@@ -500,7 +500,7 @@ For production deployment with utility actual infrastructure, OpenFlow SPCS is r
    ```
    In Snowsight NiFi Canvas:
    1. Add ConsumeKafka processor
-   2. Configure bootstrap servers (CNP Kafka brokers)
+   2. Configure bootstrap servers (Kafka brokers)
    3. Set topic pattern: ami_readings.*
    4. Add PutSnowpipeStreaming processor
    5. Configure target table: SI_DEMOS.FLUX_OPS_CENTER.AMI_RAW_STREAM
@@ -682,14 +682,14 @@ psql -c "SELECT COUNT(*) FROM grid_assets_cache;"
 
 ## 9. Performance Targets
 
-| Metric | Target | Current | Grid 360 Baseline |
-|--------|--------|---------|-------------------|
-| **Streaming Latency** (Kafka → Snowflake) | <1 min | N/A (not active) | 5-10 min |
-| **Dynamic Table Refresh** | 1 min | 1 min | N/A |
-| **Postgres Query** | <20ms | <20ms | N/A |
-| **Snowflake Analytics** | <5s | <5s | N/A |
-| **Dashboard Initial Load** | <3s | ~3s | N/A |
-| **End-to-End** (event → dashboard) | <2 min | N/A | 5-10 min |
+| Metric | Target | Current |
+|--------|--------|---------|
+| **Streaming Latency** (Kafka → Snowflake) | <1 min | N/A (not active) |
+| **Dynamic Table Refresh** | 1 min | 1 min |
+| **Postgres Query** | <20ms | <20ms |
+| **Snowflake Analytics** | <5s | <5s |
+| **Dashboard Initial Load** | <3s | ~3s |
+| **End-to-End** (event → dashboard) | <2 min | N/A |
 
 **Cost Estimates:**
 | Configuration | Monthly Cost |
@@ -700,9 +700,9 @@ psql -c "SELECT COUNT(*) FROM grid_assets_cache;"
 
 ---
 
-## 10. Anti-#Strategy
+## 10. Strategic Value
 
-### The Core Message to Daniel
+### The Core Message
 
 > "We're not asking you to rip out Kafka. Kafka is great at sub-second message delivery.
 >
@@ -710,7 +710,7 @@ psql -c "SELECT COUNT(*) FROM grid_assets_cache;"
 >
 > **Snowflake is the analytics brain. Kafka is the nervous system. They work together.**
 >
-> Your team uses standard PostgreSQL and SQL - no Palantir Ontology to learn. Your team uses a visual canvas for data integration - no professional services teams required. Your team owns the entire stack."
+> Your team uses standard PostgreSQL and SQL. Your team uses a visual canvas for data integration. Your team owns the entire stack."
 
 ### Key Talking Points
 
@@ -722,7 +722,7 @@ psql -c "SELECT COUNT(*) FROM grid_assets_cache;"
    - Two-way Iceberg sync means no duplicate data management
    - At GA (Summit '26): Automated sync, one source of truth
 
-3. **"Your team knows Postgres - no #required"**
+3. **"Your team knows Postgres"**
    - Standard PostGIS for geospatial (ESRI-compatible)
    - Standard SQL for queries
    - Cortex Analyst for natural language (no AI expertise needed)
