@@ -255,19 +255,33 @@ GRANT USAGE ON WAREHOUSE <your_warehouse> TO USER <your_user>;
 
 ### Local vs Production
 
-```
-LOCAL DEVELOPMENT                    PRODUCTION (SPCS)
-─────────────────                    ─────────────────
-localhost:5173 (Vite)                SPCS Container
-      │                                    │
-      ▼                                    ▼
-localhost:3001 (uvicorn)             Gunicorn (4 workers)
-      │                                    │
-      ├──► Snowflake Postgres ◄────────────┤
-      │    (PostGIS - <20ms)               │
-      │                                    │
-      └──► Snowflake Warehouse ◄───────────┘
-           (Analytics - <5s)
+```mermaid
+flowchart TB
+    subgraph LOCAL["Local Development"]
+        VITE["localhost:5173<br/>(Vite)"]
+        UVICORN["localhost:3001<br/>(uvicorn)"]
+        VITE --> UVICORN
+    end
+    
+    subgraph PROD["Production (SPCS)"]
+        SPCS["SPCS Container"]
+        GUNICORN["Gunicorn<br/>(4 workers)"]
+        SPCS --> GUNICORN
+    end
+    
+    subgraph DATA["Data Layer"]
+        PG[("Snowflake Postgres<br/>(PostGIS)")]
+        SF[("Snowflake Warehouse<br/>(Analytics)")]
+    end
+    
+    UVICORN --> PG
+    UVICORN --> SF
+    GUNICORN --> PG
+    GUNICORN --> SF
+    
+    style LOCAL fill:#e3f2fd,stroke:#1976d2
+    style PROD fill:#e8f5e9,stroke:#388e3c
+    style DATA fill:#fff3e0,stroke:#f57c00
 ```
 
 Both environments use the **same dual-backend pattern**:

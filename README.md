@@ -73,24 +73,36 @@ See [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) for ful
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    FLUX OPS CENTER - 4-LAYER ARCHITECTURE               │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  LAYER 1: TRANSACTIONAL       Snowflake Postgres (PostgreSQL 17)       │
-│           <20ms queries       • PostGIS geospatial • Grid asset cache  │
-│                                                                         │
-│  LAYER 2: STREAMING           OpenFlow / Kafka Connector               │
-│           <1 min latency      Demo: Synthetic generator                │
-│                                                                         │
-│  LAYER 3: ANALYTICS           Snowflake Core                           │
-│           <5s queries         • Dynamic Tables • Cortex AI Agent       │
-│                                                                         │
-│  LAYER 4: APPLICATION         SPCS (React + DeckGL + FastAPI)          │
-│           ~3s load            • 66K feeder visualization               │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph L1["Layer 1: Transactional"]
+        PG["Snowflake Postgres<br/>(PostgreSQL 17)"]
+        PG_FEAT["• PostGIS geospatial<br/>• Grid asset cache"]
+    end
+    
+    subgraph L2["Layer 2: Streaming"]
+        STREAM["OpenFlow / Kafka Connector"]
+        STREAM_FEAT["Demo: Synthetic generator"]
+    end
+    
+    subgraph L3["Layer 3: Analytics"]
+        SF["Snowflake Core"]
+        SF_FEAT["• Dynamic Tables<br/>• Cortex AI Agent"]
+    end
+    
+    subgraph L4["Layer 4: Application"]
+        APP["SPCS Container"]
+        APP_FEAT["React + DeckGL + FastAPI<br/>66K asset visualization"]
+    end
+    
+    L4 --> L1
+    L4 --> L3
+    L2 --> L3
+    
+    style L1 fill:#e3f2fd,stroke:#1976d2
+    style L2 fill:#fff3e0,stroke:#f57c00
+    style L3 fill:#e8f5e9,stroke:#388e3c
+    style L4 fill:#fce4ec,stroke:#c2185b
 ```
 
 ---

@@ -8,40 +8,26 @@ This document describes the architecture and reliability mechanisms for syncing 
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         SNOWFLAKE (Source of Truth)                      │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  <database>.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY (153K+ rows)   │   │
-│  │  <database>.APPLICATIONS.FLUX_OPS_CENTER_ASSETS                  │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    │                                     │
-│                                    ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  SYNC_TOPOLOGY_TO_POSTGRES() - Python Stored Procedure           │   │
-│  │  • Uses psycopg2 with AUTOCOMMIT mode                            │   │
-│  │  • Atomic swap pattern for data refresh                          │   │
-│  │  • External Access Integration: FLUX_POSTGRES_INTEGRATION        │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                    │                                     │
-└────────────────────────────────────┼─────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    SNOWFLAKE MANAGED POSTGRES                            │
-│  Host: <your_postgres_instance>.postgres.snowflake.app                   │
-│                                                                          │
-│  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  topology_connections_cache (PostGIS-enabled)                     │   │
-│  │  • Used for spatial queries via /api/topology endpoint            │   │
-│  │  • Supports bounding box queries for map visualization            │   │
-│  └──────────────────────────────────────────────────────────────────┘   │
-│                                                                          │
-│  Safety Settings on 'application' role:                                  │
-│  • idle_in_transaction_session_timeout = 60s                            │
-│  • statement_timeout = 300s                                              │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph SF["Snowflake (Source of Truth)"]
+        TOPOLOGY["FLUX_OPS_CENTER_TOPOLOGY<br/>(153K+ rows)"]
+        ASSETS["FLUX_OPS_CENTER_ASSETS"]
+        SYNC["SYNC_TOPOLOGY_TO_POSTGRES()<br/>Python Stored Procedure"]
+        
+        TOPOLOGY --> SYNC
+        ASSETS --> SYNC
+    end
+    
+    subgraph PG["Snowflake Managed Postgres"]
+        CACHE["topology_connections_cache<br/>(PostGIS-enabled)"]
+        SETTINGS["Safety Settings:<br/>• idle_timeout: 60s<br/>• statement_timeout: 300s"]
+    end
+    
+    SYNC -->|"psycopg2<br/>AUTOCOMMIT"| CACHE
+    
+    style SF fill:#e8f5e9,stroke:#388e3c
+    style PG fill:#e3f2fd,stroke:#1976d2
 ```
 
 ---

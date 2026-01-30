@@ -256,12 +256,41 @@ estimated_customers = downstream_transformers × 50
 
 ### GNN Architecture
 
-```
-Input: 10 features
-Layer 1: GCNConv(10 → 64) + BatchNorm + ReLU + Dropout(0.3)
-Layer 2: GCNConv(64 → 64) + BatchNorm + ReLU + Dropout(0.3)
-Layer 3: GCNConv(64 → 32) + BatchNorm + ReLU
-Output: Linear(32 → 1) + Sigmoid
+```mermaid
+flowchart LR
+    INPUT["Input<br/>10 features"] --> L1
+    
+    subgraph L1["Layer 1"]
+        GCN1["GCNConv(10→64)"]
+        BN1["BatchNorm"]
+        R1["ReLU"]
+        D1["Dropout(0.3)"]
+        GCN1 --> BN1 --> R1 --> D1
+    end
+    
+    L1 --> L2
+    
+    subgraph L2["Layer 2"]
+        GCN2["GCNConv(64→64)"]
+        BN2["BatchNorm"]
+        R2["ReLU"]
+        D2["Dropout(0.3)"]
+        GCN2 --> BN2 --> R2 --> D2
+    end
+    
+    L2 --> L3
+    
+    subgraph L3["Layer 3"]
+        GCN3["GCNConv(64→32)"]
+        BN3["BatchNorm"]
+        R3["ReLU"]
+        GCN3 --> BN3 --> R3
+    end
+    
+    L3 --> OUTPUT["Linear(32→1)<br/>+ Sigmoid"]
+    
+    style INPUT fill:#e3f2fd,stroke:#1976d2
+    style OUTPUT fill:#e8f5e9,stroke:#388e3c
 ```
 
 ### Performance

@@ -6,33 +6,37 @@ The Flux Operations Center includes a 3D vegetation risk visualization system wi
 
 ## Data Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        VEGETATION RISK DATA FLOW                            │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐         │
-│  │   DATA SOURCE   │    │    SNOWFLAKE    │    │    POSTGRES     │         │
-│  │                 │───▶│    (Staging)    │───▶│   (Serving)   │         │
-│  │  Meta Canopy    │    │                 │    │                 │         │
-│  │  LiDAR Data     │    │  VEGETATION_    │    │  vegetation_    │         │
-│  │  USGS 3DEP      │    │  RISK_ENHANCED  │    │  risk           │         │
-│  └─────────────────┘    └─────────────────┘    └─────────────────┘         │
-│                                                        │                    │
-│                                                        ▼                    │
-│                               ┌─────────────────────────────────────┐      │
-│                               │         FLUX OPS CENTER API         │      │
-│                               │  /api/spatial/layers/vegetation     │      │
-│                               └─────────────────────────────────────┘      │
-│                                                        │                    │
-│                                                        ▼                    │
-│                               ┌─────────────────────────────────────┐      │
-│                               │      DECK.GL VISUALIZATION          │      │
-│                               │  - 2D ScatterplotLayer (zoom < 14)  │      │
-│                               │  - 3D PolygonLayer (zoom >= 14)     │      │
-│                               └─────────────────────────────────────┘      │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph SOURCE["Data Sources"]
+        META["Meta Canopy<br/>LiDAR Data"]
+        USGS["USGS 3DEP"]
+    end
+    
+    subgraph SNOWFLAKE["Snowflake (Staging)"]
+        VEG_TABLE["VEGETATION_<br/>RISK_ENHANCED"]
+    end
+    
+    subgraph POSTGRES["Postgres (Serving)"]
+        VEG_CACHE["vegetation_risk"]
+    end
+    
+    subgraph API["Flux Ops Center API"]
+        ENDPOINT["/api/spatial/layers/vegetation"]
+    end
+    
+    subgraph VIZ["DeckGL Visualization"]
+        SCATTER["2D ScatterplotLayer<br/>(zoom < 14)"]
+        POLYGON["3D PolygonLayer<br/>(zoom >= 14)"]
+    end
+    
+    SOURCE --> SNOWFLAKE --> POSTGRES --> API --> VIZ
+    
+    style SOURCE fill:#e3f2fd,stroke:#1976d2
+    style SNOWFLAKE fill:#e8f5e9,stroke:#388e3c
+    style POSTGRES fill:#fff3e0,stroke:#f57c00
+    style API fill:#fce4ec,stroke:#c2185b
+    style VIZ fill:#f3e5f5,stroke:#7b1fa2
 ```
 
 ## Data Sources
