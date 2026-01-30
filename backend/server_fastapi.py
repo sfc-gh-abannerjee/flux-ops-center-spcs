@@ -671,7 +671,7 @@ TAGS_METADATA = [
 
 app = FastAPI(
     title="Flux Operations Center API",
-    description="FastAPI backend for Grid Operations grid operations monitoring. "
+    description="FastAPI backend for utility grid operations monitoring. "
                 "Optimized for sub-second ERM queries with Postgres caching and parallel Snowflake queries.",
     version="2.0.0",
     lifespan=lifespan,
@@ -2390,7 +2390,7 @@ async def agent_stream(request: Request):
         agent_url = (
             f"https://{snowflake_host}"
             f"/api/v2/databases/SNOWFLAKE_INTELLIGENCE/schemas/AGENTS"
-            f"/agents/CENTERPOINT_ENERGY_AGENT:run"
+            f"/agents/GRID_INTELLIGENCE_AGENT:run"
         )
         
         payload = {
@@ -2549,7 +2549,7 @@ async def submit_feedback(feedback: FeedbackRequest):
         feedback_url = (
             f"https://{snowflake_host}"
             f"/api/v2/databases/SNOWFLAKE_INTELLIGENCE/schemas/AGENTS"
-            f"/agents/CENTERPOINT_ENERGY_AGENT:feedback"
+            f"/agents/GRID_INTELLIGENCE_AGENT:feedback"
         )
         
         headers = {
@@ -5080,7 +5080,7 @@ async def predict_transformer_failures_with_ml_model(
     2. Model Version: V2_EXPLAINABLE (trained on July 2025 summer peak data)
     3. Model Metrics: 99.82% accuracy, 99.88% precision, 99.75% recall
     
-    For utilities like Grid Operations, this enables:
+    For utilities, this enables:
     - Proactive crew dispatch before failures occur
     - Optimized spare transformer inventory positioning
     - Regulatory compliance with explainable predictions

@@ -22,11 +22,11 @@
 
 ```bash
 # Terminal 1 - Backend
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
-SNOWFLAKE_CONNECTION_NAME=cpe_demo_CLI uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 --reload
+cd flux_ops_center_spcs
+SNOWFLAKE_CONNECTION_NAME=<your_connection> uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 --reload
 
 # Terminal 2 - Frontend  
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
+cd flux_ops_center_spcs
 npm run dev
 ```
 
@@ -42,7 +42,7 @@ npm run dev
 
 - Python 3.11+
 - Node.js 18+
-- Snowflake CLI configured with `cpe_demo_CLI` connection
+- Snowflake CLI configured with a connection
 - Personal Access Token (PAT) for Cortex Agent API
 
 ---
@@ -75,7 +75,7 @@ Add to `~/.zshrc` or `~/.bashrc`:
 ```bash
 # Snowflake PAT for Cortex Agent API
 export SNOWFLAKE_PAT='your_personal_access_token_here'
-export SNOWFLAKE_HOST='gzb42423.snowflakecomputing.com'
+export SNOWFLAKE_HOST='<your_account>.snowflakecomputing.com'
 ```
 
 Reload:
@@ -98,18 +98,18 @@ source ~/.zshrc
 
 **Terminal 1 - Backend:**
 ```bash
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
+cd flux_ops_center_spcs
 
 # Install dependencies (first time only)
 pip install -r backend/requirements.txt
 
 # Start FastAPI server
-SNOWFLAKE_CONNECTION_NAME=cpe_demo_CLI uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 --reload
+SNOWFLAKE_CONNECTION_NAME=<your_connection> uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 --reload
 ```
 
 **Terminal 2 - Frontend:**
 ```bash
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
+cd flux_ops_center_spcs
 
 # Install dependencies (first time only)
 npm install
@@ -121,10 +121,10 @@ npm run dev
 ### Option B: Background Mode (Single Terminal)
 
 ```bash
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
+cd flux_ops_center_spcs
 
 # Start backend in background (survives terminal close)
-nohup SNOWFLAKE_CONNECTION_NAME=cpe_demo_CLI uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 > /tmp/server.log 2>&1 & disown
+nohup SNOWFLAKE_CONNECTION_NAME=<your_connection> uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 > /tmp/server.log 2>&1 & disown
 
 # Monitor logs
 tail -f /tmp/server.log
@@ -137,17 +137,17 @@ npm run dev
 
 ## Environment Variables
 
-Create or update `.env` in the project root:
+Create or update `.env` in the project root (copy from `.env.template`):
 
 ```bash
 # Snowflake Configuration
-VITE_SNOWFLAKE_ACCOUNT_URL=https://gzb42423.prod3.us-west-2.aws.snowflakecomputing.com
+VITE_SNOWFLAKE_ACCOUNT_URL=https://<your_account>.<region>.snowflakecomputing.com
 
 # Postgres Configuration (for map data caching)
-VITE_POSTGRES_HOST=<your_postgres_host>
+VITE_POSTGRES_HOST=<your_postgres_instance>.postgres.snowflake.app
 VITE_POSTGRES_PORT=5432
 VITE_POSTGRES_DATABASE=postgres
-VITE_POSTGRES_USER=application
+VITE_POSTGRES_USER=<your_username>
 VITE_POSTGRES_PASSWORD=<your_password>
 ```
 
@@ -168,28 +168,22 @@ curl http://localhost:3001/
 curl "http://localhost:3001/api/cascade/patient-zero-candidates?limit=5"
 
 # Cascade simulation
-curl -X POST "http://localhost:3001/api/cascade/simulate-realtime?patient_zero_id=SUB-HOU-124&scenario_name=Winter%20Storm%20Uri&temperature_c=-10&load_multiplier=1.8&failure_threshold=0.15"
+curl -X POST "http://localhost:3001/api/cascade/simulate-realtime?patient_zero_id=SUB-001&scenario_name=Test&temperature_c=-10&load_multiplier=1.8&failure_threshold=0.15"
 ```
 
 ### 3. Test Spatial Endpoints
 ```bash
-# Water bodies (Houston area)
+# Water bodies
 curl "http://localhost:3001/api/spatial/layers/water-bodies?min_lon=-95.5&max_lon=-95.2&min_lat=29.7&max_lat=30.0&zoom=14"
 
 # Vegetation risk
 curl "http://localhost:3001/api/spatial/layers/vegetation?min_lon=-95.5&max_lon=-95.2&min_lat=29.7&max_lat=30.0"
 ```
 
-### 4. Test Cortex Agent
-```bash
-python3 test_cascade_agent.py
-```
-
-### 5. Direct PostGIS Queries
+### 4. Direct PostGIS Queries
 ```bash
 export PGPASSWORD="<your_password>"
-psql -h <your_postgres_host> \
-     -U application -d postgres
+psql -h <your_postgres_host> -U <your_username> -d postgres
 ```
 
 ---
@@ -209,7 +203,7 @@ curl http://localhost:3001/  # Verify backend is running
 
 ### Snowflake connection fails
 ```bash
-snow connection test -c cpe_demo_CLI
+snow connection test -c <your_connection>
 echo $SNOWFLAKE_CONNECTION_NAME
 ```
 
@@ -235,8 +229,8 @@ os.environ.setdefault('AWS_CONFIG_FILE', '/dev/null')
 
 **Solution:**
 ```sql
-CALL SI_DEMOS.APPLICATIONS.CONFIGURE_POSTGRES_TIMEOUT();
-CALL SI_DEMOS.APPLICATIONS.SYNC_TOPOLOGY_TO_POSTGRES();
+CALL <your_database>.APPLICATIONS.CONFIGURE_POSTGRES_TIMEOUT();
+CALL <your_database>.APPLICATIONS.SYNC_TOPOLOGY_TO_POSTGRES();
 ```
 
 See [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) for details.
@@ -251,8 +245,8 @@ echo $SNOWFLAKE_PAT  # Verify PAT is set
 
 ### Agent returns 403 Forbidden (permissions)
 ```sql
-GRANT USAGE ON AGENT SNOWFLAKE_INTELLIGENCE.AGENTS.CENTERPOINT_ENERGY_AGENT TO USER <your_user>;
-GRANT USAGE ON WAREHOUSE COMPUTE_WH TO USER <your_user>;
+GRANT USAGE ON AGENT <your_agent> TO USER <your_user>;
+GRANT USAGE ON WAREHOUSE <your_warehouse> TO USER <your_user>;
 ```
 
 ---
@@ -302,10 +296,9 @@ flux_ops_center_spcs/
 
 | Component | Command | URL |
 |-----------|---------|-----|
-| Backend | `SNOWFLAKE_CONNECTION_NAME=cpe_demo_CLI uvicorn backend.server_fastapi:app --port 3001 --reload` | http://localhost:3001 |
+| Backend | `SNOWFLAKE_CONNECTION_NAME=<conn> uvicorn backend.server_fastapi:app --port 3001 --reload` | http://localhost:3001 |
 | Frontend | `npm run dev` | http://localhost:5173 |
 | API Docs | (backend running) | http://localhost:3001/docs |
-| Cascade Test | `python3 test_cascade_agent.py` | - |
 
 ### Stopping Servers
 
@@ -322,10 +315,6 @@ kill -9 <PID>
 ## Related Documentation
 
 - [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) - Snowflake→Postgres sync troubleshooting
-- [CASCADE_QUICK_REFERENCE.md](./CASCADE_QUICK_REFERENCE.md) - Cascade analysis tools
+- [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) - Cascade analysis technical details
 - [Snowflake PAT Docs](https://docs.snowflake.com/en/user-guide/programmatic-access-tokens)
 - [Cortex Agent REST API](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-rest-api)
-
----
-
-*Last Updated: January 28, 2026*

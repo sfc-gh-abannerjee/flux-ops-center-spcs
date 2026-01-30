@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Flux Operations Center now includes a Neara-inspired 3D vegetation risk visualization system with real tree heights, risk scores, and proximity analysis. This document describes the architecture, data sources, and production path for Grid Operations.
+The Flux Operations Center includes a 3D vegetation risk visualization system with real tree heights, risk scores, and proximity analysis. This document describes the architecture, data sources, and production deployment path.
 
 ## Data Architecture
 
@@ -15,7 +15,7 @@ The Flux Operations Center now includes a Neara-inspired 3D vegetation risk visu
 │  │   DATA SOURCE   │    │    SNOWFLAKE    │    │    POSTGRES     │         │
 │  │                 │───▶│    (Staging)    │───▶│   (Serving)   │         │
 │  │  Meta Canopy    │    │                 │    │                 │         │
-│  │  CNP LiDAR      │    │  VEGETATION_    │    │  vegetation_    │         │
+│  │  LiDAR Data     │    │  VEGETATION_    │    │  vegetation_    │         │
 │  │  USGS 3DEP      │    │  RISK_ENHANCED  │    │  risk           │         │
 │  └─────────────────┘    └─────────────────┘    └─────────────────┘         │
 │                                                        │                    │
@@ -39,10 +39,10 @@ The Flux Operations Center now includes a Neara-inspired 3D vegetation risk visu
 
 ### Current Implementation (Demo)
 
-**Synthetic Houston Data** - 50,000 trees with realistic distributions
-- Generated using Houston urban center weights
+**Synthetic Data** - 50,000 trees with realistic distributions
+- Generated using urban center weights
 - Height distribution: 3m - 35m (mean: 13.7m)
-- Species: Common Houston trees (Live Oak, Pecan, Crape Myrtle, etc.)
+- Species: Common regional trees
 - Risk computed from simulated proximity to power lines
 
 ### Production Options (Recommended Order)
@@ -56,18 +56,18 @@ The Flux Operations Center now includes a Neara-inspired 3D vegetation risk visu
 2. **USGS 3DEP LiDAR** (Short-term - Free)
    - Source: `s3://usgs-lidar-public/`
    - Resolution: Sub-meter point cloud
-   - Coverage: Houston area has excellent coverage
+   - Coverage: Most US metro areas have excellent coverage
    - Format: LAZ/LAS files
 
-3. **CNP LiDAR Data** (Production - Best)
-   - utility own transmission line LiDAR surveys
+3. **Utility LiDAR Data** (Production - Best)
+   - Utility's own transmission line LiDAR surveys
    - Highest accuracy for vegetation near infrastructure
    - Already collected as part of transmission maintenance
 
 ## Snowflake Schema
 
 ```sql
-CREATE TABLE SI_DEMOS.APPLICATIONS.VEGETATION_RISK_ENHANCED (
+CREATE TABLE <database>.APPLICATIONS.VEGETATION_RISK_ENHANCED (
     tree_id VARCHAR(100) PRIMARY KEY,
     longitude FLOAT NOT NULL,
     latitude FLOAT NOT NULL,
@@ -84,7 +84,7 @@ CREATE TABLE SI_DEMOS.APPLICATIONS.VEGETATION_RISK_ENHANCED (
     clearance_deficit_m FLOAT,         -- How much tree exceeds clearance
     estimated_annual_growth_m FLOAT,   -- Growth rate
     years_to_encroachment FLOAT,       -- Prediction
-    data_source VARCHAR(100),          -- 'meta_canopy_2020', 'cnp_lidar_2024'
+    data_source VARCHAR(100),          -- 'meta_canopy_2020', 'lidar_2024'
     source_date DATE,
     geom GEOGRAPHY
 );
@@ -92,7 +92,7 @@ CREATE TABLE SI_DEMOS.APPLICATIONS.VEGETATION_RISK_ENHANCED (
 
 ## Risk Calculation
 
-Based on Grid Operations vegetation management standards:
+Based on utility vegetation management standards:
 
 ```
 Voltage (kV)  | Required Clearance (m)
@@ -129,15 +129,15 @@ risk_score = (proximity_risk * 0.7) + (height_risk * 0.3)
 - Fast ScatterplotLayer markers
 - Size based on tree height
 - Color based on risk level:
-  - 🔴 Red: Critical
-  - 🟠 Orange: Warning
-  - 🟡 Amber: Monitor
-  - 🟢 Green: Safe
+  - Red: Critical
+  - Orange: Warning
+  - Amber: Monitor
+  - Green: Safe
 - Glow effect for high-risk trees
 
-### 3D View (Zoom >= 14) - Neara-Inspired
+### 3D View (Zoom >= 14)
 - Extruded PolygonLayer cylinders
-- **Height shows actual tree height!**
+- **Height shows actual tree height**
 - Octagonal cross-section for tree trunks
 - Canopy layer sits on top of trunk
 - Same risk-based coloring
@@ -170,13 +170,13 @@ Response:
 ## Production Deployment Path
 
 ### Phase 1: Demo (Current)
-- ✅ Synthetic data with realistic distributions
-- ✅ 50,000 trees for Houston metro
-- ✅ Full risk calculation pipeline
-- ✅ 3D visualization
+- Synthetic data with realistic distributions
+- 50,000 trees for metro area
+- Full risk calculation pipeline
+- 3D visualization
 
 ### Phase 2: Meta Canopy Integration
-- [ ] Download Houston-area tiles from Meta S3
+- [ ] Download area tiles from Meta S3
 - [ ] Process with rasterio to extract tree points
 - [ ] Load to Snowflake with proximity analysis
 - [ ] Runtime: ~2-4 hours
@@ -187,32 +187,16 @@ Response:
 - [ ] Process with Potree/loaders.gl
 - [ ] Higher accuracy for critical areas
 
-### Phase 4: CNP Data Integration
-- [ ] Receive CNP LiDAR data exports
+### Phase 4: Production Data Integration
+- [ ] Receive utility LiDAR data exports
 - [ ] Process through same pipeline
 - [ ] Merge with satellite-derived heights
 - [ ] Establish refresh cadence
 
 ## Files Modified
 
-- `backend/scripts/process_meta_canopy_houston.py` - Data processing pipeline
+- `backend/scripts/process_meta_canopy.py` - Data processing pipeline
 - `backend/load_spatial_data_to_postgres.py` - Enhanced Postgres loader
 - `backend/server_fastapi.py` - API cache preload with heights
 - `src/App.tsx` - 3D visualization layer
 - `src/types/index.ts` - Type definitions
-
-## Key Differentiators vs Neara
-
-| Feature | Neara | Flux Ops Center |
-|---------|-------|-----------------|
-| Physics Engine | Full sag/sway | Risk scoring |
-| Data Source | LiDAR required | Satellite + LiDAR |
-| Cost | $$$$ | Free (demo) |
-| Integration | Standalone | Snowflake Native |
-| Deployment | SaaS | SPCS (CNP cloud) |
-
-## Contact
-
-For questions about this implementation:
-- # Adi Bannerjee
-- Customer: Grid Operations (Daniel)

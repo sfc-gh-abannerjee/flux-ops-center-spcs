@@ -13,7 +13,7 @@ The cascade analysis system identifies high-risk grid nodes ("Patient Zeros") th
 - BFS-based cascade simulation
 - GNN-based risk prediction
 - Cortex Agent integration for natural language queries
-- **NEW: Actionable analysis** - Economic impact, mitigation playbooks, restoration sequencing
+- Actionable analysis - Economic impact, mitigation playbooks, restoration sequencing
 
 ---
 
@@ -27,7 +27,7 @@ curl "http://localhost:3001/api/cascade/patient-zero-candidates?limit=10"
 
 # Run cascade simulation
 curl -X POST "http://localhost:3001/api/cascade/simulate-realtime" \
-  -d "patient_zero_id=SUB-HOU-124" \
+  -d "patient_zero_id=SUB-001" \
   -d "temperature_c=-10" \
   -d "load_multiplier=1.8" \
   -d "failure_threshold=0.15"
@@ -40,18 +40,18 @@ curl "http://localhost:3001/api/cascade/scenarios"
 
 ```sql
 -- Get top 10 Patient Zero candidates
-CALL SI_DEMOS.CASCADE_ANALYSIS.GET_PATIENT_ZERO_CANDIDATES(10, TRUE);
+CALL <database>.CASCADE_ANALYSIS.GET_PATIENT_ZERO_CANDIDATES(10, TRUE);
 
 -- Estimate impact for specific node
-CALL SI_DEMOS.CASCADE_ANALYSIS.ESTIMATE_CASCADE_IMPACT('SUB-HOU-124');
+CALL <database>.CASCADE_ANALYSIS.ESTIMATE_CASCADE_IMPACT('SUB-001');
 
 -- Get scenario recommendations
-CALL SI_DEMOS.CASCADE_ANALYSIS.GET_CASCADE_SCENARIO_RECOMMENDATIONS();
+CALL <database>.CASCADE_ANALYSIS.GET_CASCADE_SCENARIO_RECOMMENDATIONS();
 ```
 
 ---
 
-## #Actionable Analysis (NEW)
+## Actionable Analysis
 
 These endpoints transform cascade analysis from "technically impressive" to "actually useful for operators."
 
@@ -60,7 +60,7 @@ These endpoints transform cascade analysis from "technically impressive" to "act
 **Endpoint**: `POST /api/cascade/economic-impact`
 
 Converts cascade results into dollar impact:
-- Regulatory penalties (PUCT, ERCOT compliance)
+- Regulatory penalties (compliance)
 - Lost revenue (unserved energy)
 - Restoration costs (crew, equipment)
 - Severity tier assessment
@@ -104,7 +104,7 @@ Generates actionable containment steps:
 ```bash
 curl -X POST "http://localhost:3001/api/cascade/mitigation-actions" \
   -H "Content-Type: application/json" \
-  -d '{"patient_zero": {"node_id": "SUB-HOU-124", "node_name": "Rayford"}, ...}'
+  -d '{"patient_zero": {"node_id": "SUB-001", "node_name": "Main Substation"}, ...}'
 ```
 
 **Example Response:**
@@ -112,12 +112,12 @@ curl -X POST "http://localhost:3001/api/cascade/mitigation-actions" \
 {
   "playbook": {
     "immediate_actions": [
-      {"priority": 1, "action": "ISOLATE Rayford", "time_target": "0-5 minutes"},
+      {"priority": 1, "action": "ISOLATE Main Substation", "time_target": "0-5 minutes"},
       {"priority": 2, "action": "ENABLE LOAD SHEDDING", "time_target": "5-10 minutes"}
     ],
     "choke_point_interventions": [...],
     "crew_dispatch": {
-      "primary_location": {"node_name": "Rayford", "lat": 30.05, "lon": -95.45},
+      "primary_location": {"node_name": "Main Substation", "lat": 30.05, "lon": -95.45},
       "estimated_crews_needed": 9
     },
     "containment_probability": {
@@ -143,19 +143,6 @@ curl -X POST "http://localhost:3001/api/cascade/restoration-sequence" \
   -d '{"cascade_order": [...], "propagation_paths": [...]}'
 ```
 
-**Example Response:**
-```json
-{
-  "restoration_sequence": [
-    {"sequence": 1, "node_name": "Rayford", "customers_restored": 5000, "rationale": "Patient Zero - restore first"},
-    {"sequence": 2, "node_name": "NE Houston 4", "cumulative_customers": 7850}
-  ],
-  "milestones": [
-    {"milestone": "50% customers restored", "after_step": 12, "hours": 8.5}
-  ]
-}
-```
-
 ### 4. Investment Comparison
 
 **Endpoint**: `POST /api/cascade/compare-mitigations`
@@ -166,12 +153,6 @@ ROI analysis for grid hardening investments:
 - 5-year ROI calculation
 - Budget-aware recommendations
 
-```bash
-curl -X POST "http://localhost:3001/api/cascade/compare-mitigations?investment_budget=1000000" \
-  -H "Content-Type: application/json" \
-  -d '{"node_ids": ["SUB-HOU-124", "SUB-HOU-172"]}'
-```
-
 ### 5. Real-Time Risk Score
 
 **Endpoint**: `GET /api/cascade/realtime-risk`
@@ -181,56 +162,6 @@ Current cascade risk based on live grid state:
 - Peak hour factor
 - Equipment stress
 - Network vulnerability
-
-```bash
-curl "http://localhost:3001/api/cascade/realtime-risk"
-```
-
-**Example Response:**
-```json
-{
-  "realtime_risk": {
-    "score": 62.5,
-    "level": "HIGH",
-    "color": "#fd7e14",
-    "recommended_action": "Increase monitoring frequency. Prepare load shedding procedures."
-  },
-  "risk_factors": {
-    "load_stress": {"score": 28.0, "max": 40},
-    "peak_hour": {"score": 20.0, "max": 20},
-    "equipment_stress": {"score": 12.5, "max": 25}
-  }
-}
-```
-
----
-
-## Cortex Agent Tools
-
-### 1. `cascade_patient_zeros`
-
-**Purpose**: Identify high-risk nodes that could trigger cascade failures
-
-**Example Queries**:
-- "Which substations are most critical for cascade failures?"
-- "Show me the top 10 Patient Zero candidates"
-- "What nodes have the highest betweenness centrality?"
-
-### 2. `cascade_impact`
-
-**Purpose**: Estimate the impact of a specific node failure
-
-**Example Queries**:
-- "What happens if Rayford Substation fails?"
-- "Estimate cascade impact for SUB-HOU-124"
-
-### 3. `cascade_scenarios`
-
-**Purpose**: Get recommended parameters for cascade simulation
-
-**Example Queries**:
-- "How do I configure a Winter Storm Uri simulation?"
-- "What parameters should I use for hurricane scenario?"
 
 ---
 
@@ -260,21 +191,10 @@ curl "http://localhost:3001/api/cascade/realtime-risk"
 
 | Scenario | Temperature | Load | Threshold | Reference |
 |----------|-------------|------|-----------|-----------|
-| **Winter Storm Uri** | -10°C | 1.8x | 0.15 | Feb 2021 Texas freeze |
-| **Summer Peak** | 42°C | 1.6x | 0.20 | July 2023 heat wave |
-| **Hurricane Event** | 28°C | 1.2x | 0.10 | Hurricane Harvey 2017 |
+| **Winter Storm** | -10°C | 1.8x | 0.15 | Extreme cold event |
+| **Summer Peak** | 42°C | 1.6x | 0.20 | Heat wave |
+| **Hurricane Event** | 28°C | 1.2x | 0.10 | Major storm |
 | **Normal Operations** | 25°C | 1.0x | 0.35 | Baseline |
-
----
-
-## Top Risk Nodes
-
-| Rank | Node | Risk Score | Betweenness | Customers |
-|------|------|------------|-------------|-----------|
-| 1 | SUB-HOU-124 (Rayford) | 0.772 | 0.906 | 64,800 |
-| 2 | SUB-HOU-172 (NE Houston 4) | 0.585 | 0.498 | 28,750 |
-
-**Recommended Patient Zero**: SUB-HOU-124 for worst-case scenario planning.
 
 ---
 
@@ -284,11 +204,11 @@ curl "http://localhost:3001/api/cascade/realtime-risk"
 
 | Table | Schema | Records | Description |
 |-------|--------|---------|-------------|
-| `GRID_NODES` | SI_DEMOS.ML_DEMO | 91,829 | Grid topology nodes |
-| `GRID_EDGES` | SI_DEMOS.ML_DEMO | 2.5M | Node connections |
-| `NODE_CENTRALITY_FEATURES_V2` | SI_DEMOS.CASCADE_ANALYSIS | 1,873 | Precomputed centrality |
-| `HIGH_RISK_PATIENT_ZEROS` | SI_DEMOS.CASCADE_ANALYSIS | ~100 | Top risk candidates |
-| `GNN_PREDICTIONS` | SI_DEMOS.ML_DEMO | 91,829 | GNN risk predictions |
+| `GRID_NODES` | ML_DEMO | 91,829 | Grid topology nodes |
+| `GRID_EDGES` | ML_DEMO | 2.5M | Node connections |
+| `NODE_CENTRALITY_FEATURES_V2` | CASCADE_ANALYSIS | 1,873 | Precomputed centrality |
+| `HIGH_RISK_PATIENT_ZEROS` | CASCADE_ANALYSIS | ~100 | Top risk candidates |
+| `GNN_PREDICTIONS` | ML_DEMO | 91,829 | GNN risk predictions |
 
 ### Node Features
 
@@ -357,7 +277,7 @@ Output: Linear(32 → 1) + Sigmoid
 
 ```sql
 -- Check if centrality table has data
-SELECT COUNT(*) FROM SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2;
+SELECT COUNT(*) FROM <database>.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2;
 
 -- If empty, run centrality computation script
 -- backend/scripts/compute_graph_centrality.py
@@ -367,8 +287,8 @@ SELECT COUNT(*) FROM SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2;
 
 ```sql
 -- Verify grid topology exists
-SELECT COUNT(*) FROM SI_DEMOS.ML_DEMO.GRID_NODES;
-SELECT COUNT(*) FROM SI_DEMOS.ML_DEMO.GRID_EDGES;
+SELECT COUNT(*) FROM <database>.ML_DEMO.GRID_NODES;
+SELECT COUNT(*) FROM <database>.ML_DEMO.GRID_EDGES;
 ```
 
 ### Topology visualization shows 0 connections
@@ -393,8 +313,3 @@ See [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) for Postgres 
 
 - [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) - Topology data sync
 - [LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md) - Local dev setup
-- [archive/evaluations/CASCADE_ML_TOOLS_EVALUATION_REPORT.md](../archive/evaluations/CASCADE_ML_TOOLS_EVALUATION_REPORT.md) - Detailed evaluation
-
----
-
-*Last Updated: January 28, 2026*

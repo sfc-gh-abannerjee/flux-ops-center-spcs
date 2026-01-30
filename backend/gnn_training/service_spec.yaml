@@ -1,10 +1,10 @@
 spec:
   containers:
     - name: gnn-trainer
-      image: /SI_DEMOS/ML_DEMO/ML_IMAGES/gnn-cascade-trainer:latest
+      image: /<database>/ML_DEMO/ML_IMAGES/gnn-cascade-trainer:latest
       env:
-        SNOWFLAKE_WAREHOUSE: SI_DEMO_WH
-        SNOWFLAKE_DATABASE: SI_DEMOS
+        SNOWFLAKE_WAREHOUSE: <your_warehouse>
+        SNOWFLAKE_DATABASE: <your_database>
         SNOWFLAKE_SCHEMA: CASCADE_ANALYSIS
       resources:
         requests:
@@ -24,6 +24,6 @@ spec:
       public: true
   volumes:
     - name: model-artifacts
-      source: "@SI_DEMOS.CASCADE_ANALYSIS.MODEL_ARTIFACTS"
+      source: "@<database>.CASCADE_ANALYSIS.MODEL_ARTIFACTS"
       uid: 1000
       gid: 1000

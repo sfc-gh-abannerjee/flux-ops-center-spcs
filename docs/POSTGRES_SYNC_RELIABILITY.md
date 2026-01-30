@@ -4,8 +4,6 @@
 
 This document describes the architecture and reliability mechanisms for syncing data from Snowflake (source of truth) to Snowflake Managed Postgres (for PostGIS spatial queries).
 
-**Last Updated**: January 28, 2026
-
 ---
 
 ## Architecture
@@ -15,8 +13,8 @@ This document describes the architecture and reliability mechanisms for syncing 
 │                         SNOWFLAKE (Source of Truth)                      │
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │  SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY (153,592 rows)   │   │
-│  │  SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_ASSETS                    │   │
+│  │  <database>.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY (153K+ rows)   │   │
+│  │  <database>.APPLICATIONS.FLUX_OPS_CENTER_ASSETS                  │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                    │                                     │
 │                                    ▼                                     │
@@ -32,7 +30,7 @@ This document describes the architecture and reliability mechanisms for syncing 
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    SNOWFLAKE MANAGED POSTGRES                            │
-│  Host: mthi2s7canh3xpfhyzdhuuj7pu.sfsehol-si-ae-enablement-retail-...   │
+│  Host: <your_postgres_instance>.postgres.snowflake.app                   │
 │                                                                          │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │  topology_connections_cache (PostGIS-enabled)                     │   │
@@ -70,7 +68,7 @@ Snowflake's Python runtime for stored procedures doesn't always properly release
 
 We implemented two layers of protection:
 
-### Layer 1: Autocommit Mode in Procedure (Option 3)
+### Layer 1: Autocommit Mode in Procedure
 
 The `SYNC_TOPOLOGY_TO_POSTGRES()` procedure now uses `conn.autocommit = True`:
 
@@ -88,7 +86,7 @@ conn.autocommit = True  # CRITICAL: Prevents transaction state issues
 - Cannot rollback partial failures
 - Acceptable for a cache table that can be re-synced
 
-### Layer 2: PostgreSQL Timeout Safety Net (Option 2)
+### Layer 2: PostgreSQL Timeout Safety Net
 
 Role-level settings on the `application` user:
 
@@ -110,16 +108,16 @@ ALTER ROLE application SET statement_timeout = '300s';
 
 | Procedure | Schema | Purpose |
 |-----------|--------|---------|
-| `SYNC_TOPOLOGY_TO_POSTGRES()` | SI_DEMOS.APPLICATIONS | Main sync procedure |
-| `SYNC_VEGETATION_TO_POSTGRES()` | SI_DEMOS.APPLICATIONS | Vegetation data sync |
-| `SYNC_TRANSFORMERS_TO_POSTGRES()` | SI_DEMOS.APPLICATIONS | Transformer data sync |
-| `CONFIGURE_POSTGRES_TIMEOUT()` | SI_DEMOS.APPLICATIONS | Configure/verify PG settings |
+| `SYNC_TOPOLOGY_TO_POSTGRES()` | APPLICATIONS | Main sync procedure |
+| `SYNC_VEGETATION_TO_POSTGRES()` | APPLICATIONS | Vegetation data sync |
+| `SYNC_TRANSFORMERS_TO_POSTGRES()` | APPLICATIONS | Transformer data sync |
+| `CONFIGURE_POSTGRES_TIMEOUT()` | APPLICATIONS | Configure/verify PG settings |
 
 ### Tasks
 
 | Task | Schedule | Purpose |
 |------|----------|---------|
-| `TASK_SYNC_TOPOLOGY_DAILY` | 4 AM Chicago | Daily full refresh |
+| `TASK_SYNC_TOPOLOGY_DAILY` | 4 AM | Daily full refresh |
 | `TASK_SYNC_TOPOLOGY_ON_CHANGE` | Every minute (when stream has data) | Incremental sync |
 
 ### Secrets & Integrations
@@ -137,7 +135,7 @@ ALTER ROLE application SET statement_timeout = '300s';
 
 ```sql
 -- Verify Postgres settings and check for zombie connections
-CALL SI_DEMOS.APPLICATIONS.CONFIGURE_POSTGRES_TIMEOUT();
+CALL <database>.APPLICATIONS.CONFIGURE_POSTGRES_TIMEOUT();
 
 -- Expected output:
 -- {
@@ -155,7 +153,7 @@ CALL SI_DEMOS.APPLICATIONS.CONFIGURE_POSTGRES_TIMEOUT();
 
 ```sql
 -- Run a full sync manually
-CALL SI_DEMOS.APPLICATIONS.SYNC_TOPOLOGY_TO_POSTGRES();
+CALL <database>.APPLICATIONS.SYNC_TOPOLOGY_TO_POSTGRES();
 
 -- Expected output:
 -- {
@@ -203,9 +201,5 @@ OpenFlow would be useful if we reversed the data flow (made Postgres the source 
 ## Related Documentation
 
 - [LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md) - Local dev setup
-- [CASCADE_QUICK_REFERENCE.md](./CASCADE_QUICK_REFERENCE.md) - Cascade analysis tools
+- [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) - Cascade analysis tools
 - [Snowflake External Network Access Best Practices](https://docs.snowflake.com/en/developer-guide/external-network-access/external-network-access-best-practices)
-
----
-
-*Document created: January 28, 2026*

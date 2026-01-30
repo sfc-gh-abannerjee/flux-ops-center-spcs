@@ -1,14 +1,14 @@
 spec:
   containers:
   - name: flux-ops-center
-    image: /si_demos/applications/flux_ops_center_repo/flux-ops-center:20260129_sim_controls_fix
+    image: /<database>/applications/<repo>/flux-ops-center:<tag>
     env:
-      SNOWFLAKE_WAREHOUSE: SI_DEMO_WH
-      VITE_POSTGRES_HOST: <your_postgres_host>
+      SNOWFLAKE_WAREHOUSE: <your_warehouse>
+      VITE_POSTGRES_HOST: <your_postgres_instance>.postgres.snowflake.app
       VITE_POSTGRES_PORT: "5432"
       VITE_POSTGRES_DATABASE: postgres
-      VITE_POSTGRES_USER: application
-      VITE_POSTGRES_PASSWORD: <REDACTED_PASSWORD>
+      VITE_POSTGRES_USER: <your_username>
+      VITE_POSTGRES_PASSWORD: <your_password>
     resources:
       limits:
         memory: 28Gi

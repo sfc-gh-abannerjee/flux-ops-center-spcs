@@ -1,13 +1,16 @@
 # Flux Operations Center
 
-**Grid Operations Grid Operations Platform** - Snowflake's competitive response to Palantir Grid 360
+**Grid Operations Demo Platform** - A comprehensive utility grid management solution built on Snowflake's data platform.
 
 ---
 
-## Live Demo
+## Overview
 
-**URL:** https://bqbm57vg-sfsehol-si-ae-enablement-retail-hmjrfl.snowflakecomputing.app  
-**Status:** RUNNING (MIN_INSTANCES=1, always-on)
+Flux Operations Center is a real-time grid operations platform that combines:
+- **Interactive visualization** of 66K+ grid assets (substations, transformers, feeders)
+- **Cascade failure analysis** with Graph ML predictions
+- **AI-powered insights** via Snowflake Cortex Agents
+- **Dual-backend architecture** for sub-20ms transactional queries and complex analytics
 
 ---
 
@@ -16,23 +19,45 @@
 | Document | Description |
 |----------|-------------|
 | **[docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md)** | Complete local dev setup, authentication, troubleshooting |
-| **[docs/DATA_LOADING_GUIDE.md](./docs/DATA_LOADING_GUIDE.md)** | Load AMI data (7.1B rows) from S3 |
+| **[docs/DATA_LOADING_GUIDE.md](./docs/DATA_LOADING_GUIDE.md)** | Data loading instructions |
 | [docs/INDEX.md](./docs/INDEX.md) | Documentation index |
-| [docs/POSTGRES_SYNC_RELIABILITY.md](./docs/POSTGRES_SYNC_RELIABILITY.md) | Snowflake→Postgres sync architecture |
-| [docs/CASCADE_QUICK_REFERENCE.md](./docs/CASCADE_QUICK_REFERENCE.md) | Cascade analysis tools |
-| [CENTERPOINT_ARCHITECTURE.md](./CENTERPOINT_ARCHITECTURE.md) | Full architecture & deployment guides |
+| [docs/POSTGRES_SYNC_RELIABILITY.md](./docs/POSTGRES_SYNC_RELIABILITY.md) | Snowflake Postgres sync architecture |
+| [docs/CASCADE_ANALYSIS.md](./docs/CASCADE_ANALYSIS.md) | Cascade analysis technical details |
 
 ---
 
 ## Quick Start (Local Development)
 
+### Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- Snowflake CLI with a configured connection
+- Snowflake account with appropriate permissions
+
+### Setup
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd flux_ops_center_spcs
+
+# Copy environment template and configure
+cp .env.template .env
+# Edit .env with your Snowflake credentials
+
+# Install dependencies
+pip install -r backend/requirements.txt
+npm install
+```
+
+### Running Locally
+
 ```bash
 # Terminal 1 - Backend (FastAPI)
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
-SNOWFLAKE_CONNECTION_NAME=cpe_demo_CLI uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 --reload
+SNOWFLAKE_CONNECTION_NAME=<your_connection> uvicorn backend.server_fastapi:app --host 0.0.0.0 --port 3001 --reload
 
 # Terminal 2 - Frontend (Vite)
-cd /Users/abannerjee/Documents/cpe_poc/flux_ops_center_spcs
 npm run dev
 ```
 
@@ -43,24 +68,6 @@ npm run dev
 | Swagger Docs | http://localhost:3001/docs |
 
 See [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) for full setup instructions.
-
----
-
-## Data Scale
-
-| Dataset | Rows | Description |
-|---------|------|-------------|
-| **AMI_INTERVAL_READINGS** | 7.1B | 15-min interval readings, 597K meters, 4 months (Jul/Aug 2024, Jul/Aug 2025) |
-| TRANSFORMER_HOURLY_LOAD | 415M | Hourly transformer load aggregations |
-| THERMAL_STRESS | 212M | Transformer thermal stress events |
-| CUSTOMERS | 686K | Customer master data |
-| METERS | 597K | Meter infrastructure |
-| SAP_WORK_ORDERS | 250K | Work order history |
-| TRANSFORMERS | 92K | Transformer metadata with GIS |
-| POLES | 62K | Pole infrastructure |
-| FEEDERS | 66K | Distribution feeder topology |
-
-**External Data (S3):** AMI data is exported to `s3://abannerjee-ami-demo/raw/ami/ami_interval_readings/` (78.7 GB, 385 parquet files). See [docs/DATA_LOADING_GUIDE.md](./docs/DATA_LOADING_GUIDE.md) for loading instructions.
 
 ---
 
@@ -77,7 +84,7 @@ See [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) for ful
 │  LAYER 2: STREAMING           OpenFlow / Kafka Connector               │
 │           <1 min latency      Demo: Synthetic generator                │
 │                                                                         │
-│  LAYER 3: ANALYTICS           Snowflake Core (7.1B AMI rows)           │
+│  LAYER 3: ANALYTICS           Snowflake Core                           │
 │           <5s queries         • Dynamic Tables • Cortex AI Agent       │
 │                                                                         │
 │  LAYER 4: APPLICATION         SPCS (React + DeckGL + FastAPI)          │
@@ -96,57 +103,103 @@ See [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) for ful
 | Backend | FastAPI, Gunicorn (4 workers) |
 | Transactional DB | Snowflake Postgres (PostGIS) |
 | Analytics DB | Snowflake Warehouse |
-| Deployment | SPCS (FLUX_INTERACTIVE_POOL) |
+| Deployment | Snowpark Container Services (SPCS) |
 
 ---
 
-## Connection Info
+## Configuration
 
-| Resource | Value |
-|----------|-------|
-| Snowflake Account | GZB42423 |
-| Connection | `cpe_demo_CLI` |
-| Database | SI_DEMOS |
-| Warehouse | SI_DEMO_WH |
+### Environment Variables
+
+Copy `.env.template` to `.env` and configure:
+
+| Variable | Description |
+|----------|-------------|
+| `SNOWFLAKE_CONNECTION_NAME` | Your Snowflake CLI connection name |
+| `VITE_SNOWFLAKE_ACCOUNT_URL` | Your Snowflake account URL |
+| `VITE_POSTGRES_HOST` | Snowflake Postgres hostname |
+| `VITE_POSTGRES_USER` | Postgres username |
+| `VITE_POSTGRES_PASSWORD` | Postgres password |
+
+**Security Note:** Never commit credentials to git. The `.env` file is in `.gitignore`.
 
 ---
 
-## Common Issues
+## Features
+
+### Cascade Failure Analysis
+- Cascade simulation from any "patient zero" node
+- Graph ML-based risk prediction using centrality metrics
+- Wave-by-wave failure propagation visualization
+
+### Grid Intelligence Assistant
+- Natural language queries powered by Snowflake Cortex
+- Context-aware responses about grid health and operations
+- Integrated with live grid data
+
+### Interactive Map Visualization
+- 66K+ grid assets rendered with DeckGL
+- Asset status visualization
+- Geospatial layers (vegetation risk, flood zones, etc.)
+
+---
+
+## Project Structure
+
+```
+flux_ops_center_spcs/
+├── README.md                    # This file
+├── backend/
+│   ├── server_fastapi.py        # FastAPI server (port 3001)
+│   ├── requirements.txt         # Python dependencies
+│   ├── scripts/                 # ML scripts (centrality, GNN)
+│   └── sql/                     # Database setup scripts
+├── src/                         # React frontend
+├── docs/                        # Documentation
+│   ├── INDEX.md                 # Doc index
+│   ├── LOCAL_DEVELOPMENT_GUIDE.md
+│   ├── DATA_LOADING_GUIDE.md
+│   └── POSTGRES_SYNC_RELIABILITY.md
+├── Dockerfile.spcs              # SPCS container
+├── service_spec_prod.yaml       # SPCS service specification (template)
+└── .env.template                # Environment variables template
+```
+
+---
+
+## Troubleshooting
 
 | Issue | Fix |
 |-------|-----|
 | Port 3001 in use | `lsof -ti:3001 \| xargs kill -9` |
 | boto3 SSO error | Already handled in server_fastapi.py |
-| Topology 0 connections | `CALL SI_DEMOS.APPLICATIONS.SYNC_TOPOLOGY_TO_POSTGRES()` |
-| Cortex Agent 401/403 | Verify `$SNOWFLAKE_PAT` is set |
+| Snowflake connection fails | Verify `SNOWFLAKE_CONNECTION_NAME` is set correctly |
+| Cortex Agent 401/403 | Verify `SNOWFLAKE_PAT` is set |
 
 See [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) for detailed troubleshooting.
 
 ---
 
-## File Structure
+## Contributing
 
-```
-flux_ops_center_spcs/
-├── README.md                    # This file
-├── CENTERPOINT_ARCHITECTURE.md  # Full architecture doc
-├── backend/
-│   └── server_fastapi.py        # FastAPI server (port 3001)
-├── src/                         # React frontend
-├── scripts/
-│   └── seed_data/               # Data loading scripts
-│       └── load_ami_from_s3.sql # Load 7.1B AMI rows
-├── docs/                        # Documentation
-│   ├── INDEX.md                 # Doc index
-│   ├── LOCAL_DEVELOPMENT_GUIDE.md
-│   ├── DATA_LOADING_GUIDE.md    # AMI data loading
-│   ├── POSTGRES_SYNC_RELIABILITY.md
-│   └── CASCADE_QUICK_REFERENCE.md
-├── Dockerfile.spcs              # SPCS container
-└── archive/                     # Superseded docs
-```
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ---
 
-**Last Updated:** January 28, 2026  
-**Author:** Abhinav Bannerjee (Senior SE - Enterprise Acquisition)
+## License
+
+This project is provided as a reference implementation. See [LICENSE](./LICENSE) for details.
+
+---
+
+## Acknowledgments
+
+Built with [Snowflake](https://www.snowflake.com/) technologies:
+- Snowpark Container Services (SPCS)
+- Snowflake Postgres
+- Snowflake Cortex AI
+- Dynamic Tables
