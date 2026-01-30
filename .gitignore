@@ -63,3 +63,13 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Cortex Code internal files
+.cortex/
+
+# Large data files
+*.csv
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
