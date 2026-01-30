@@ -98,11 +98,6 @@ flowchart TB
     L4 --> L1
     L4 --> L3
     L2 --> L3
-    
-    style L1 fill:#e3f2fd,stroke:#1976d2
-    style L2 fill:#fff3e0,stroke:#f57c00
-    style L3 fill:#e8f5e9,stroke:#388e3c
-    style L4 fill:#fce4ec,stroke:#c2185b
 ```
 
 ---

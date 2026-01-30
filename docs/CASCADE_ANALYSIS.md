@@ -288,9 +288,6 @@ flowchart LR
     end
     
     L3 --> OUTPUT["Linear(32→1)<br/>+ Sigmoid"]
-    
-    style INPUT fill:#e3f2fd,stroke:#1976d2
-    style OUTPUT fill:#e8f5e9,stroke:#388e3c
 ```
 
 ### Performance

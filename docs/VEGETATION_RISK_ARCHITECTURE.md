@@ -31,12 +31,6 @@ flowchart LR
     end
     
     SOURCE --> SNOWFLAKE --> POSTGRES --> API --> VIZ
-    
-    style SOURCE fill:#e3f2fd,stroke:#1976d2
-    style SNOWFLAKE fill:#e8f5e9,stroke:#388e3c
-    style POSTGRES fill:#fff3e0,stroke:#f57c00
-    style API fill:#fce4ec,stroke:#c2185b
-    style VIZ fill:#f3e5f5,stroke:#7b1fa2
 ```
 
 ## Data Sources

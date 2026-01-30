@@ -278,10 +278,6 @@ flowchart TB
     UVICORN --> SF
     GUNICORN --> PG
     GUNICORN --> SF
-    
-    style LOCAL fill:#e3f2fd,stroke:#1976d2
-    style PROD fill:#e8f5e9,stroke:#388e3c
-    style DATA fill:#fff3e0,stroke:#f57c00
 ```
 
 Both environments use the **same dual-backend pattern**:

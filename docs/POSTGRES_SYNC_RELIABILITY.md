@@ -25,9 +25,6 @@ flowchart TB
     end
     
     SYNC -->|"psycopg2<br/>AUTOCOMMIT"| CACHE
-    
-    style SF fill:#e8f5e9,stroke:#388e3c
-    style PG fill:#e3f2fd,stroke:#1976d2
 ```
 
 ---
