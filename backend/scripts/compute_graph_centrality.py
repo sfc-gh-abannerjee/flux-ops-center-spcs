@@ -286,7 +286,15 @@ def build_centrality_dataframe(nodes_df, metrics, reach):
         })
     
     df = pd.DataFrame(records)
+    
+    # Engineering: Normalize CASCADE_RISK_SCORE to 0-1 range for proper percentage display
+    # Raw scores can exceed 1.0 due to combining multiple metrics
+    max_risk = df['CASCADE_RISK_SCORE'].max()
+    df['CASCADE_RISK_SCORE_NORMALIZED'] = df['CASCADE_RISK_SCORE'] / max_risk if max_risk > 0 else 0
+    
     print(f"  Created dataframe with {len(df)} nodes and {len(df.columns)} features")
+    print(f"  CASCADE_RISK_SCORE range: {df['CASCADE_RISK_SCORE'].min():.4f} - {df['CASCADE_RISK_SCORE'].max():.4f}")
+    print(f"  Normalized range: {df['CASCADE_RISK_SCORE_NORMALIZED'].min():.4f} - {df['CASCADE_RISK_SCORE_NORMALIZED'].max():.4f}")
     
     return df
 

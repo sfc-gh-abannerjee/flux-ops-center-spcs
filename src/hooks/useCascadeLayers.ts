@@ -60,9 +60,19 @@ interface CascadeLayerControls {
   clearCascade: () => void;
   loadHighRiskNodes: () => Promise<void>;
   loadRiskPredictions: () => Promise<void>;
+  loadScenarios: () => Promise<void>;
+  loadPrecomputedScenarios: () => Promise<void>;
+  loadPrecomputedCascade: (scenarioId: string) => Promise<void>;
   setFocusedWave: (wave: number | null) => void;
   state: CascadeLayerState;
   scenarios: CascadeScenario[];
+  precomputedScenarios: Array<{
+    scenario_id: string;
+    scenario_name: string;
+    patient_zero: { node_id: string; node_name: string };
+    total_affected_nodes: number;
+    estimated_customers_affected: number;
+  }>;
 }
 
 // Predefined scenarios (matches backend)
@@ -118,6 +128,14 @@ export function useCascadeLayers({
   const [cascadeResult, setCascadeResult] = useState<CascadeResult | null>(null);
   const [highRiskNodes, setHighRiskNodes] = useState<CascadeNode[]>([]);
   const [riskPredictions, setRiskPredictions] = useState<TransformerRiskPrediction[]>([]);
+  const [scenarios, setScenarios] = useState<CascadeScenario[]>(PREDEFINED_SCENARIOS);
+  const [precomputedScenarios, setPrecomputedScenarios] = useState<Array<{
+    scenario_id: string;
+    scenario_name: string;
+    patient_zero: { node_id: string; node_name: string };
+    total_affected_nodes: number;
+    estimated_customers_affected: number;
+  }>>([]);
   const [isSimulating, setIsSimulating] = useState(false);
   const [isLoadingPredictions, setIsLoadingPredictions] = useState(false);
   const [selectedScenario, setSelectedScenario] = useState<CascadeScenario | null>(null);
@@ -132,15 +150,31 @@ export function useCascadeLayers({
     animationPhaseRef.current = animationTime;
   }, [animationTime]);
 
-  // Load high-risk nodes from API
+  // Load high-risk nodes from Patient Zero Candidates API (enhanced with true centrality metrics)
   const loadHighRiskNodes = useCallback(async () => {
     try {
-      const response = await fetch('/api/cascade/high-risk-nodes?limit=50');
-      if (!response.ok) throw new Error('Failed to load high-risk nodes');
+      // Use patient-zero-candidates endpoint for richer centrality data
+      const response = await fetch('/api/cascade/patient-zero-candidates?limit=30&only_centrality_computed=true');
+      if (!response.ok) throw new Error('Failed to load patient zero candidates');
       const data = await response.json();
-      setHighRiskNodes(data.high_risk_nodes || []);
+      // Map to expected format with enhanced risk data
+      const nodes = (data.high_risk_nodes || []).map((n: Record<string, unknown>) => ({
+        ...n,
+        criticality_score: n.cascade_risk_score || n.criticality_score, // Use cascade risk if available
+        risk_source: n.risk_source || 'unknown'
+      }));
+      setHighRiskNodes(nodes);
+      console.log(`Loaded ${nodes.length} patient zero candidates (source: ${data.risk_source_used || 'centrality'})`);
     } catch (error) {
-      console.error('Failed to load high-risk nodes:', error);
+      console.error('Failed to load patient zero candidates:', error);
+      // Fallback to original endpoint
+      try {
+        const fallbackResponse = await fetch('/api/cascade/high-risk-nodes?limit=50');
+        if (fallbackResponse.ok) {
+          const fallbackData = await fallbackResponse.json();
+          setHighRiskNodes(fallbackData.high_risk_nodes || []);
+        }
+      } catch { /* ignore fallback errors */ }
     }
   }, []);
 
@@ -157,6 +191,90 @@ export function useCascadeLayers({
       console.error('Failed to load risk predictions:', error);
     } finally {
       setIsLoadingPredictions(false);
+    }
+  }, []);
+
+  // Load scenarios from API (with fallback to hardcoded)
+  const loadScenarios = useCallback(async () => {
+    try {
+      const response = await fetch('/api/cascade/scenarios');
+      if (!response.ok) throw new Error('Failed to load scenarios');
+      const data = await response.json();
+      if (data.scenarios && data.scenarios.length > 0) {
+        // Map API response to CascadeScenario format
+        const apiScenarios: CascadeScenario[] = data.scenarios.map((s: {
+          name: string;
+          description: string;
+          parameters: {
+            temperature_c: number;
+            load_multiplier: number;
+            failure_threshold: number;
+          };
+        }) => ({
+          name: s.name,
+          description: s.description,
+          parameters: {
+            temperature_c: s.parameters.temperature_c,
+            load_multiplier: s.parameters.load_multiplier,
+            failure_threshold: s.parameters.failure_threshold,
+          }
+        }));
+        setScenarios(apiScenarios);
+        console.log(`Loaded ${apiScenarios.length} scenarios from API`);
+      }
+    } catch (error) {
+      console.error('Failed to load scenarios from API, using defaults:', error);
+      // Keep using PREDEFINED_SCENARIOS (already set as initial state)
+    }
+  }, []);
+
+  // Load list of precomputed cascade scenarios (for quick demo)
+  const loadPrecomputedScenarios = useCallback(async () => {
+    try {
+      const response = await fetch('/api/cascade/precomputed');
+      if (!response.ok) throw new Error('Failed to load precomputed scenarios');
+      const data = await response.json();
+      if (data.scenarios && data.scenarios.length > 0) {
+        setPrecomputedScenarios(data.scenarios);
+        console.log(`Loaded ${data.scenarios.length} precomputed cascade scenarios`);
+      }
+    } catch (error) {
+      console.error('Failed to load precomputed scenarios:', error);
+    }
+  }, []);
+
+  // Load a specific precomputed cascade for instant visualization
+  const loadPrecomputedCascade = useCallback(async (scenarioId: string) => {
+    setIsSimulating(true);
+    try {
+      const response = await fetch(`/api/cascade/precomputed/${scenarioId}`);
+      if (!response.ok) throw new Error('Failed to load precomputed cascade');
+      const data = await response.json();
+      
+      if (data.scenario) {
+        // Convert precomputed format to CascadeResult format
+        // CRITICAL: patient_zero must be the full object, not just node_id
+        // The backend expects patient_zero.get('node_name') etc.
+        const cascadeResult: CascadeResult = {
+          scenario_name: data.scenario.scenario_name || scenarioId,
+          cascade_order: data.scenario.cascade_order || [],
+          patient_zero: data.scenario.patient_zero || { node_id: 'unknown', node_name: 'Unknown' },
+          total_affected_nodes: data.scenario.total_affected_nodes,
+          affected_capacity_mw: data.scenario.affected_capacity_mw,
+          estimated_customers_affected: data.scenario.estimated_customers_affected,
+          max_cascade_depth: data.scenario.max_cascade_depth,
+          propagation_paths: data.scenario.propagation_paths || [],
+          wave_breakdown: data.scenario.wave_breakdown || [],
+          node_type_breakdown: data.scenario.node_type_breakdown || [],
+          simulation_timestamp: data.scenario.simulation_timestamp || new Date().toISOString(),
+        };
+        setCascadeResult(cascadeResult);
+        console.log(`Loaded precomputed cascade: ${data.scenario.scenario_name}`);
+      }
+    } catch (error) {
+      console.error('Failed to load precomputed cascade:', error);
+    } finally {
+      setIsSimulating(false);
     }
   }, []);
 
@@ -609,6 +727,9 @@ export function useCascadeLayers({
     clearCascade,
     loadHighRiskNodes,
     loadRiskPredictions,
+    loadScenarios,
+    loadPrecomputedScenarios,
+    loadPrecomputedCascade,
     setFocusedWave,
     state: {
       cascadeResult,
@@ -620,7 +741,8 @@ export function useCascadeLayers({
       animationPhase: animationPhaseRef.current,
       focusedWave: activeFocusedWave,
     },
-    scenarios: PREDEFINED_SCENARIOS,
+    scenarios,
+    precomputedScenarios,
   };
 
   return { layers, controls };

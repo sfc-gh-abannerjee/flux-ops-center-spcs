@@ -43,7 +43,8 @@ import {
   Collapse,
   Menu,
   ListItemIcon,
-  ListItemText
+  ListItemText,
+  Slider
 } from '@mui/material';
 import {
   Warning,
@@ -243,6 +244,16 @@ interface CascadeControlPanelProps {
   onClear: () => void;
   onLoadHighRisk: () => Promise<void>;
   onLoadPredictions: () => Promise<void>;
+  onLoadScenarios: () => Promise<void>;
+  onLoadPrecomputedScenarios: () => Promise<void>;
+  onLoadPrecomputedCascade: (scenarioId: string) => Promise<void>;
+  precomputedScenarios: Array<{
+    scenario_id: string;
+    scenario_name: string;
+    patient_zero: { node_id: string; node_name: string };
+    total_affected_nodes: number;
+    estimated_customers_affected: number;
+  }>;
   visible: boolean;
   onToggleVisibility: () => void;
   onOpenFullDashboard?: () => void;
@@ -309,11 +320,11 @@ const SnowflakeIcon = ({ size = 12, color = '#29B5E8' }: { size?: number; color?
 
 // Service-specific icon components using official Snowflake icons
 const SnowparkIcon = ({ size = 14 }: { size?: number }) => (
-  <img src="/icons/Snowflake_ICON_Snowpark.svg" alt="Snowpark" width={size} height={size} style={{ display: 'block' }} />
+  <img src="/icons/Snowflake_ICON_Snowpark.svg?v=1" alt="Snowpark" width={size} height={size} style={{ display: 'block' }} />
 );
 
 const CortexCompleteIcon = ({ size = 14 }: { size?: number }) => (
-  <img src="/icons/Snowflake_ICON_LLM.svg" alt="Cortex Complete" width={size} height={size} style={{ display: 'block' }} />
+  <img src="/icons/Snowflake_ICON_LLM.svg?v=1" alt="Cortex Complete" width={size} height={size} style={{ display: 'block' }} />
 );
 
 // Snowflake ML Provenance Badge - shows where ML is being used
@@ -1120,7 +1131,7 @@ interface RegionalInvestment {
 }
 
 // Engineering: Compact Investment ROI Panel for drawer integration
-// Shows ROI calculations without requiring full-page context switch
+// Now fetches from /api/cascade/compare-mitigations for real centrality-based ROI
 function InvestmentROICompact({ 
   highRiskNodes, 
   cascadeResult,
@@ -1131,9 +1142,55 @@ function InvestmentROICompact({
   isSideBySide?: boolean;
 }) {
   const [hoveredRow, setHoveredRow] = useState<number | null>(null);
+  const [budget, setBudget] = useState<number>(1000000);
+  const [comparisons, setComparisons] = useState<Array<{
+    node_id: string;
+    node_name: string;
+    node_type: string;
+    current_risk_score: number;
+    betweenness_centrality: number;
+    hardening: { cost: number; description: string; risk_reduction_pct: number };
+    financial_impact: { customers_protected: number; annual_avoided_cost: number; five_year_benefit: number; roi_pct: number; payback_years: number | string };
+    within_budget: boolean;
+  }>>([]);
+  const [recommendation, setRecommendation] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const [apiError, setApiError] = useState(false);
 
-  // Calculate investment recommendations per region
+  // Fetch comparisons from backend API
+  useEffect(() => {
+    const fetchComparisons = async () => {
+      if (highRiskNodes.length === 0) return;
+      
+      setLoading(true);
+      setApiError(false);
+      try {
+        const nodeIds = highRiskNodes.slice(0, 10).map(n => n.node_id);
+        const response = await fetch(`/api/cascade/compare-mitigations?investment_budget=${budget}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(nodeIds)
+        });
+        
+        if (!response.ok) throw new Error('API error');
+        const data = await response.json();
+        setComparisons(data.comparisons || []);
+        setRecommendation(data.recommendation || '');
+      } catch (error) {
+        console.error('Failed to fetch mitigation comparisons:', error);
+        setApiError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchComparisons();
+  }, [highRiskNodes, budget]);
+
+  // Fallback calculations when API fails
   const investmentData = useMemo<RegionalInvestment[]>(() => {
+    if (!apiError && comparisons.length > 0) return [];
+    
     const UPGRADE_COST_SUBSTATION = 5000000;
     const UPGRADE_COST_TRANSFORMER = 500000;
     const DAMAGE_MULTIPLIER = 2.5;
@@ -1213,13 +1270,7 @@ function InvestmentROICompact({
       };
     }).filter(inv => inv.nodes_requiring_upgrade > 0)
       .sort((a, b) => b.roi_percent - a.roi_percent);
-  }, [highRiskNodes]);
-
-  const totalInvestment = investmentData.reduce((sum, d) => sum + d.estimated_investment_cost, 0);
-  const totalBenefit = investmentData.reduce((sum, d) => sum + d.avoided_damage_potential, 0);
-  const overallROI = totalInvestment > 0 ? ((totalBenefit - totalInvestment) / totalInvestment) * 100 : 0;
-  const maxROI = Math.max(...investmentData.map(d => d.roi_percent), 1);
-  const criticalCount = investmentData.filter(d => d.priority === 'CRITICAL').length;
+  }, [highRiskNodes, apiError, comparisons.length]);
 
   const priorityColors = {
     'CRITICAL': '#EF4444',
@@ -1228,7 +1279,18 @@ function InvestmentROICompact({
     'LOW': '#22C55E'
   };
 
-  if (investmentData.length === 0) {
+  if (loading) {
+    return (
+      <Box sx={{ p: 2, textAlign: 'center' }}>
+        <CircularProgress size={24} sx={{ color: '#8B5CF6', mb: 1 }} />
+        <Typography variant="body2" color="text.secondary">
+          Calculating ROI from centrality data...
+        </Typography>
+      </Box>
+    );
+  }
+
+  if (highRiskNodes.length === 0) {
     return (
       <Box sx={{ p: 2, textAlign: 'center' }}>
         <AttachMoney sx={{ fontSize: 32, color: alpha('#8B5CF6', 0.3), mb: 1 }} />
@@ -1238,6 +1300,141 @@ function InvestmentROICompact({
       </Box>
     );
   }
+
+  // API-driven view with individual node comparisons
+  if (comparisons.length > 0) {
+    const totalInvestment = comparisons.reduce((sum, c) => sum + c.hardening.cost, 0);
+    const totalBenefit = comparisons.reduce((sum, c) => sum + c.financial_impact.five_year_benefit, 0);
+    const avgROI = comparisons.length > 0 ? comparisons.reduce((sum, c) => sum + c.financial_impact.roi_pct, 0) / comparisons.length : 0;
+    const withinBudgetCount = comparisons.filter(c => c.within_budget).length;
+
+    return (
+      <Box sx={{ height: 280, overflow: 'auto' }}>
+        {/* Budget Slider */}
+        <Box sx={{ mb: 1.5, px: 1 }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.6rem' }}>Budget:</Typography>
+            <Typography variant="caption" sx={{ color: '#8B5CF6', fontWeight: 700, fontSize: '0.7rem' }}>
+              ${(budget / 1000000).toFixed(1)}M
+            </Typography>
+          </Stack>
+          <Slider
+            value={budget}
+            onChange={(_, v) => setBudget(v as number)}
+            min={100000}
+            max={5000000}
+            step={100000}
+            size="small"
+            sx={{ 
+              color: '#8B5CF6', 
+              height: 4,
+              '& .MuiSlider-thumb': { width: 12, height: 12 }
+            }}
+          />
+        </Box>
+
+        {/* Summary Header */}
+        <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
+          <Box sx={{ flex: 1, p: 0.75, bgcolor: alpha('#3B82F6', 0.1), borderRadius: 1, textAlign: 'center' }}>
+            <Typography variant="caption" sx={{ color: '#3B82F6', fontWeight: 700, fontSize: '0.75rem' }}>
+              {withinBudgetCount}/{comparisons.length}
+            </Typography>
+            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.5rem', display: 'block' }}>In Budget</Typography>
+          </Box>
+          <Box sx={{ flex: 1, p: 0.75, bgcolor: alpha('#22C55E', 0.1), borderRadius: 1, textAlign: 'center' }}>
+            <Typography variant="caption" sx={{ color: '#22C55E', fontWeight: 700, fontSize: '0.75rem' }}>
+              {avgROI.toFixed(0)}%
+            </Typography>
+            <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.5rem', display: 'block' }}>Avg ROI</Typography>
+          </Box>
+        </Stack>
+
+        {/* Node Comparisons Table */}
+        <TableContainer sx={{ bgcolor: alpha('#0A1929', 0.5), borderRadius: 1 }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell sx={{ fontSize: '0.55rem', py: 0.5, color: 'text.secondary', fontWeight: 600 }}>Node</TableCell>
+                <TableCell align="right" sx={{ fontSize: '0.55rem', py: 0.5, color: 'text.secondary', fontWeight: 600 }}>Cost</TableCell>
+                <TableCell align="right" sx={{ fontSize: '0.55rem', py: 0.5, color: 'text.secondary', fontWeight: 600 }}>ROI</TableCell>
+                <TableCell align="right" sx={{ fontSize: '0.55rem', py: 0.5, color: 'text.secondary', fontWeight: 600 }}>Payback</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {comparisons.slice(0, 6).map((comp, idx) => (
+                <TableRow 
+                  key={comp.node_id}
+                  onMouseEnter={() => setHoveredRow(idx)}
+                  onMouseLeave={() => setHoveredRow(null)}
+                  sx={{ 
+                    bgcolor: idx === 0 ? alpha('#8B5CF6', 0.12) : hoveredRow === idx ? alpha('#8B5CF6', 0.06) : 'transparent',
+                    opacity: comp.within_budget ? 1 : 0.5
+                  }}
+                >
+                  <TableCell sx={{ py: 0.5 }}>
+                    <Stack direction="row" alignItems="center" spacing={0.5}>
+                      {idx === 0 && <Box sx={{ width: 2, height: 14, bgcolor: '#8B5CF6', borderRadius: 0.5 }} />}
+                      <Box>
+                        <Typography variant="caption" sx={{ fontWeight: idx === 0 ? 700 : 500, fontSize: '0.6rem', display: 'block' }}>
+                          {comp.node_name?.slice(0, 20) || comp.node_id.slice(0, 12)}
+                        </Typography>
+                        <Typography variant="caption" sx={{ fontSize: '0.5rem', color: 'text.secondary' }}>
+                          Risk ↓{comp.hardening.risk_reduction_pct.toFixed(0)}%
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </TableCell>
+                  <TableCell align="right" sx={{ py: 0.5 }}>
+                    <Typography variant="caption" sx={{ color: comp.within_budget ? '#3B82F6' : '#EF4444', fontWeight: 600, fontSize: '0.6rem' }}>
+                      ${(comp.hardening.cost / 1000).toFixed(0)}K
+                    </Typography>
+                  </TableCell>
+                  <TableCell align="right" sx={{ py: 0.5 }}>
+                    <Typography variant="caption" sx={{ 
+                      color: comp.financial_impact.roi_pct > 100 ? '#22C55E' : '#FBBF24', 
+                      fontWeight: 700, 
+                      fontSize: '0.6rem' 
+                    }}>
+                      {comp.financial_impact.roi_pct.toFixed(0)}%
+                    </Typography>
+                  </TableCell>
+                  <TableCell align="right" sx={{ py: 0.5 }}>
+                    <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.55rem' }}>
+                      {typeof comp.financial_impact.payback_years === 'number' 
+                        ? `${comp.financial_impact.payback_years.toFixed(1)}y` 
+                        : comp.financial_impact.payback_years}
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+
+        {/* Recommendation */}
+        {recommendation && (
+          <Box sx={{ mt: 1, p: 0.75, bgcolor: alpha('#8B5CF6', 0.1), borderRadius: 1, borderLeft: '3px solid #8B5CF6' }}>
+            <Typography variant="caption" sx={{ fontWeight: 700, color: '#8B5CF6', fontSize: '0.6rem' }}>
+              RECOMMENDATION
+            </Typography>
+            <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', fontSize: '0.55rem', mt: 0.25 }}>
+              {recommendation}
+            </Typography>
+          </Box>
+        )}
+
+        <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', color: 'text.secondary', fontSize: '0.5rem', mt: 1 }}>
+          ROI based on true betweenness centrality metrics
+        </Typography>
+      </Box>
+    );
+  }
+
+  // Fallback: Regional view when API fails
+  const totalInvestment = investmentData.reduce((sum, d) => sum + d.estimated_investment_cost, 0);
+  const totalBenefit = investmentData.reduce((sum, d) => sum + d.avoided_damage_potential, 0);
+  const overallROI = totalInvestment > 0 ? ((totalBenefit - totalInvestment) / totalInvestment) * 100 : 0;
+  const maxROI = Math.max(...investmentData.map(d => d.roi_percent), 1);
 
   return (
     <Box sx={{ height: 280, overflow: 'auto' }}>
@@ -1855,6 +2052,10 @@ export function CascadeControlPanel({
   onClear,
   onLoadHighRisk,
   onLoadPredictions,
+  onLoadScenarios,
+  onLoadPrecomputedScenarios,
+  onLoadPrecomputedCascade,
+  precomputedScenarios,
   visible,
   onToggleVisibility,
   focusedWave,
@@ -1872,6 +2073,18 @@ export function CascadeControlPanel({
   const [selectedPatientZero, setSelectedPatientZero] = useState<string>('');
   const [activeTab, setActiveTab] = useState(0);
   const waveBreakdown = useWaveBreakdown(cascadeResult);
+  
+  // Update selectedScenario when scenarios are loaded from API
+  // This handles the case where API scenario names differ from initial defaults
+  useEffect(() => {
+    if (scenarios.length > 0) {
+      // Check if current selection exists in scenarios list
+      const scenarioExists = scenarios.some(s => s.name === selectedScenario);
+      if (!scenarioExists || !selectedScenario) {
+        setSelectedScenario(scenarios[0].name);
+      }
+    }
+  }, [scenarios]); // Only depend on scenarios to avoid loops
   
   // Helper functions for dock size management
   const setDockSize = (size: DockedPanelSize) => {
@@ -1926,6 +2139,16 @@ export function CascadeControlPanel({
       onLoadHighRisk();
     }
   }, [visible, highRiskNodes.length, onLoadHighRisk]);
+
+  // Load scenarios from API on mount (will use API data or fallback to defaults)
+  useEffect(() => {
+    onLoadScenarios();
+  }, [onLoadScenarios]);
+
+  // Load precomputed cascade scenarios for quick demo feature
+  useEffect(() => {
+    onLoadPrecomputedScenarios();
+  }, [onLoadPrecomputedScenarios]);
 
   // === ACTIONABLE CASCADE ANALYSIS FETCH FUNCTIONS ===
   
@@ -2908,6 +3131,8 @@ export function CascadeControlPanel({
                   onToggleVisibility={() => {}}
                   isEmbedded={true}
                   isSideBySide={isDocked && dockedSize === 'expanded' && otherPanelDocked && otherPanelSize === 'expanded'}
+                  precomputedScenarios={precomputedScenarios}
+                  onLoadPrecomputedCascade={onLoadPrecomputedCascade}
                 />
               </Box>
             )}
@@ -3113,6 +3338,10 @@ export function CascadeControlPanel({
                 value={selectedScenario}
                 label="Scenario"
                 onChange={(e) => setSelectedScenario(e.target.value)}
+                MenuProps={{
+                  sx: { zIndex: 9999 },
+                  PaperProps: { sx: { maxHeight: 300 } }
+                }}
                 sx={{ 
                   fontSize: '0.85rem',
                   '& .MuiOutlinedInput-notchedOutline': { borderColor: alpha('#FF6B6B', 0.3) } 
@@ -3143,6 +3372,10 @@ export function CascadeControlPanel({
                 value={selectedPatientZero}
                 label="Starting Point (Patient Zero)"
                 onChange={(e) => setSelectedPatientZero(e.target.value)}
+                MenuProps={{
+                  sx: { zIndex: 9999 },
+                  PaperProps: { sx: { maxHeight: 400 } }
+                }}
                 sx={{ 
                   fontSize: '0.85rem',
                   '& .MuiOutlinedInput-notchedOutline': { borderColor: alpha('#FF6B6B', 0.3) } 
@@ -3156,11 +3389,16 @@ export function CascadeControlPanel({
                     <Stack direction="row" alignItems="center" spacing={1} sx={{ width: '100%' }}>
                       <Warning sx={{ color: '#FF6B6B', fontSize: 16 }} />
                       <Box sx={{ flex: 1 }}>
-                        <Typography variant="caption" sx={{ display: 'block' }}>
-                          {node.node_name || node.node_id.slice(0, 15)}
-                        </Typography>
+                        <Stack direction="row" alignItems="center" spacing={0.5}>
+                          <Typography variant="caption" sx={{ display: 'block' }}>
+                            {node.node_name || node.node_id.slice(0, 15)}
+                          </Typography>
+                          {(node as Record<string, unknown>).risk_source === 'true_centrality' && (
+                            <Chip label="✓" size="small" sx={{ height: 14, fontSize: '0.5rem', bgcolor: alpha('#22C55E', 0.2), color: '#22C55E' }} />
+                          )}
+                        </Stack>
                         <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                          Centrality: {(node.criticality_score * 100).toFixed(0)}%
+                          Risk: {((node.criticality_score || 0) * 100).toFixed(0)}% • {node.node_type}
                         </Typography>
                       </Box>
                     </Stack>
@@ -3204,6 +3442,55 @@ export function CascadeControlPanel({
               <LinearProgress 
                 sx={{ mt: 1.5, bgcolor: alpha('#FF6B6B', 0.2), '& .MuiLinearProgress-bar': { bgcolor: '#FF6B6B' } }} 
               />
+            )}
+
+            {/* Quick Demo - Pre-computed Cascades (instant load alternative) */}
+            {precomputedScenarios.length > 0 && !cascadeResult && (
+              <Box sx={{ mt: 2, pt: 1.5, borderTop: `1px dashed ${alpha('#22C55E', 0.3)}` }}>
+                <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+                  <Chip 
+                    label="OR" 
+                    size="small" 
+                    sx={{ 
+                      fontSize: '0.6rem', 
+                      height: 18, 
+                      bgcolor: alpha('#22C55E', 0.1), 
+                      color: '#22C55E',
+                      fontWeight: 700,
+                    }} 
+                  />
+                  <Typography variant="caption" sx={{ color: '#22C55E', fontWeight: 500 }}>
+                    Load pre-computed demo (instant)
+                  </Typography>
+                </Stack>
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                  {precomputedScenarios.slice(0, 4).map((precomp) => (
+                    <Chip
+                      key={precomp.scenario_id}
+                      label={precomp.scenario_name.replace(/_/g, ' ').slice(0, 15)}
+                      size="small"
+                      onClick={() => onLoadPrecomputedCascade(precomp.scenario_id)}
+                      disabled={isSimulating}
+                      icon={<Speed sx={{ fontSize: 12 }} />}
+                      sx={{
+                        fontSize: '0.65rem',
+                        height: 24,
+                        bgcolor: alpha('#22C55E', 0.12),
+                        color: '#22C55E',
+                        border: `1px solid ${alpha('#22C55E', 0.3)}`,
+                        '&:hover': { 
+                          bgcolor: alpha('#22C55E', 0.25),
+                          transform: 'translateY(-1px)',
+                          boxShadow: `0 2px 8px ${alpha('#22C55E', 0.3)}`,
+                        },
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        '& .MuiChip-icon': { color: '#22C55E' },
+                      }}
+                    />
+                  ))}
+                </Stack>
+              </Box>
             )}
           </Box>
 

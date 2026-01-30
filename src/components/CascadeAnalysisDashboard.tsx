@@ -109,6 +109,15 @@ interface CascadeAnalysisDashboardProps {
   onToggleVisibility: () => void;
   isEmbedded?: boolean; // When true, renders without outer container (for embedding in CascadeControlPanel)
   isSideBySide?: boolean; // When true, uses compact responsive layout for side-by-side panels
+  // Quick Demo feature - precomputed cascade scenarios
+  precomputedScenarios?: Array<{
+    scenario_id: string;
+    scenario_name: string;
+    patient_zero_name: string;
+    total_affected: number;
+    simulation_timestamp: string;
+  }>;
+  onLoadPrecomputedCascade?: (scenarioId: string) => Promise<void>;
 }
 
 // Wave breakdown data extraction
@@ -1595,17 +1604,31 @@ export function CascadeAnalysisDashboard({
   onToggleVisibility,
   isEmbedded = false,
   isSideBySide = false,
+  precomputedScenarios = [],
+  onLoadPrecomputedCascade,
 }: CascadeAnalysisDashboardProps) {
   const [selectedScenario, setSelectedScenario] = useState<string>(scenarios[0]?.name || '');
   const [selectedPatientZero, setSelectedPatientZero] = useState<string>('');
   const waveBreakdown = useWaveBreakdown(cascadeResult);
   
   // Custom scenario parameters state
-  const [customMode, setCustomMode] = useState(false);
+  const [customMode] = useState(false);  // Keep for backward compatibility in useEffect
   const [customTemperature, setCustomTemperature] = useState(25);
   const [customLoadMultiplier, setCustomLoadMultiplier] = useState(1.0);
   const [customFailureThreshold, setCustomFailureThreshold] = useState(0.65);
   const [showAdvancedControls, setShowAdvancedControls] = useState(false);
+  
+  // Update selectedScenario when scenarios are loaded from API
+  // This handles the case where API scenario names differ from initial defaults
+  useEffect(() => {
+    if (scenarios.length > 0) {
+      // Check if current selection exists in scenarios list
+      const scenarioExists = scenarios.some(s => s.name === selectedScenario);
+      if (!scenarioExists || !selectedScenario) {
+        setSelectedScenario(scenarios[0].name);
+      }
+    }
+  }, [scenarios]); // Only depend on scenarios to avoid loops
   
   // Sync custom parameters when scenario changes
   useEffect(() => {
@@ -1627,20 +1650,13 @@ export function CascadeAnalysisDashboard({
   }, [highRiskNodes.length, onLoadHighRisk]);
 
   const handleSimulate = async () => {
-    // Build scenario with custom parameters if in custom mode
+    // Build scenario with current parameters (from sliders)
     const baseScenario = scenarios.find(s => s.name === selectedScenario);
-    if (!baseScenario && !customMode) return;
+    if (!baseScenario) return;
     
-    const scenarioToRun: CascadeScenario = customMode ? {
-      name: 'Custom Scenario',
-      description: `Custom parameters: ${customTemperature}°C, ${customLoadMultiplier}x load`,
-      parameters: {
-        temperature_c: customTemperature,
-        load_multiplier: customLoadMultiplier,
-        failure_threshold: customFailureThreshold,
-      }
-    } : {
-      ...baseScenario!,
+    // Always use selected scenario but with current slider values
+    const scenarioToRun: CascadeScenario = {
+      ...baseScenario,
       parameters: {
         temperature_c: customTemperature,
         load_multiplier: customLoadMultiplier,
@@ -1670,12 +1686,12 @@ export function CascadeAnalysisDashboard({
 
   return (
     <Box sx={{ 
-      height: '100%', 
+      height: isEmbedded ? 'auto' : '100%', 
       display: 'flex', 
       flexDirection: 'column', 
       gap: isEmbedded ? 2 : 3, 
       p: isEmbedded ? 2 : 3, 
-      overflow: 'auto',
+      overflow: isEmbedded ? 'visible' : 'auto',
       bgcolor: isEmbedded ? 'transparent' : undefined,
     }}>
       {/* Header - simpler when embedded */}
@@ -1708,44 +1724,49 @@ export function CascadeAnalysisDashboard({
         </Box>
       )}
 
-      {/* Simulation Controls */}
-      <Card sx={{ bgcolor: 'rgba(41, 181, 232, 0.05)', border: '1px solid rgba(41, 181, 232, 0.2)' }}>
+      {/* Section Header for Embedded Mode */}
+      {isEmbedded && (
+        <Box sx={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: 1,
+          pb: 1,
+          borderBottom: '1px solid rgba(41, 181, 232, 0.3)',
+          mb: 1
+        }}>
+          <Science sx={{ color: '#29B5E8', fontSize: 20 }} />
+          <Typography variant="subtitle1" sx={{ color: '#29B5E8', fontWeight: 600 }}>
+            Run Cascade Simulation
+          </Typography>
+        </Box>
+      )}
+
+      {/* Simulation Controls - ALWAYS VISIBLE */}
+      <Card sx={{ 
+        bgcolor: 'rgba(41, 181, 232, 0.05)', 
+        border: '2px solid rgba(41, 181, 232, 0.4)',
+        boxShadow: isEmbedded ? '0 0 20px rgba(41, 181, 232, 0.2)' : undefined,
+      }}>
         <CardContent>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
             <Typography variant="h6" sx={{ display: 'flex', alignItems: 'center', gap: 1, color: '#29B5E8' }}>
               <Science /> Scenario Builder
             </Typography>
-            <FormControlLabel
-              control={
-                <Switch 
-                  checked={customMode} 
-                  onChange={(e) => setCustomMode(e.target.checked)}
-                  sx={{
-                    '& .MuiSwitch-switchBase.Mui-checked': { color: '#8B5CF6' },
-                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { backgroundColor: '#8B5CF6' },
-                  }}
-                />
-              }
-              label={
-                <Stack direction="row" alignItems="center" spacing={1}>
-                  <Tune sx={{ fontSize: 18, color: customMode ? '#8B5CF6' : 'text.secondary' }} />
-                  <Typography variant="body2" sx={{ color: customMode ? '#8B5CF6' : 'text.secondary' }}>
-                    Custom Parameters
-                  </Typography>
-                </Stack>
-              }
-            />
           </Box>
           
           <Grid container spacing={3}>
             {/* Scenario Selection */}
             <Grid item xs={12} md={4}>
-              <FormControl fullWidth disabled={customMode}>
+              <FormControl fullWidth>
                 <InputLabel>Scenario Preset</InputLabel>
                 <Select
                   value={selectedScenario}
                   label="Scenario Preset"
                   onChange={(e) => setSelectedScenario(e.target.value)}
+                  MenuProps={{
+                    sx: { zIndex: 9999 },
+                    PaperProps: { sx: { maxHeight: 300 } }
+                  }}
                 >
                   {scenarios.map((scenario) => (
                     <MenuItem key={scenario.name} value={scenario.name}>
@@ -1767,6 +1788,10 @@ export function CascadeAnalysisDashboard({
                   value={selectedPatientZero}
                   label="Patient Zero (Optional)"
                   onChange={(e) => setSelectedPatientZero(e.target.value)}
+                  MenuProps={{
+                    sx: { zIndex: 9999 },
+                    PaperProps: { sx: { maxHeight: 400 } }
+                  }}
                 >
                   <MenuItem value="">
                     <em>Auto-select (highest risk node)</em>
@@ -1797,7 +1822,7 @@ export function CascadeAnalysisDashboard({
                   variant="contained"
                   fullWidth
                   onClick={handleSimulate}
-                  disabled={isSimulating || (!selectedScenario && !customMode)}
+                  disabled={isSimulating || !selectedScenario}
                   startIcon={isSimulating ? <Speed /> : <PlayArrow />}
                   sx={{
                     bgcolor: '#FF6B6B',
@@ -1823,19 +1848,71 @@ export function CascadeAnalysisDashboard({
             </Grid>
           </Grid>
 
+          {/* Quick Demo - Pre-computed Cascades (instant load alternative) */}
+          {precomputedScenarios.length > 0 && !cascadeResult && onLoadPrecomputedCascade && (
+            <Box sx={{ mt: 3, pt: 2, borderTop: `1px dashed ${alpha('#22C55E', 0.3)}` }}>
+              <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
+                <Chip 
+                  label="OR" 
+                  size="small" 
+                  sx={{ 
+                    fontSize: '0.7rem', 
+                    height: 22, 
+                    bgcolor: alpha('#22C55E', 0.1), 
+                    color: '#22C55E',
+                    fontWeight: 700,
+                  }} 
+                />
+                <Typography variant="body2" sx={{ color: '#22C55E', fontWeight: 500 }}>
+                  Load pre-computed demo (instant)
+                </Typography>
+              </Stack>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {precomputedScenarios.slice(0, 4).map((precomp) => (
+                  <Chip
+                    key={precomp.scenario_id}
+                    label={precomp.scenario_name.replace(/_/g, ' ')}
+                    size="medium"
+                    onClick={() => onLoadPrecomputedCascade(precomp.scenario_id)}
+                    disabled={isSimulating}
+                    icon={<Speed sx={{ fontSize: 16 }} />}
+                    sx={{
+                      fontSize: '0.85rem',
+                      height: 32,
+                      bgcolor: alpha('#22C55E', 0.12),
+                      color: '#22C55E',
+                      border: `1px solid ${alpha('#22C55E', 0.3)}`,
+                      '&:hover': { 
+                        bgcolor: alpha('#22C55E', 0.25),
+                        transform: 'translateY(-2px)',
+                        boxShadow: `0 4px 12px ${alpha('#22C55E', 0.3)}`,
+                      },
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                      '& .MuiChip-icon': { color: '#22C55E' },
+                    }}
+                  />
+                ))}
+              </Stack>
+            </Box>
+          )}
+
           {/* Interactive Parameter Sliders */}
           <Box sx={{ mt: 3, pt: 2, borderTop: '1px solid', borderColor: alpha('#fff', 0.1) }}>
             <Box 
               sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, cursor: 'pointer' }}
               onClick={() => setShowAdvancedControls(!showAdvancedControls)}
             >
-              <Typography variant="subtitle2" sx={{ color: customMode ? '#8B5CF6' : '#29B5E8' }}>
-                {customMode ? '🎛️ Custom Scenario Parameters' : '⚙️ Adjust Scenario Parameters'}
-              </Typography>
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Tune sx={{ fontSize: 18, color: '#29B5E8' }} />
+                <Typography variant="subtitle2" sx={{ color: '#29B5E8' }}>
+                  Adjust Scenario Parameters
+                </Typography>
+              </Stack>
               {showAdvancedControls ? <ExpandLess /> : <ExpandMore />}
             </Box>
             
-            <Collapse in={showAdvancedControls || customMode}>
+            <Collapse in={showAdvancedControls}>
               <Grid container spacing={4} sx={{ mt: 1 }}>
                 {/* Temperature Slider */}
                 <Grid item xs={12} md={4}>
@@ -1990,17 +2067,15 @@ export function CascadeAnalysisDashboard({
 
           {/* Current Configuration Summary */}
           <Alert 
-            severity={customMode ? 'warning' : 'info'} 
+            severity="info" 
             sx={{ 
               mt: 2, 
-              bgcolor: alpha(customMode ? '#8B5CF6' : '#3B82F6', 0.1), 
-              '& .MuiAlert-icon': { color: customMode ? '#8B5CF6' : '#3B82F6' } 
+              bgcolor: alpha('#3B82F6', 0.1), 
+              '& .MuiAlert-icon': { color: '#3B82F6' } 
             }}
           >
             <Typography variant="body2">
-              {customMode 
-                ? 'Custom scenario with user-defined parameters'
-                : selectedScenarioData?.description || 'Select a scenario to begin'}
+              {selectedScenarioData?.description || 'Select a scenario to begin'}
             </Typography>
             <Stack direction="row" spacing={2} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
               <Chip 
@@ -2021,13 +2096,6 @@ export function CascadeAnalysisDashboard({
                 size="small" 
                 sx={{ bgcolor: alpha(customFailureThreshold < 0.5 ? '#EF4444' : '#22C55E', 0.2) }}
               />
-              {customMode && (
-                <Chip 
-                  label="CUSTOM MODE" 
-                  size="small" 
-                  sx={{ bgcolor: alpha('#8B5CF6', 0.3), color: '#8B5CF6', fontWeight: 700 }}
-                />
-              )}
             </Stack>
           </Alert>
 

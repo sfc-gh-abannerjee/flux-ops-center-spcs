@@ -7510,6 +7510,10 @@ function App() {
                   onClear={cascadeControls.clearCascade}
                   onLoadHighRisk={cascadeControls.loadHighRiskNodes}
                   onLoadPredictions={cascadeControls.loadRiskPredictions}
+                  onLoadScenarios={cascadeControls.loadScenarios}
+                  onLoadPrecomputedScenarios={cascadeControls.loadPrecomputedScenarios}
+                  onLoadPrecomputedCascade={cascadeControls.loadPrecomputedCascade}
+                  precomputedScenarios={cascadeControls.precomputedScenarios}
                   visible={layersVisible.cascadeAnalysis}
                   onToggleVisibility={() => setLayersVisible(prev => ({ ...prev, cascadeAnalysis: !prev.cascadeAnalysis }))}
                   focusedWave={cascadeControls.state.focusedWave}
@@ -11605,6 +11609,8 @@ function App() {
                     onLoadPredictions={cascadeControls.loadRiskPredictions}
                     visible={true}
                     onToggleVisibility={() => {}}
+                    precomputedScenarios={cascadeControls.precomputedScenarios}
+                    onLoadPrecomputedCascade={cascadeControls.loadPrecomputedCascade}
                   />
                 </Box>
               )}
