@@ -1,16 +1,16 @@
 # Flux Operations Center
 
-**Grid Operations Demo Platform** - A comprehensive utility grid management solution built on Snowflake's data platform.
+A utility grid operations demo platform built on Snowflake.
 
 ---
 
 ## Overview
 
-Flux Operations Center is a real-time grid operations platform that combines:
+Flux Operations Center is a grid operations demo that combines:
 - **Interactive visualization** of 66K+ grid assets (substations, transformers, feeders)
 - **Cascade failure analysis** with Graph ML predictions
 - **AI-powered insights** via Snowflake Cortex Agents
-- **Dual-backend architecture** for sub-20ms transactional queries and complex analytics
+- **Dual-backend architecture** for fast transactional queries and analytics
 
 ---
 

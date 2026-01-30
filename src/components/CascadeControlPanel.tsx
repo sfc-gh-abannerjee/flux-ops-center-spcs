@@ -2778,7 +2778,7 @@ export function CascadeControlPanel({
                 title={
                   <Box sx={{ p: 0.5 }}>
                     <Typography variant="caption" sx={{ fontWeight: 700, display: 'block' }}>
-                      Real-time Grid Risk
+                      Current Grid Risk
                     </Typography>
                     <Typography variant="caption" sx={{ display: 'block', fontSize: '0.65rem' }}>
                       Score: {realtimeRisk.realtime_risk.score}/100
