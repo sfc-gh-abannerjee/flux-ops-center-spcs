@@ -1,8 +1,8 @@
-# Snowflake to Postgres Sync Reliability
+# Snowflake to Postgres Sync Architecture
 
 ## Overview
 
-This document describes the architecture and reliability mechanisms for syncing data from Snowflake (source of truth) to Snowflake Managed Postgres (for PostGIS spatial queries).
+This document describes the architecture for syncing data from Snowflake (source of truth) to Snowflake Managed Postgres for PostGIS spatial queries.
 
 ---
 
@@ -21,7 +21,7 @@ flowchart TB
     
     subgraph PG["Snowflake Managed Postgres"]
         CACHE["topology_connections_cache<br/>(PostGIS-enabled)"]
-        SETTINGS["Safety Settings:<br/>• idle_timeout: 60s<br/>• statement_timeout: 300s"]
+        SETTINGS["Connection Settings:<br/>• idle_timeout: 60s<br/>• statement_timeout: 300s"]
     end
     
     SYNC -->|"psycopg2<br/>AUTOCOMMIT"| CACHE
@@ -29,49 +29,27 @@ flowchart TB
 
 ---
 
-## Problem: Zombie Connections
+## Sync Strategy
 
-### Root Cause
+The sync uses a **cache-aside pattern** with two reliability mechanisms:
 
-Snowflake's Python runtime for stored procedures doesn't always properly release psycopg2 connections. This can leave connections in an "idle in transaction" state, which:
+### Autocommit Mode
 
-1. Holds locks on tables
-2. Prevents subsequent operations from seeing committed data
-3. Can cause TRUNCATE to commit but INSERT to remain uncommitted
-
-### Symptoms
-
-- `topology_connections_cache` shows 0 rows despite procedure reporting success
-- PostgreSQL `pg_stat_activity` shows connections with `state = 'idle in transaction'`
-- Topology visualization in the UI fails to load
-
----
-
-## Solution: Defense in Depth
-
-We implemented two layers of protection:
-
-### Layer 1: Autocommit Mode in Procedure
-
-The `SYNC_TOPOLOGY_TO_POSTGRES()` procedure now uses `conn.autocommit = True`:
+The `SYNC_TOPOLOGY_TO_POSTGRES()` procedure uses autocommit for predictable behavior:
 
 ```python
 conn = psycopg2.connect(...)
-conn.autocommit = True  # CRITICAL: Prevents transaction state issues
+conn.autocommit = True  # Each statement commits immediately
 ```
 
 **Benefits**:
-- Each statement commits immediately
-- No transaction state can get stuck
-- Uses atomic swap pattern (temp table → truncate → insert) for data consistency
+- Predictable commit behavior
+- Atomic swap pattern (temp table → truncate → insert) for data consistency
+- Suitable for cache tables that can be fully refreshed
 
-**Trade-off**:
-- Cannot rollback partial failures
-- Acceptable for a cache table that can be re-synced
+### Connection Timeouts
 
-### Layer 2: PostgreSQL Timeout Safety Net
-
-Role-level settings on the `application` user:
+Role-level settings ensure connections are cleaned up:
 
 ```sql
 ALTER ROLE application SET idle_in_transaction_session_timeout = '60s';
@@ -79,9 +57,9 @@ ALTER ROLE application SET statement_timeout = '300s';
 ```
 
 **Benefits**:
-- Auto-terminates any connection idle in transaction for >60 seconds
-- Prevents runaway queries with 5-minute statement timeout
-- Applies to all new connections from the `application` user
+- Automatic cleanup of idle connections
+- Prevents long-running queries from blocking resources
+- Applies consistently to all application connections
 
 ---
 
@@ -112,12 +90,12 @@ ALTER ROLE application SET statement_timeout = '300s';
 
 ---
 
-## Verification & Troubleshooting
+## Operations
 
-### Check Current Status
+### Verify Sync Status
 
 ```sql
--- Verify Postgres settings and check for zombie connections
+-- Check Postgres settings and row counts
 CALL <database>.APPLICATIONS.CONFIGURE_POSTGRES_TIMEOUT();
 
 -- Expected output:
@@ -126,7 +104,6 @@ CALL <database>.APPLICATIONS.CONFIGURE_POSTGRES_TIMEOUT();
 --   "results": [
 --     "idle_in_transaction_session_timeout = 60s",
 --     "statement_timeout = 300s",
---     "Current idle in transaction connections: 0",
 --     "topology_connections_cache row count: 153592"
 --   ]
 -- }
@@ -146,10 +123,9 @@ CALL <database>.APPLICATIONS.SYNC_TOPOLOGY_TO_POSTGRES();
 -- }
 ```
 
-### Check Task Status
+### Check Task History
 
 ```sql
--- View task run history
 SELECT *
 FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(
     TASK_NAME => 'TASK_SYNC_TOPOLOGY_DAILY',
@@ -160,24 +136,18 @@ ORDER BY SCHEDULED_TIME DESC;
 
 ---
 
-## Why Not OpenFlow CDC?
+## Design Notes
 
-We investigated using OpenFlow for CDC but found it's not applicable:
+### Why Snowflake → Postgres?
 
-- **OpenFlow CDC direction**: Postgres → Snowflake (captures changes FROM Postgres)
-- **Our use case**: Snowflake → Postgres (sync TO Postgres for PostGIS)
+PostGIS provides specialized spatial operations (ST_DWithin, spatial indexes) that complement Snowflake's analytics capabilities. This architecture uses each database for its strengths:
 
-OpenFlow would be useful if we reversed the data flow (made Postgres the source of truth), but that would require significant architectural changes.
+- **Snowflake**: Source of truth, analytics, ML/AI
+- **Postgres**: Fast spatial queries for map visualization
 
----
+### OpenFlow Consideration
 
-## Future Considerations
-
-1. **Snowflake Native Spatial**: If Snowflake adds native PostGIS-equivalent support, we could eliminate the Postgres dependency entirely.
-
-2. **SPCS Service**: For more complex sync patterns, consider moving the sync logic to a Snowpark Container Service with proper connection pooling.
-
-3. **OpenFlow Reverse**: Monitor if Snowflake adds Snowflake→Postgres CDC support in OpenFlow.
+OpenFlow CDC currently supports Postgres → Snowflake direction. For Snowflake → Postgres sync, we use scheduled stored procedures with the patterns described above.
 
 ---
 
@@ -185,4 +155,4 @@ OpenFlow would be useful if we reversed the data flow (made Postgres the source 
 
 - [LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md) - Local dev setup
 - [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) - Cascade analysis tools
-- [Snowflake External Network Access Best Practices](https://docs.snowflake.com/en/developer-guide/external-network-access/external-network-access-best-practices)
+- [Snowflake External Network Access](https://docs.snowflake.com/en/developer-guide/external-network-access/external-network-access-best-practices)
