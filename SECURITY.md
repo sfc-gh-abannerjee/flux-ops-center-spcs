@@ -2,6 +2,8 @@
 
 Role-based access control (RBAC) and security configuration for Flux Operations Center.
 
+> **Snowflake Documentation**: [Access Control Framework](https://docs.snowflake.com/en/user-guide/security-access-control) | [RBAC Overview](https://docs.snowflake.com/en/user-guide/security-access-control-overview)
+
 ---
 
 ## Role Hierarchy
@@ -35,6 +37,8 @@ flowchart TB
 
 ## Role Definitions
 
+> **Docs**: [CREATE ROLE](https://docs.snowflake.com/en/sql-reference/sql/create-role) | [Role Hierarchy](https://docs.snowflake.com/en/user-guide/security-access-control-overview#role-hierarchy-and-privilege-inheritance)
+
 | Role | Purpose | Typical Users |
 |------|---------|---------------|
 | **OPS_ADMIN** | Full ownership of all objects | Platform administrators |
@@ -46,6 +50,8 @@ flowchart TB
 ---
 
 ## Permission Matrix
+
+> **Docs**: [GRANT Privileges](https://docs.snowflake.com/en/sql-reference/sql/grant-privilege) | [Access Control Privileges](https://docs.snowflake.com/en/user-guide/security-access-control-privileges)
 
 | Role | Database | Warehouse | Cortex Agent | ML Models | PostgreSQL |
 |------|----------|-----------|--------------|-----------|------------|
@@ -85,6 +91,8 @@ flowchart LR
 ---
 
 ## Credential Management
+
+> **Docs**: [Secrets](https://docs.snowflake.com/en/developer-guide/external-network-access/secret-overview) | [SPCS Secrets](https://docs.snowflake.com/en/developer-guide/snowpark-container-services/secrets)
 
 ### Environment Variables
 
@@ -203,6 +211,8 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly;
 
 ## Best Practices
 
+> **Docs**: [Security Best Practices](https://docs.snowflake.com/en/user-guide/security-best-practices) | [Network Policies](https://docs.snowflake.com/en/user-guide/network-policies)
+
 ### Principle of Least Privilege
 
 - Grant minimum permissions needed for each role
@@ -217,6 +227,8 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly;
 - Never commit `.env` files
 
 ### Audit Logging
+
+> **Docs**: [ACCESS_HISTORY](https://docs.snowflake.com/en/sql-reference/account-usage/access_history) | [Query History](https://docs.snowflake.com/en/sql-reference/account-usage/query_history)
 
 ```sql
 -- Query access history for Flux Operations Center
