@@ -6,8 +6,11 @@
 A utility grid operations demo platform built on Snowflake.
 
 ---
-<img width="1911" height="1084" alt="midtown_substation_1" src="https://github.com/user-attachments/assets/0125a740-b678-4271-bbf2-aac7694b5b7e" />
-<img width="1902" height="1074" alt="crockett_substation_cascade_SI_2" src="https://github.com/user-attachments/assets/328941a4-c25b-4793-a583-5202ff7ca602" />
+
+<p align="center">
+  <img width="49%" alt="midtown_substation_1" src="https://github.com/user-attachments/assets/0125a740-b678-4271-bbf2-aac7694b5b7e" />
+  <img width="49%" alt="crockett_substation_cascade_SI_2" src="https://github.com/user-attachments/assets/328941a4-c25b-4793-a583-5202ff7ca602" />
+</p>
 
 ## Overview
 
