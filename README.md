@@ -23,6 +23,7 @@ Flux Operations Center is a grid operations demo that combines:
 |----------|-------------|
 | **[docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md)** | Complete local dev setup, authentication, troubleshooting |
 | **[docs/DATA_LOADING_GUIDE.md](./docs/DATA_LOADING_GUIDE.md)** | Data loading instructions |
+| **[docs/API_REFERENCE.md](./docs/API_REFERENCE.md)** | REST API overview (62 endpoints) |
 | [docs/INDEX.md](./docs/INDEX.md) | Documentation index |
 | [docs/POSTGRES_SYNC_RELIABILITY.md](./docs/POSTGRES_SYNC_RELIABILITY.md) | Snowflake Postgres sync architecture |
 | [docs/CASCADE_ANALYSIS.md](./docs/CASCADE_ANALYSIS.md) | Cascade analysis technical details |

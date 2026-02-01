@@ -10,6 +10,7 @@
 |----------|-------------|
 | **[LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md)** | **START HERE** - Local dev setup, PAT auth, troubleshooting |
 | **[DATA_LOADING_GUIDE.md](./DATA_LOADING_GUIDE.md)** | **Load AMI data** - S3 stage access, bulk loading |
+| **[API_REFERENCE.md](./API_REFERENCE.md)** | REST API overview (62 endpoints across 13 categories) |
 | [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) | Cascade failure analysis tools, API, ML model |
 | [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) | Snowflake→Postgres sync architecture |
 | [VEGETATION_RISK_ARCHITECTURE.md](./VEGETATION_RISK_ARCHITECTURE.md) | Vegetation risk analysis |
