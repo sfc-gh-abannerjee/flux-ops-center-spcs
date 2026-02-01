@@ -1,5 +1,9 @@
 # Snowflake to Postgres Sync Architecture
 
+> **Document Version**: January 2025
+>
+> This document reflects design decisions made based on Snowflake Postgres (public preview) capabilities available at the time of writing. As Snowflake Postgres and related features (OpenFlow, CDC, etc.) evolve, the patterns and recommendations described here may change. Always consult the latest [Snowflake documentation](https://docs.snowflake.com/) for current best practices.
+
 ## Overview
 
 This document describes the architecture for syncing data from Snowflake (source of truth) to Snowflake Managed Postgres for PostGIS spatial queries.
