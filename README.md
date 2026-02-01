@@ -4,7 +4,6 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 A utility grid operations demo platform built on Snowflake.
-<img width="1218" height="1305" alt="flux_logo_transparent" src="https://github.com/user-attachments/assets/05de22b1-0d04-42c7-bd45-d6469e439b6d" />
 
 ---
 <img width="1911" height="1084" alt="midtown_substation_1" src="https://github.com/user-attachments/assets/0125a740-b678-4271-bbf2-aac7694b5b7e" />
