@@ -1,5 +1,9 @@
 # Vegetation Risk Analysis - Architecture & Production Path
 
+> **Document Version**: January 2025
+>
+> This architecture uses [Snowflake Postgres](https://docs.snowflake.com/en/user-guide/postgres/overview) (public preview) with PostGIS for spatial serving. As Snowflake Postgres evolves, the serving layer patterns may change.
+
 ## Overview
 
 The Flux Operations Center includes a 3D vegetation risk visualization system with real tree heights, risk scores, and proximity analysis. This document describes the architecture, data sources, and production deployment path.

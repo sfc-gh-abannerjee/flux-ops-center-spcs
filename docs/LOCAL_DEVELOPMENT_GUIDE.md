@@ -2,6 +2,10 @@
 
 **The complete guide for local development setup and troubleshooting.**
 
+> **Document Version**: January 2025
+>
+> This guide references [Snowflake Postgres](https://docs.snowflake.com/en/user-guide/postgres/overview) (public preview) for PostGIS spatial queries. As Snowflake Postgres evolves, configuration steps and best practices may change. Consult the [latest documentation](https://docs.snowflake.com/en/user-guide/postgres/overview) for current guidance.
+
 ---
 
 ## Table of Contents
@@ -143,7 +147,8 @@ Create or update `.env` in the project root (copy from `.env.template`):
 # Snowflake Configuration
 VITE_SNOWFLAKE_ACCOUNT_URL=https://<your_account>.<region>.snowflakecomputing.com
 
-# Postgres Configuration (for map data caching)
+# Snowflake Postgres Configuration (for map data caching)
+# See: https://docs.snowflake.com/en/user-guide/postgres/connecting
 VITE_POSTGRES_HOST=<your_postgres_instance>.postgres.snowflake.app
 VITE_POSTGRES_PORT=5432
 VITE_POSTGRES_DATABASE=postgres
@@ -326,5 +331,7 @@ kill -9 <PID>
 
 - [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) - Snowflake→Postgres sync troubleshooting
 - [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) - Cascade analysis technical details
+- [Snowflake Postgres Overview](https://docs.snowflake.com/en/user-guide/postgres/overview) - Managed PostgreSQL service
+- [Snowflake Postgres Connecting](https://docs.snowflake.com/en/user-guide/postgres/connecting) - Connection setup guide
 - [Snowflake PAT Docs](https://docs.snowflake.com/en/user-guide/programmatic-access-tokens)
 - [Cortex Agent REST API](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-rest-api)

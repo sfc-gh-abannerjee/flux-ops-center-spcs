@@ -117,10 +117,12 @@ flowchart TB
 |-------|------------|
 | Frontend | React 18, TypeScript, DeckGL 9.2, MapLibre GL, Material-UI 5 |
 | Backend | FastAPI, Uvicorn (4 workers), nginx reverse proxy |
-| Transactional DB | Snowflake Postgres (PostGIS) |
+| Transactional DB | [Snowflake Postgres](https://docs.snowflake.com/en/user-guide/postgres/overview) (PostGIS) |
 | Analytics DB | Snowflake Warehouse |
 | ML/AI | PyTorch Geometric (GNN), Snowflake Cortex |
 | Deployment | Snowpark Container Services (SPCS) |
+
+> **Note**: Snowflake Postgres is in public preview (as of January 2025). Features and best practices may evolve.
 
 ---
 
