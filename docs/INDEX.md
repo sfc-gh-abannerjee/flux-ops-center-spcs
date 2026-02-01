@@ -43,18 +43,21 @@
 ```
 flux_ops_center_spcs/
 ├── README.md                    # Project overview
+├── SECURITY.md                  # Security model, RBAC, credentials
 ├── backend/
 │   ├── server_fastapi.py        # FastAPI server
-│   └── scripts/                 # ML scripts
-├── src/                         # React frontend
-├── scripts/
-│   └── seed_data/               # Data loading scripts
-├── docs/                        # Documentation
-│   ├── INDEX.md                 # This file
-│   ├── LOCAL_DEVELOPMENT_GUIDE.md
-│   ├── DATA_LOADING_GUIDE.md
-│   ├── CASCADE_ANALYSIS.md
-│   ├── POSTGRES_SYNC_RELIABILITY.md
-│   └── VEGETATION_RISK_ARCHITECTURE.md
-└── archive/                     # Historical docs
+│   ├── gnn_training/            # GPU-based GNN training (SPCS)
+│   ├── ml/                      # ML model deployment
+│   └── scripts/                 # Utility scripts
+├── src/                         # React frontend (TypeScript)
+│   ├── App.tsx                  # Main application
+│   ├── ChatDrawer.tsx           # Cortex Agent chat
+│   └── components/              # UI components
+└── docs/                        # Documentation
+    ├── INDEX.md                 # This file
+    ├── LOCAL_DEVELOPMENT_GUIDE.md
+    ├── DATA_LOADING_GUIDE.md
+    ├── CASCADE_ANALYSIS.md
+    ├── POSTGRES_SYNC_RELIABILITY.md
+    └── VEGETATION_RISK_ARCHITECTURE.md
 ```

@@ -109,10 +109,11 @@ flowchart TB
 
 | Layer | Technology |
 |-------|------------|
-| Frontend | React 18, TypeScript, DeckGL 8.9, MapLibre GL, Material-UI 5 |
-| Backend | FastAPI, Gunicorn (4 workers) |
+| Frontend | React 18, TypeScript, DeckGL 9.2, MapLibre GL, Material-UI 5 |
+| Backend | FastAPI, Uvicorn (4 workers), nginx reverse proxy |
 | Transactional DB | Snowflake Postgres (PostGIS) |
 | Analytics DB | Snowflake Warehouse |
+| ML/AI | PyTorch Geometric (GNN), Snowflake Cortex |
 | Deployment | Snowpark Container Services (SPCS) |
 
 ---
@@ -159,18 +160,36 @@ Copy `.env.template` to `.env` and configure:
 ```
 flux_ops_center_spcs/
 ├── README.md                    # This file
+├── SECURITY.md                  # Security model and RBAC documentation
 ├── backend/
 │   ├── server_fastapi.py        # FastAPI server (port 3001)
 │   ├── requirements.txt         # Python dependencies
-│   ├── scripts/                 # ML scripts (centrality, GNN)
-│   └── sql/                     # Database setup scripts
-├── src/                         # React frontend
+│   ├── gnn_training/            # GPU-based GNN model training (SPCS)
+│   │   ├── Dockerfile.gpu       # GPU container for training
+│   │   ├── run_training.py      # Training runner with status API
+│   │   ├── train_gnn_model.py   # GNN model definition
+│   │   └── service_spec.yaml    # SPCS GPU service spec
+│   ├── ml/                      # ML model deployment
+│   │   ├── deploy_inference_service.py
+│   │   └── 01_ml_demo_setup.sql
+│   └── scripts/                 # Utility scripts
+│       ├── cascade_simulator.py
+│       ├── compute_graph_centrality.py
+│       └── sync_snowflake_to_postgres.py
+├── src/                         # React frontend (TypeScript)
+│   ├── App.tsx                  # Main application (~11K lines)
+│   ├── ChatDrawer.tsx           # Cortex Agent chat interface
+│   ├── components/              # React components
+│   ├── hooks/                   # Custom React hooks
+│   └── types/                   # TypeScript type definitions
 ├── docs/                        # Documentation
-│   ├── INDEX.md                 # Doc index
+│   ├── INDEX.md                 # Documentation index
 │   ├── LOCAL_DEVELOPMENT_GUIDE.md
 │   ├── DATA_LOADING_GUIDE.md
-│   └── POSTGRES_SYNC_RELIABILITY.md
-├── Dockerfile.spcs              # SPCS container
+│   ├── CASCADE_ANALYSIS.md
+│   ├── POSTGRES_SYNC_RELIABILITY.md
+│   └── VEGETATION_RISK_ARCHITECTURE.md
+├── Dockerfile.spcs              # SPCS production container
 ├── service_spec_prod.yaml       # SPCS service specification (template)
 └── .env.template                # Environment variables template
 ```
