@@ -5,6 +5,18 @@
 
 A utility grid operations demo platform built on Snowflake.
 
+## Flux Utility Platform
+
+Flux Operations Center is part of the **Flux Utility Platform** - a suite of Snowflake solutions for utility industry demos:
+
+| Repository | Purpose | Start Here If... |
+|------------|---------|------------------|
+| [Flux Utility Solutions](https://github.com/sfc-gh-abannerjee/flux-utility-solutions) | Core platform with Cortex AI, semantic models, 5 deployment paths | You're building a complete utility demo |
+| [Flux Data Forge](https://github.com/sfc-gh-abannerjee/flux-data-forge) | Synthetic AMI data generation with streaming | You need realistic test data at scale |
+| **Flux Ops Center** (this repo) | Real-time grid visualization, GNN risk prediction | You need interactive grid maps |
+
+**Recommended flow**: Deploy Flux Utility Solutions first for core data model, use Data Forge to populate with AMI data, then add Ops Center for visualization.
+
 ---
 
 <p align="center">
@@ -214,20 +226,6 @@ flux_ops_center_spcs/
 | Cortex Agent 401/403 | Verify `SNOWFLAKE_PAT` is set |
 
 See [docs/LOCAL_DEVELOPMENT_GUIDE.md](./docs/LOCAL_DEVELOPMENT_GUIDE.md) for detailed troubleshooting.
-
----
-
-## Flux Utility Platform
-
-Flux Operations Center is part of the **Flux Utility Platform** - a suite of Snowflake solutions for utility industry demos:
-
-| Repository | Purpose | Start Here If... |
-|------------|---------|------------------|
-| [Flux Utility Solutions](https://github.com/sfc-gh-abannerjee/flux-utility-solutions) | Core platform with Cortex AI, semantic models, 5 deployment paths | You're building a complete utility demo |
-| [Flux Data Forge](https://github.com/sfc-gh-abannerjee/flux-data-forge) | Synthetic AMI data generation with streaming | You need realistic test data at scale |
-| **Flux Ops Center** (this repo) | Real-time grid visualization, GNN risk prediction | You need interactive grid maps |
-
-**Recommended flow**: Deploy Flux Utility Solutions first for core data model, use Data Forge to populate with AMI data, then add Ops Center for visualization.
 
 ---
 
