@@ -47,6 +47,44 @@ Flux Operations Center is a grid operations demo that combines:
 
 ---
 
+## Deployment Options
+
+Flux Operations Center supports multiple deployment paths to match your workflow:
+
+| Path | Best For | Getting Started |
+|------|----------|-----------------|
+| **CLI Quickstart** | Interactive guided deployment | `./scripts/quickstart.sh` |
+| **Terraform** | Infrastructure-as-Code, CI/CD | `cd terraform && terraform apply` |
+| **SQL Scripts** | Manual step-by-step deployment | Run `git_deploy/deploy_from_git.sql` |
+| **Git Integration** | Deploy from Snowflake UI | See `git_deploy/README.md` |
+
+### Recommended: CLI Quickstart
+
+```bash
+# Interactive deployment with prompts for all configuration
+./scripts/quickstart.sh
+```
+
+This script will:
+1. Validate your environment (Docker, credentials)
+2. Build the Docker image
+3. Push to Snowflake registry
+4. Generate deployment SQL
+
+### Alternative: Terraform
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your values
+terraform init
+terraform apply
+```
+
+See [terraform/README.md](terraform/README.md) for full documentation.
+
+---
+
 ## Quick Start (Local Development)
 
 ### Prerequisites

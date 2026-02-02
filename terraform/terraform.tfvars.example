@@ -1,0 +1,39 @@
+# =============================================================================
+# Flux Operations Center - Example Terraform Variables
+# =============================================================================
+# Copy this file to terraform.tfvars and customize for your environment:
+#   cp terraform.tfvars.example terraform.tfvars
+# =============================================================================
+
+# Database & Schema
+database_name   = "FLUX_OPS_CENTER"
+schema_name     = "PUBLIC"
+create_database = true
+create_schema   = true
+
+# Warehouse
+warehouse_name   = "FLUX_OPS_CENTER_WH"
+warehouse_size   = "XSMALL"
+create_warehouse = true
+
+# Image Repository
+image_repository_name = "FLUX_OPS_CENTER_REPO"
+
+# Compute Pool
+compute_pool_name            = "FLUX_OPS_CENTER_POOL"
+create_compute_pool          = true
+compute_pool_instance_family = "CPU_X64_S"  # Options: CPU_X64_XS, CPU_X64_S, CPU_X64_M, GPU_NV_S
+compute_pool_min_nodes       = 1
+compute_pool_max_nodes       = 2
+compute_pool_auto_suspend_secs = 300
+
+# Stage
+stage_name = "FLUX_OPS_CENTER_STAGE"
+
+# Service Role (optional)
+service_role_name   = "FLUX_OPS_CENTER_SERVICE_ROLE"
+create_service_role = false
+
+# Tags
+environment = "dev"
+project     = "flux-ops-center"
