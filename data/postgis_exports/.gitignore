@@ -1,0 +1,7 @@
+# Large data files - download from GitHub Releases instead
+*.csv.gz
+*.sql.gz
+
+# Keep this .gitignore and README
+!.gitignore
+!README.md

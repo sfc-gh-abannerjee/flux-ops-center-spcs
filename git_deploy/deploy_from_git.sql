@@ -1,68 +1,74 @@
 -- =============================================================================
--- Flux Operations Center - Deploy from Git
+-- Flux Operations Center - Deploy from Git Integration
 -- =============================================================================
--- Deploys Flux Operations Center infrastructure by executing SQL files
--- directly from the Git repository.
+-- Deploys Flux Operations Center SPCS infrastructure using Snowflake Git
+-- Integration. This script creates SPCS components only - data objects
+-- must be deployed first via flux-utility-solutions.
 --
--- Prerequisites:
---   - Run setup_git_integration.sql first
---   - Git repository must be fetched
+-- PREREQUISITES:
+--   1. flux-utility-solutions deployed (creates database, tables, views)
+--   2. Git repository integration configured (see setup_git_integration.sql)
+--   3. Docker image built and pushed to image repository
 --
--- Note: Flux Ops Center is primarily deployed via Docker/SPCS, but this
--- script can set up supporting infrastructure.
+-- Variables (Jinja2 syntax for Snow CLI):
+--   <% database %>       - Target database name
+--   <% schema %>         - Schema for SPCS objects (default: PUBLIC)
+--   <% warehouse %>      - Warehouse for queries
+--   <% git_repo %>       - Git repository name in Snowflake
+--   <% image_repo %>     - Image repository name
+--   <% compute_pool %>   - Compute pool name
+--   <% service_name %>   - SPCS service name
+--   <% image_tag %>      - Docker image tag (default: latest)
+--   <% postgres_host %>  - Snowflake Postgres instance host (REQUIRED for map visualization)
+--
+-- Usage:
+--   snow sql -f git_deploy/deploy_from_git.sql \
+--       -D "database=FLUX_DB" \
+--       -D "schema=PUBLIC" \
+--       -D "warehouse=FLUX_WH" \
+--       -D "git_repo=FLUX_OPS_CENTER_REPO" \
+--       -D "image_repo=FLUX_OPS_CENTER_IMAGES" \
+--       -D "compute_pool=FLUX_OPS_CENTER_POOL" \
+--       -D "service_name=FLUX_OPS_CENTER_SERVICE" \
+--       -D "image_tag=latest" \
+--       -D "postgres_host=your_host.postgres.snowflake.app" \
+--       -c your_connection_name
 -- =============================================================================
-
--- Configuration
-SET database_name = 'FLUX_OPS_CENTER';
-SET schema_name = 'PUBLIC';
-SET git_repo_name = 'FLUX_OPS_CENTER_REPO';
-SET warehouse_name = 'FLUX_OPS_CENTER_WH';
-SET compute_pool_name = 'FLUX_OPS_CENTER_POOL';
-SET image_repo_name = 'FLUX_OPS_CENTER_IMAGES';
-SET service_name = 'FLUX_OPS_CENTER_SERVICE';
 
 -- Fetch latest from remote
-ALTER GIT REPOSITORY IDENTIFIER($git_repo_name) FETCH;
+ALTER GIT REPOSITORY IDENTIFIER('<% git_repo %>') FETCH;
 
 -- =============================================================================
--- 1. DATABASE & SCHEMA SETUP
+-- 1. VERIFY DATABASE EXISTS (from flux-utility-solutions)
 -- =============================================================================
+-- The database and data objects should already exist from deploying
+-- flux-utility-solutions. This script only creates SPCS infrastructure.
 
-CREATE DATABASE IF NOT EXISTS IDENTIFIER($database_name)
-    DATA_RETENTION_TIME_IN_DAYS = 7
-    COMMENT = 'Database for Flux Operations Center';
+USE DATABASE IDENTIFIER('<% database %>');
+USE SCHEMA IDENTIFIER('<% schema %>');
+USE WAREHOUSE IDENTIFIER('<% warehouse %>');
 
-USE DATABASE IDENTIFIER($database_name);
-
-CREATE SCHEMA IF NOT EXISTS IDENTIFIER($schema_name)
-    COMMENT = 'Schema for Flux Operations Center';
-
-USE SCHEMA IDENTIFIER($schema_name);
-
--- Create warehouse
-CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER($warehouse_name)
-    WAREHOUSE_SIZE = 'XSMALL'
-    AUTO_SUSPEND = 60
-    AUTO_RESUME = TRUE
-    INITIALLY_SUSPENDED = TRUE
-    COMMENT = 'Warehouse for Flux Operations Center';
-
-USE WAREHOUSE IDENTIFIER($warehouse_name);
+-- Verify required schemas exist
+SELECT 
+    'Prerequisites Check' AS STEP,
+    CASE WHEN COUNT(*) >= 4 THEN 'OK' ELSE 'MISSING SCHEMAS - Deploy flux-utility-solutions first' END AS STATUS
+FROM INFORMATION_SCHEMA.SCHEMATA
+WHERE SCHEMA_NAME IN ('PRODUCTION', 'APPLICATIONS', 'ML_DEMO', 'CASCADE_ANALYSIS');
 
 -- =============================================================================
 -- 2. IMAGE REPOSITORY
 -- =============================================================================
 
-CREATE IMAGE REPOSITORY IF NOT EXISTS IDENTIFIER($image_repo_name)
-    COMMENT = 'Image repository for Flux Operations Center';
+CREATE IMAGE REPOSITORY IF NOT EXISTS IDENTIFIER('<% image_repo %>')
+    COMMENT = 'Image repository for Flux Operations Center containers';
 
-SHOW IMAGE REPOSITORIES LIKE $image_repo_name;
+SHOW IMAGE REPOSITORIES LIKE '<% image_repo %>';
 
 -- =============================================================================
 -- 3. COMPUTE POOL
 -- =============================================================================
 
-CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER($compute_pool_name)
+CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER('<% compute_pool %>')
     MIN_NODES = 1
     MAX_NODES = 2
     INSTANCE_FAMILY = CPU_X64_S
@@ -70,64 +76,37 @@ CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER($compute_pool_name)
     AUTO_SUSPEND_SECS = 300
     COMMENT = 'Compute pool for Flux Operations Center';
 
-DESCRIBE COMPUTE POOL IDENTIFIER($compute_pool_name);
+DESCRIBE COMPUTE POOL IDENTIFIER('<% compute_pool %>');
 
 -- =============================================================================
--- 4. GRID INFRASTRUCTURE TABLES
+-- 4. CREATE SERVICE
 -- =============================================================================
-
--- Substations table
-CREATE TABLE IF NOT EXISTS SUBSTATIONS (
-    SUBSTATION_ID VARCHAR(50) NOT NULL,
-    NAME VARCHAR(200),
-    LATITUDE FLOAT,
-    LONGITUDE FLOAT,
-    VOLTAGE_KV FLOAT,
-    CAPACITY_MVA FLOAT,
-    STATUS VARCHAR(20) DEFAULT 'ACTIVE'
-)
-COMMENT = 'Grid substations for Flux Operations Center';
-
--- Transformers table
-CREATE TABLE IF NOT EXISTS TRANSFORMERS (
-    TRANSFORMER_ID VARCHAR(50) NOT NULL,
-    SUBSTATION_ID VARCHAR(50),
-    LATITUDE FLOAT,
-    LONGITUDE FLOAT,
-    CAPACITY_KVA FLOAT,
-    AGE_YEARS INTEGER,
-    RISK_SCORE FLOAT,
-    LAST_MAINTENANCE DATE
-)
-COMMENT = 'Grid transformers for visualization and risk analysis';
-
--- Power lines table
-CREATE TABLE IF NOT EXISTS POWER_LINES (
-    LINE_ID VARCHAR(50) NOT NULL,
-    FROM_NODE VARCHAR(50),
-    TO_NODE VARCHAR(50),
-    VOLTAGE_KV FLOAT,
-    LENGTH_KM FLOAT,
-    GEOMETRY GEOGRAPHY
-)
-COMMENT = 'Grid power lines for visualization';
-
--- =============================================================================
--- 5. CREATE SERVICE (after Docker image is pushed)
--- =============================================================================
--- IMPORTANT: Push the Docker image first!
+-- IMPORTANT: Ensure Docker image is pushed before running this section!
 --   docker login <registry_url>
---   docker build -t flux_ops_center:latest -f Dockerfile.spcs .
---   docker push <repository_url>/flux_ops_center:latest
+--   docker build -t flux_ops_center:<% image_tag %> -f Dockerfile.spcs .
+--   docker push <repository_url>/flux_ops_center:<% image_tag %>
 
-/*
-CREATE SERVICE IF NOT EXISTS IDENTIFIER($service_name)
-    IN COMPUTE POOL IDENTIFIER($compute_pool_name)
+CREATE SERVICE IF NOT EXISTS IDENTIFIER('<% service_name %>')
+    IN COMPUTE POOL IDENTIFIER('<% compute_pool %>')
     FROM SPECIFICATION $$
 spec:
   containers:
     - name: flux-ops-center
-      image: /FLUX_OPS_CENTER/PUBLIC/FLUX_OPS_CENTER_IMAGES/flux_ops_center:latest
+      image: /<% database %>/<% schema %>/<% image_repo %>/flux_ops_center:<% image_tag %>
+      env:
+        # Snowflake configuration
+        SNOWFLAKE_DATABASE: <% database %>
+        SNOWFLAKE_WAREHOUSE: <% warehouse %>
+        SNOWFLAKE_SCHEMA: PRODUCTION
+        APPLICATIONS_SCHEMA: APPLICATIONS
+        ML_SCHEMA: ML_DEMO
+        CASCADE_SCHEMA: CASCADE_ANALYSIS
+        # Postgres configuration (dual-backend architecture)
+        # Set postgres_host to your Snowflake Postgres instance host
+        # Get from: SHOW POSTGRES INSTANCES LIKE 'your_instance_name';
+        VITE_POSTGRES_HOST: <% postgres_host %>
+        VITE_POSTGRES_PORT: "5432"
+        VITE_POSTGRES_DATABASE: postgres
       resources:
         requests:
           cpu: 2
@@ -140,14 +119,35 @@ spec:
       port: 8080
       public: true
 $$
+    QUERY_WAREHOUSE = IDENTIFIER('<% warehouse %>')
     COMMENT = 'Flux Operations Center - Grid Visualization & GNN Risk Prediction';
-*/
+
+-- Grant access
+GRANT USAGE ON SERVICE IDENTIFIER('<% service_name %>') TO ROLE PUBLIC;
 
 -- =============================================================================
--- VERIFICATION
+-- 5. VERIFICATION
 -- =============================================================================
+
+-- Check service status
+SELECT SYSTEM$GET_SERVICE_STATUS('<% service_name %>') AS SERVICE_STATUS;
+
+-- Get endpoint URL
+SHOW ENDPOINTS IN SERVICE IDENTIFIER('<% service_name %>');
 
 SELECT 
-    'Git Deployment' as STEP,
-    'Infrastructure deployed from Git' as STATUS,
-    'Push Docker image, then uncomment CREATE SERVICE' as NEXT_ACTION;
+    'Git Deployment Complete' AS STEP,
+    '<% service_name %>' AS SERVICE,
+    '<% database %>' AS DATABASE,
+    'Check SHOW ENDPOINTS output for application URL' AS NEXT_ACTION;
+
+-- =============================================================================
+-- TROUBLESHOOTING
+-- =============================================================================
+-- View service logs:
+--   CALL SYSTEM$GET_SERVICE_LOGS('<% service_name %>', '0', 'flux-ops-center', 100);
+--
+-- Restart service:
+--   ALTER SERVICE IDENTIFIER('<% service_name %>') SUSPEND;
+--   ALTER SERVICE IDENTIFIER('<% service_name %>') RESUME;
+-- =============================================================================

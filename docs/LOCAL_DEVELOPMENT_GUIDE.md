@@ -48,6 +48,19 @@ npm run dev
 - Node.js 18+
 - Snowflake CLI configured with a connection
 - Personal Access Token (PAT) for Cortex Agent API
+- **Snowflake Postgres instance** with PostGIS extension enabled
+- **PostGIS spatial data loaded** (see below)
+
+### PostGIS Data Setup (Required for Map Visualization)
+
+Before local development, ensure PostGIS spatial data is loaded:
+
+```bash
+# Load all spatial layers from GitHub Releases
+python backend/scripts/load_postgis_data.py --service <your_pg_service>
+```
+
+This downloads and loads ~390MB of spatial data. See [PostGIS Spatial Data Setup](../README.md#postgis-spatial-data-setup-required) for details.
 
 ---
 
@@ -141,7 +154,7 @@ npm run dev
 
 ## Environment Variables
 
-Create or update `.env` in the project root (copy from `.env.template`):
+Create or update `.env` in the project root (copy from `.env.example`):
 
 ```bash
 # Snowflake Configuration

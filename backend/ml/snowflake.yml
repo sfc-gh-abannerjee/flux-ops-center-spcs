@@ -1,13 +1,17 @@
 definition_version: 2
 
+# NOTE: Database/schema values below are defaults. Override via deploy.sh or CLI flags:
+#   SNOWFLAKE_DATABASE=MY_DB ./deploy.sh my_connection
+#   snow notebook deploy ... --database MY_DB --schema ML_DEMO
+
 entities:
   transformer_failure_prediction:
     type: notebook
     identifier:
       name: TRANSFORMER_FAILURE_PREDICTION
       schema: ML_DEMO
-      database: SI_DEMOS
-    query_warehouse: SI_DEMO_WH
+      database: FLUX_DB  # Default - override via --database flag
+    query_warehouse: FLUX_WH
     notebook_file: transformer_failure_prediction.ipynb
     
     # Dedicated ML Compute Pool with GPU (NVIDIA A10G)

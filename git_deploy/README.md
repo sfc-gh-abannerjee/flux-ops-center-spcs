@@ -10,6 +10,14 @@ Snowflake Git integration allows you to:
 - Integrate with CI/CD pipelines via GitHub Actions
 - Maintain version-controlled deployments
 
+## Prerequisites
+
+Before deploying via Git integration, you must have:
+
+1. **flux-utility-solutions deployed** - Creates the database, schemas, and data objects
+2. **Snowflake Postgres instance** - Required for map visualization (PostGIS spatial data)
+3. **Docker image pushed** - Container image in Snowflake image repository
+
 ## Quick Start
 
 ### 1. One-Time Setup
@@ -19,14 +27,44 @@ Snowflake Git integration allows you to:
 !source setup_git_integration.sql
 ```
 
-### 2. Deploy Infrastructure
+### 2. Set Up Snowflake Postgres (Required for Maps)
 
 ```sql
--- Run the deployment script
-!source deploy_from_git.sql
+-- Create Postgres instance
+CREATE POSTGRES DATABASE FLUX_OPS_POSTGRES
+    POSTGRES_ADMIN_PASSWORD = 'YourSecurePassword123!'
+    AUTO_SUSPEND_MINS = 30
+    COMPUTE_SIZE = 'HIGHMEM_XL'
+    STORAGE_SIZE_GB = 100;
+
+-- Get the host for later steps
+SHOW POSTGRES INSTANCES LIKE 'FLUX_OPS_POSTGRES';
+-- Copy the 'host' value (e.g., abc123.us-west-2.aws.postgres.snowflake.app)
 ```
 
 ### 3. Push Docker Image
+
+**Option A: Use Pre-Built Image (Recommended)**
+
+Skip the build step by pulling the pre-built image from GitHub Container Registry:
+
+```bash
+# Pull pre-built image from GHCR
+docker pull ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:latest
+
+# Get your Snowflake registry URL
+# Run: SHOW IMAGE REPOSITORIES IN SCHEMA FLUX_DB.PUBLIC;
+docker login <org>-<account>.registry.snowflakecomputing.com
+
+# Tag for your Snowflake repository
+docker tag ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:latest \
+    <org>-<account>.registry.snowflakecomputing.com/flux_db/public/flux_ops_center_images/flux_ops_center:latest
+
+# Push to Snowflake
+docker push <org>-<account>.registry.snowflakecomputing.com/flux_db/public/flux_ops_center_images/flux_ops_center:latest
+```
+
+**Option B: Build Locally**
 
 ```bash
 # Get the registry URL from SHOW IMAGE REPOSITORIES
@@ -37,9 +75,39 @@ docker build -t flux_ops_center:latest -f Dockerfile.spcs .
 docker push <repository_url>/flux_ops_center:latest
 ```
 
-### 4. Create Service
+### 4. Deploy Infrastructure
 
-Uncomment and run the CREATE SERVICE statement in `deploy_from_git.sql`.
+```bash
+# Deploy with all required parameters including postgres_host
+snow sql -f git_deploy/deploy_from_git.sql \
+    -D "database=FLUX_DB" \
+    -D "schema=PUBLIC" \
+    -D "warehouse=FLUX_WH" \
+    -D "git_repo=FLUX_OPS_CENTER_REPO" \
+    -D "image_repo=FLUX_OPS_CENTER_IMAGES" \
+    -D "compute_pool=FLUX_OPS_CENTER_POOL" \
+    -D "service_name=FLUX_OPS_CENTER_SERVICE" \
+    -D "image_tag=latest" \
+    -D "postgres_host=<host_from_step_2>" \
+    -c your_connection_name
+```
+
+### 5. Load PostGIS Spatial Data (REQUIRED)
+
+**Without this step, the map will not display any data.**
+
+```bash
+# Load all 10 spatial layers (~390MB) from GitHub Releases
+python backend/scripts/load_postgis_data.py --service FLUX_OPS_POSTGRES
+
+# Or specify custom credentials
+python backend/scripts/load_postgis_data.py \
+    --host <postgres_host> \
+    --user application \
+    --password <your_password>
+```
+
+See the [PostGIS data release](https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs/releases/tag/v1.0.0-data) for data details.
 
 ## Using Snowflake CLI
 
@@ -93,8 +161,18 @@ jobs:
 | `deploy_from_git.sql` | Execute deployment scripts from Git |
 | `README.md` | This documentation |
 
+## Deployment Checklist
+
+- [ ] flux-utility-solutions deployed (database and schemas exist)
+- [ ] Snowflake Postgres instance created
+- [ ] Docker image built and pushed to image repository
+- [ ] `deploy_from_git.sql` executed with all variables including `postgres_host`
+- [ ] PostGIS spatial data loaded via `load_postgis_data.py`
+- [ ] Service endpoint accessible and map displays correctly
+
 ## Related Documentation
 
 - [Snowflake Git Integration](https://docs.snowflake.com/en/developer-guide/git/git-overview)
 - [Flux Utility Platform](https://github.com/sfc-gh-abannerjee/flux-utility-solutions)
 - [Flux Data Forge](https://github.com/sfc-gh-abannerjee/flux-data-forge)
+- [PostGIS Data Setup](../data/postgis_exports/README.md)

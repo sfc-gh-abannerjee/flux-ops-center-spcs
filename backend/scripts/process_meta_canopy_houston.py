@@ -56,7 +56,7 @@ except ImportError:
     print("Warning: boto3 not installed. Using synthetic data mode.")
 
 
-# Houston bounding box (covers CNP service territory)
+# Houston bounding box (covers Houston metro service territory)
 HOUSTON_BOUNDS = {
     "min_lon": -96.0,
     "max_lon": -94.8,
@@ -67,6 +67,10 @@ HOUSTON_BOUNDS = {
 # Meta canopy data S3 location
 META_S3_BUCKET = "dataforgood-fb-data"
 META_S3_PREFIX = "forests/v1/alsgedi_global_v6_float/chm/"
+
+# Snowflake configuration
+DB = os.getenv("SNOWFLAKE_DATABASE", "FLUX_DB")
+SCHEMA_APPLICATIONS = "APPLICATIONS"
 
 # Risk thresholds based on Grid Operations vegetation management standards
 # Reference: https://www.utilityenergy.com/en-us/Documents/Trees/RTRP-vegetation-and-transmission-lines-factsheet.pdf
@@ -470,16 +474,16 @@ def main():
     print("=" * 70)
     print(f"""
 1. Upload CSV to Snowflake stage:
-   PUT file://{output_path.absolute()} @SI_DEMOS.APPLICATIONS.%VEGETATION_RISK_ENHANCED;
+   PUT file://{output_path.absolute()} @{DB}.{SCHEMA_APPLICATIONS}.%VEGETATION_RISK_ENHANCED;
 
 2. Load into table:
-   COPY INTO SI_DEMOS.APPLICATIONS.VEGETATION_RISK_ENHANCED
-   FROM @SI_DEMOS.APPLICATIONS.%VEGETATION_RISK_ENHANCED/{output_path.name}
+   COPY INTO {DB}.{SCHEMA_APPLICATIONS}.VEGETATION_RISK_ENHANCED
+   FROM @{DB}.{SCHEMA_APPLICATIONS}.%VEGETATION_RISK_ENHANCED/{output_path.name}
    FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '"' SKIP_HEADER = 1)
    ON_ERROR = CONTINUE;
 
 3. Update geography column:
-   UPDATE SI_DEMOS.APPLICATIONS.VEGETATION_RISK_ENHANCED
+   UPDATE {DB}.{SCHEMA_APPLICATIONS}.VEGETATION_RISK_ENHANCED
    SET geom = ST_MAKEPOINT(longitude, latitude)
    WHERE geom IS NULL;
 """)

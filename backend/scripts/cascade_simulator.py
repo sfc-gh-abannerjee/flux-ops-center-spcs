@@ -20,14 +20,19 @@ Can be used as:
 import os
 import time
 import json
+import sys
 import numpy as np
 from collections import deque
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Set, Tuple, Any
 from snowflake.snowpark import Session
 
+# Import centralized configuration
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import DB, CONNECTION, SCHEMA_ML_DEMO, SCHEMA_CASCADE_ANALYSIS
+
 # Configuration
-CONNECTION_NAME = os.getenv("SNOWFLAKE_CONNECTION_NAME", "cpe_demo_CLI")
+CONNECTION_NAME = CONNECTION
 
 
 @dataclass
@@ -120,7 +125,7 @@ class CascadeSimulator:
         print("Loading grid topology...")
         
         # Load nodes
-        nodes_df = session.sql("""
+        nodes_df = session.sql(f"""
             SELECT 
                 n.NODE_ID,
                 n.NODE_NAME,
@@ -135,8 +140,8 @@ class CascadeSimulator:
                 COALESCE(c.BETWEENNESS_CENTRALITY, 0) as BETWEENNESS,
                 COALESCE(c.PAGERANK, 0) as PAGERANK,
                 COALESCE(c.CASCADE_RISK_SCORE, n.CRITICALITY_SCORE) as CASCADE_RISK
-            FROM SI_DEMOS.ML_DEMO.GRID_NODES n
-            LEFT JOIN SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES c 
+            FROM {DB}.{SCHEMA_ML_DEMO}.GRID_NODES n
+            LEFT JOIN {DB}.{SCHEMA_CASCADE_ANALYSIS}.NODE_CENTRALITY_FEATURES c 
                 ON n.NODE_ID = c.NODE_ID
             WHERE n.LAT IS NOT NULL AND n.LON IS NOT NULL
         """).to_pandas()
@@ -161,9 +166,9 @@ class CascadeSimulator:
         print(f"  Loaded {len(self._nodes)} nodes")
         
         # Load edges and build adjacency list
-        edges_df = session.sql("""
+        edges_df = session.sql(f"""
             SELECT FROM_NODE_ID, TO_NODE_ID, DISTANCE_KM, EDGE_TYPE
-            FROM SI_DEMOS.ML_DEMO.GRID_EDGES
+            FROM {DB}.{SCHEMA_ML_DEMO}.GRID_EDGES
         """).to_pandas()
         
         self._adjacency = {}
@@ -433,7 +438,7 @@ class CascadeSimulator:
         })
         
         session.sql(f"""
-            INSERT INTO SI_DEMOS.CASCADE_ANALYSIS.PRECOMPUTED_CASCADES (
+            INSERT INTO {DB}.{SCHEMA_CASCADE_ANALYSIS}.PRECOMPUTED_CASCADES (
                 scenario_id, scenario_name, patient_zero_id, patient_zero_name,
                 simulation_params, cascade_order, wave_breakdown, propagation_paths,
                 total_affected_nodes, affected_capacity_mw, estimated_customers_affected,

@@ -1,8 +1,9 @@
 spec:
   containers:
-  - name: frontend
+  - name: flux-ops-center
     image: /<database>/applications/<repo>/flux_ops_center:latest
     env:
+      SNOWFLAKE_DATABASE: <your_database>
       SNOWFLAKE_WAREHOUSE: <your_warehouse>
       VITE_POSTGRES_HOST: <your_postgres_instance>.postgres.snowflake.app
       VITE_POSTGRES_PORT: "5432"
@@ -25,7 +26,5 @@ spec:
     port: 8080
     public: true
   
-  # High availability: Keep minimum 2 instances always running
-  # This eliminates cold start delays (30-45s) on every restart
-  min_instances: 2
-  max_instances: 5
+  # Development config: Single instance
+  # For production HA, use service_spec_prod.yaml with min_instances: 2

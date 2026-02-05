@@ -33,12 +33,25 @@ USAGE:
     python setup_postgres_schema.py
 
 TABLES CREATED:
-    - topology_connections_cache: Grid topology with PostGIS geometries
-    - vegetation_risk_cache: Tree locations with pre-computed risk scores
-    - osm_water: Water body polygons for map visualization
-    - osm_buildings: Building footprints for impact analysis
-    - power_lines_lod: Power line geometries with LOD optimization
+    - meters_spatial: Smart meter locations with grid connectivity
+    - substations_spatial: Substation locations with capacity data
     - transformers_spatial: Transformer locations with attributes
+    - power_lines_lod: Power line geometries with LOD optimization
+    - poles_spatial: Utility pole locations from OSM
+    - osm_buildings: Building footprints for impact analysis
+    - osm_water: Water body polygons for map visualization
+    - vegetation_risk_cache: Tree locations with pre-computed risk scores
+    - topology_connections_cache: Grid topology with PostGIS geometries
+
+SNOWFLAKE SOURCE TABLES:
+    - METER_INFRASTRUCTURE → meters_spatial (596K rows)
+    - SUBSTATIONS → substations_spatial (275 rows)
+    - TRANSFORMER_METADATA → transformers_spatial (91K rows)
+    - GRID_POWER_LINES → power_lines_lod (13K rows)
+    - OSM_POLES_TRULY_LAND_ONLY → poles_spatial (62K rows)
+    - HOUSTON_BUILDINGS_CLEAN → osm_buildings (2.6M rows)
+    - HOUSTON_WATER_BODIES → osm_water (10K rows)
+    - VEGETATION_POWER_LINE_RISK → vegetation_risk_cache (3.6K rows)
 
 See docs/POSTGRES_SYNC_RELIABILITY.md for sync architecture details.
 """
@@ -128,38 +141,39 @@ def setup_topology_cache(conn):
 
 
 def setup_vegetation_cache(conn):
-    """Create vegetation risk cache table."""
-    print("Creating vegetation_risk_cache...")
+    """Create vegetation risk table matching production schema."""
+    print("Creating vegetation_risk...")
     with conn.cursor() as cur:
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS vegetation_risk_cache (
-                id SERIAL PRIMARY KEY,
-                tree_id VARCHAR(100) NOT NULL,
-                latitude DOUBLE PRECISION NOT NULL,
-                longitude DOUBLE PRECISION NOT NULL,
-                geom GEOMETRY(Point, 4326),
+            CREATE TABLE IF NOT EXISTS vegetation_risk (
+                tree_id VARCHAR(100) PRIMARY KEY,
+                class VARCHAR(50),
+                subtype VARCHAR(100),
+                longitude DOUBLE PRECISION,
+                latitude DOUBLE PRECISION,
                 height_m DOUBLE PRECISION,
                 canopy_radius_m DOUBLE PRECISION,
-                species VARCHAR(100),
-                health_score DOUBLE PRECISION,
                 risk_score DOUBLE PRECISION,
-                fall_zone_m DOUBLE PRECISION,
+                risk_level VARCHAR(20),
+                distance_to_line_m DOUBLE PRECISION,
                 nearest_line_id VARCHAR(100),
-                nearest_line_distance_m DOUBLE PRECISION,
-                encroachment_category VARCHAR(20),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                nearest_line_voltage_kv DOUBLE PRECISION,
+                clearance_deficit_m DOUBLE PRECISION,
+                years_to_encroachment DOUBLE PRECISION,
+                data_source VARCHAR(100),
+                geom GEOMETRY(Point, 4326)
             );
             
             -- Spatial index for vegetation proximity queries
             CREATE INDEX IF NOT EXISTS idx_vegetation_geom 
-                ON vegetation_risk_cache USING GIST (geom);
+                ON vegetation_risk USING GIST (geom);
             
             -- Risk-based queries
             CREATE INDEX IF NOT EXISTS idx_vegetation_risk 
-                ON vegetation_risk_cache (risk_score DESC);
+                ON vegetation_risk (risk_level);
         """)
     conn.commit()
-    print("  vegetation_risk_cache created.")
+    print("  vegetation_risk created (49K rows expected).")
 
 
 def setup_osm_water(conn):
@@ -185,67 +199,145 @@ def setup_osm_water(conn):
     print("  osm_water created.")
 
 
-def setup_osm_buildings(conn):
-    """Create OSM buildings table."""
-    print("Creating osm_buildings...")
+def setup_building_footprints(conn):
+    """Create building footprints table for 3D visualization."""
+    print("Creating building_footprints...")
     with conn.cursor() as cur:
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS osm_buildings (
-                id SERIAL PRIMARY KEY,
-                osm_id BIGINT,
-                name VARCHAR(255),
+            CREATE TABLE IF NOT EXISTS building_footprints (
+                building_id VARCHAR(50) PRIMARY KEY,
+                building_name VARCHAR(255),
                 building_type VARCHAR(50),
-                geom GEOMETRY(Polygon, 4326),
-                centroid GEOMETRY(Point, 4326),
-                area_sq_m DOUBLE PRECISION,
-                height_m DOUBLE PRECISION,
-                levels INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                height_meters DOUBLE PRECISION,
+                num_floors INTEGER,
+                geom GEOMETRY(Polygon, 4326)
             );
             
-            -- Spatial indexes for MVT tile generation
-            CREATE INDEX IF NOT EXISTS idx_osm_buildings_geom 
-                ON osm_buildings USING GIST (geom);
-            CREATE INDEX IF NOT EXISTS idx_osm_buildings_centroid 
-                ON osm_buildings USING GIST (centroid);
+            -- Spatial index for viewport queries and 3D tile generation
+            CREATE INDEX IF NOT EXISTS idx_building_footprints_geom 
+                ON building_footprints USING GIST (geom);
         """)
     conn.commit()
-    print("  osm_buildings created.")
+    print("  building_footprints created (2.67M rows expected).")
 
 
 def setup_power_lines(conn):
-    """Create power lines table with LOD support."""
-    print("Creating power_lines_lod...")
+    """Create grid power lines table matching production schema."""
+    print("Creating grid_power_lines...")
     with conn.cursor() as cur:
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS power_lines_lod (
+            CREATE TABLE IF NOT EXISTS grid_power_lines (
+                line_id VARCHAR(100) PRIMARY KEY,
+                circuit_id VARCHAR(100) NOT NULL,
+                substation_id VARCHAR(50) NOT NULL,
+                line_type VARCHAR(50) NOT NULL,
+                voltage_class VARCHAR(20),
+                transformer_count INTEGER,
+                meters_served INTEGER,
+                line_length_m DOUBLE PRECISION,
+                geom GEOMETRY(LineString, 4326),
+                centroid_lat DOUBLE PRECISION,
+                centroid_lon DOUBLE PRECISION,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+            
+            -- Spatial index for power line queries
+            CREATE INDEX IF NOT EXISTS idx_grid_power_lines_geom 
+                ON grid_power_lines USING GIST (geom);
+            
+            -- Lookup indexes
+            CREATE INDEX IF NOT EXISTS idx_grid_power_lines_circuit 
+                ON grid_power_lines (circuit_id);
+            CREATE INDEX IF NOT EXISTS idx_grid_power_lines_substation 
+                ON grid_power_lines (substation_id);
+            CREATE INDEX IF NOT EXISTS idx_grid_power_lines_type 
+                ON grid_power_lines (line_type);
+        """)
+    conn.commit()
+    print("  grid_power_lines created (13K rows expected).")
+
+
+def setup_meters(conn):
+    """Create meters spatial table for smart meter locations."""
+    print("Creating meters_spatial...")
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS meters_spatial (
                 id SERIAL PRIMARY KEY,
-                line_id VARCHAR(100) NOT NULL,
+                meter_id VARCHAR(100) NOT NULL,
+                latitude DOUBLE PRECISION NOT NULL,
+                longitude DOUBLE PRECISION NOT NULL,
+                geom GEOMETRY(Point, 4326),
+                transformer_id VARCHAR(100),
                 circuit_id VARCHAR(100),
                 substation_id VARCHAR(100),
-                voltage_class VARCHAR(20),
-                voltage_kv DOUBLE PRECISION,
-                geom GEOMETRY(LineString, 4326),
-                geom_simplified GEOMETRY(LineString, 4326),
-                length_km DOUBLE PRECISION,
-                conductor_type VARCHAR(50),
+                pole_id VARCHAR(100),
+                meter_type VARCHAR(50),
+                customer_segment VARCHAR(50),
+                city VARCHAR(100),
+                county VARCHAR(100),
+                zip_code VARCHAR(20),
+                commissioned_date DATE,
+                health_score DOUBLE PRECISION,
+                status VARCHAR(20) DEFAULT 'ACTIVE',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             
-            -- Spatial indexes for both detail levels
-            CREATE INDEX IF NOT EXISTS idx_power_lines_geom 
-                ON power_lines_lod USING GIST (geom);
-            CREATE INDEX IF NOT EXISTS idx_power_lines_simplified 
-                ON power_lines_lod USING GIST (geom_simplified);
+            -- Spatial index for proximity queries
+            CREATE INDEX IF NOT EXISTS idx_meters_geom 
+                ON meters_spatial USING GIST (geom);
             
-            -- Lookup indexes
-            CREATE INDEX IF NOT EXISTS idx_power_lines_circuit 
-                ON power_lines_lod (circuit_id);
-            CREATE INDEX IF NOT EXISTS idx_power_lines_voltage 
-                ON power_lines_lod (voltage_class);
+            -- Lookup indexes for grid topology queries
+            CREATE INDEX IF NOT EXISTS idx_meters_transformer 
+                ON meters_spatial (transformer_id);
+            CREATE INDEX IF NOT EXISTS idx_meters_circuit 
+                ON meters_spatial (circuit_id);
+            CREATE INDEX IF NOT EXISTS idx_meters_substation 
+                ON meters_spatial (substation_id);
+            CREATE INDEX IF NOT EXISTS idx_meters_zip 
+                ON meters_spatial (zip_code);
         """)
     conn.commit()
-    print("  power_lines_lod created.")
+    print("  meters_spatial created.")
+
+
+def setup_substations(conn):
+    """Create substations spatial table."""
+    print("Creating substations_spatial...")
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS substations_spatial (
+                id SERIAL PRIMARY KEY,
+                substation_id VARCHAR(100) NOT NULL,
+                name VARCHAR(255),
+                latitude DOUBLE PRECISION NOT NULL,
+                longitude DOUBLE PRECISION NOT NULL,
+                geom GEOMETRY(Point, 4326),
+                capacity_mva DOUBLE PRECISION,
+                current_load_mw DOUBLE PRECISION,
+                peak_load_mw DOUBLE PRECISION,
+                voltage_level VARCHAR(20),
+                substation_type VARCHAR(50),
+                operational_status VARCHAR(50) DEFAULT 'Operational',
+                region VARCHAR(50),
+                commissioned_date DATE,
+                last_inspection_date DATE,
+                critical_infrastructure BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            -- Spatial index for proximity queries
+            CREATE INDEX IF NOT EXISTS idx_substations_geom 
+                ON substations_spatial USING GIST (geom);
+            
+            -- Lookup indexes
+            CREATE INDEX IF NOT EXISTS idx_substations_status 
+                ON substations_spatial (operational_status);
+            CREATE INDEX IF NOT EXISTS idx_substations_region 
+                ON substations_spatial (region);
+        """)
+    conn.commit()
+    print("  substations_spatial created.")
 
 
 def setup_transformers(conn):
@@ -262,10 +354,17 @@ def setup_transformers(conn):
                 longitude DOUBLE PRECISION NOT NULL,
                 geom GEOMETRY(Point, 4326),
                 rated_kva DOUBLE PRECISION,
+                current_load_kva DOUBLE PRECISION,
+                load_utilization_pct DOUBLE PRECISION,
                 age_years INTEGER,
+                health_score DOUBLE PRECISION,
                 manufacturer VARCHAR(100),
-                installation_date DATE,
+                model_number VARCHAR(100),
+                install_year INTEGER,
                 last_maintenance DATE,
+                transformer_role VARCHAR(50),
+                phase_code VARCHAR(10),
+                primary_voltage_kv DOUBLE PRECISION,
                 status VARCHAR(20) DEFAULT 'ACTIVE',
                 rotation_degrees DOUBLE PRECISION DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -278,11 +377,50 @@ def setup_transformers(conn):
             -- Lookup indexes
             CREATE INDEX IF NOT EXISTS idx_transformers_substation 
                 ON transformers_spatial (substation_id);
+            CREATE INDEX IF NOT EXISTS idx_transformers_circuit 
+                ON transformers_spatial (circuit_id);
             CREATE INDEX IF NOT EXISTS idx_transformers_status 
                 ON transformers_spatial (status);
+            CREATE INDEX IF NOT EXISTS idx_transformers_health 
+                ON transformers_spatial (health_score);
         """)
     conn.commit()
     print("  transformers_spatial created.")
+
+
+def setup_poles(conn):
+    """Create poles spatial table for utility pole locations."""
+    print("Creating poles_spatial...")
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS poles_spatial (
+                id SERIAL PRIMARY KEY,
+                pole_id VARCHAR(100) NOT NULL,
+                latitude DOUBLE PRECISION NOT NULL,
+                longitude DOUBLE PRECISION NOT NULL,
+                geom GEOMETRY(Point, 4326),
+                power_type VARCHAR(50),
+                voltage VARCHAR(50),
+                pole_type VARCHAR(50),
+                pole_material VARCHAR(50),
+                height_ft DOUBLE PRECISION,
+                condition_status VARCHAR(50),
+                osm_source BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            -- Spatial index for proximity queries
+            CREATE INDEX IF NOT EXISTS idx_poles_geom 
+                ON poles_spatial USING GIST (geom);
+            
+            -- Lookup indexes
+            CREATE INDEX IF NOT EXISTS idx_poles_power_type 
+                ON poles_spatial (power_type);
+            CREATE INDEX IF NOT EXISTS idx_poles_condition 
+                ON poles_spatial (condition_status);
+        """)
+    conn.commit()
+    print("  poles_spatial created.")
 
 
 def setup_application_role(conn):
@@ -304,29 +442,32 @@ def verify_setup(conn):
     """Verify all tables were created successfully."""
     print("\nVerifying setup...")
     tables = [
-        "topology_connections_cache",
-        "vegetation_risk_cache", 
-        "osm_water",
-        "osm_buildings",
-        "power_lines_lod",
-        "transformers_spatial"
+        ("building_footprints", "2.67M buildings"),
+        ("grid_power_lines", "13K power lines"),
+        ("vegetation_risk", "49K vegetation"),
+        ("osm_water", "12K water bodies"),
+        ("substations_spatial", "275 substations"),
+        ("transformers_spatial", "91K transformers"),
+        ("meters_spatial", "596K meters"),
+        ("poles_spatial", "62K poles"),
+        ("topology_connections_cache", "topology cache")
     ]
     
     with conn.cursor() as cur:
-        for table in tables:
+        for table, description in tables:
             cur.execute(f"""
                 SELECT COUNT(*) FROM information_schema.tables 
                 WHERE table_name = %s
             """, (table,))
             exists = cur.fetchone()[0] > 0
-            status = "OK" if exists else "MISSING"
-            print(f"  {table}: {status}")
+            status = "✓ OK" if exists else "✗ MISSING"
+            print(f"  {table}: {status} ({description})")
     
     print("\nSetup complete!")
     print("\nNEXT STEPS:")
-    print("1. Configure Snowflake stored procedures to sync data")
-    print("2. See docs/POSTGRES_SYNC_RELIABILITY.md for sync architecture")
-    print("3. Run: CALL <database>.APPLICATIONS.SYNC_TOPOLOGY_TO_POSTGRES();")
+    print("1. Run Snowflake sync procedures to populate data")
+    print("2. See docs/DATA_LAYER_MAPPING.md for column mappings")
+    print("3. See docs/POSTGRES_SYNC_RELIABILITY.md for sync architecture")
 
 
 def main():
@@ -346,12 +487,23 @@ def main():
         
         # Setup all components
         setup_extensions(conn)
+        
+        # Core spatial layers (match production schema)
+        setup_building_footprints(conn)  # 3D buildings - 2.67M rows
+        setup_power_lines(conn)           # Power lines - 13K rows
+        setup_vegetation_cache(conn)      # Vegetation risk - 49K rows
+        setup_osm_water(conn)             # Water bodies - 12K rows
+        
+        # Infrastructure layers
+        setup_substations(conn)           # Substations - 275 rows
+        setup_transformers(conn)          # Transformers - 91K rows
+        setup_meters(conn)                # Meters - 596K rows
+        setup_poles(conn)                 # Poles - 62K rows
+        
+        # Cache/topology layers
         setup_topology_cache(conn)
-        setup_vegetation_cache(conn)
-        setup_osm_water(conn)
-        setup_osm_buildings(conn)
-        setup_power_lines(conn)
-        setup_transformers(conn)
+        
+        # Configure role settings
         setup_application_role(conn)
         
         # Verify

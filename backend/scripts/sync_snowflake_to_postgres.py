@@ -21,9 +21,9 @@ ENVIRONMENT VARIABLES:
     SNOWFLAKE_ACCOUNT    - Snowflake account identifier
     SNOWFLAKE_USER       - Snowflake username
     SNOWFLAKE_PASSWORD   - Snowflake password (or use SSO)
-    SNOWFLAKE_DATABASE   - Database name (default: SI_DEMOS)
+    SNOWFLAKE_DATABASE   - Database name (default: FLUX_DB)
     SNOWFLAKE_SCHEMA     - Schema name (default: PRODUCTION)
-    SNOWFLAKE_WAREHOUSE  - Warehouse name (default: SI_DEMO_WH)
+    SNOWFLAKE_WAREHOUSE  - Warehouse name (default: FLUX_WH)
     
     # Postgres
     VITE_POSTGRES_HOST     - Postgres hostname
@@ -66,9 +66,9 @@ def get_snowflake_connection():
         user=os.environ.get("SNOWFLAKE_USER"),
         password=os.environ.get("SNOWFLAKE_PASSWORD"),
         authenticator=os.environ.get("SNOWFLAKE_AUTHENTICATOR", "snowflake"),
-        database=os.environ.get("SNOWFLAKE_DATABASE", "SI_DEMOS"),
+        database=os.environ.get("SNOWFLAKE_DATABASE", "FLUX_DB"),
         schema=os.environ.get("SNOWFLAKE_SCHEMA", "PRODUCTION"),
-        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "SI_DEMO_WH"),
+        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "FLUX_WH"),
     )
 
 
@@ -98,7 +98,7 @@ def sync_topology(sf_conn, pg_conn, batch_size: int = 5000):
     """
     Sync topology connections from Snowflake to Postgres.
     
-    Source: SI_DEMOS.PRODUCTION.FLUX_OPS_CENTER_TOPOLOGY
+    Source: FLUX_DB.PRODUCTION.FLUX_OPS_CENTER_TOPOLOGY
     Target: topology_connections_cache
     """
     print("Syncing topology...")
@@ -160,7 +160,7 @@ def sync_vegetation(sf_conn, pg_conn, batch_size: int = 5000):
     """
     Sync vegetation risk data from Snowflake to Postgres.
     
-    Source: SI_DEMOS.APPLICATIONS.VEGETATION_RISK_ENHANCED
+    Source: FLUX_DB.APPLICATIONS.VEGETATION_RISK_ENHANCED
     Target: vegetation_risk_cache
     """
     print("Syncing vegetation...")
@@ -224,7 +224,7 @@ def sync_transformers(sf_conn, pg_conn, batch_size: int = 5000):
     """
     Sync transformer metadata from Snowflake to Postgres.
     
-    Source: SI_DEMOS.PRODUCTION.TRANSFORMER_METADATA
+    Source: FLUX_DB.PRODUCTION.TRANSFORMER_METADATA
     Target: transformers_spatial
     """
     print("Syncing transformers...")

@@ -3574,7 +3574,7 @@ export function CascadeControlPanel({
                   <strong>Model Features:</strong> morning_load_pct, transformer_age, historical_avg_load, stress_vs_historical
                 </Typography>
                 <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.6rem', display: 'block' }}>
-                  <strong>Target Accuracy:</strong> 78-85% • <strong>Data:</strong> SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING
+                  <strong>Target Accuracy:</strong> 78-85% • <strong>Data:</strong> ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING
                 </Typography>
               </Box>
             )}

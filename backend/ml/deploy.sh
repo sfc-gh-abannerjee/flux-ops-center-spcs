@@ -7,18 +7,21 @@
 set -e
 
 CONNECTION="${1:-cpe_demo_CLI}"
-NOTEBOOK="SI_DEMOS.ML_DEMO.TRANSFORMER_FAILURE_PREDICTION"
+DATABASE="${SNOWFLAKE_DATABASE:-FLUX_DB}"
+SCHEMA="ML_DEMO"
+NOTEBOOK="${DATABASE}.${SCHEMA}.TRANSFORMER_FAILURE_PREDICTION"
 EXTERNAL_ACCESS="PYPI_ACCESS_INTEGRATION"
 
 echo "=== Deploying ML Notebook ==="
 echo "Connection: $CONNECTION"
+echo "Database: $DATABASE"
 echo ""
 
 # Step 1: Deploy notebook
 echo "Step 1: Deploying notebook..."
 snow notebook deploy transformer_failure_prediction \
-    --database SI_DEMOS \
-    --schema ML_DEMO \
+    --database "$DATABASE" \
+    --schema "$SCHEMA" \
     --connection "$CONNECTION" \
     --replace
 

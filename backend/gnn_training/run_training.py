@@ -29,8 +29,8 @@ import uvicorn
 # ==============================================================================
 # Configuration
 # ==============================================================================
-SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE", "SI_DEMO_WH")
-SNOWFLAKE_DATABASE = os.getenv("SNOWFLAKE_DATABASE", "SI_DEMOS")
+SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE", "FLUX_WH")
+SNOWFLAKE_DATABASE = os.getenv("SNOWFLAKE_DATABASE", "FLUX_DB")
 SNOWFLAKE_SCHEMA = os.getenv("SNOWFLAKE_SCHEMA", "CASCADE_ANALYSIS")
 
 # Training status tracking (thread-safe via GIL for simple dict updates)

@@ -5,19 +5,23 @@ SNOWFLAKE ML DEMO: PREDICTIVE ASSET MAINTENANCE
 
 USE CASE: Predict transformer thermal overload risk before failure occurs
 
-ALIGNED WITH CNP STRATEGY DOCUMENT:
-- "Predictive Asset Maintenance: Leveraging Cortex AI to identify distribution 
-   assets at risk for failure (e.g., a 25-year-old transformer during a heatwave)"
-- "The 1-2% O&M reduction goal" via proactive maintenance
+BUSINESS VALUE:
+- Predictive Asset Maintenance: Leveraging Cortex AI to identify distribution 
+  assets at risk for failure (e.g., a 25-year-old transformer during a heatwave)
+- Target 1-2% O&M reduction via proactive maintenance scheduling
 
 PRODUCTS DEMONSTRATED:
 1. Snowpark ML - Feature engineering and model training
 2. Snowflake Model Registry - Model versioning and governance
 3. Warehouse Inference - Real-time predictions via SQL/UDF
 
-DATA SOURCE: SI_DEMOS.PRODUCTION.TRANSFORMER_THERMAL_STRESS_MATERIALIZED
+DATA SOURCE: <% database %>.PRODUCTION.TRANSFORMER_THERMAL_STRESS_MATERIALIZED
 - 211M hourly readings
 - Jul-Aug 2024 and Jul-Aug 2025 (summer peak periods)
+
+DEPLOYMENT:
+- Git Integration: EXECUTE IMMEDIATE FROM @stage/01_ml_demo_setup.sql USING (database => 'MY_DB');
+- CLI: snow sql -f 01_ml_demo_setup.sql -D database=MY_DB
 
 ================================================================================
 */
@@ -27,7 +31,7 @@ DATA SOURCE: SI_DEMOS.PRODUCTION.TRANSFORMER_THERMAL_STRESS_MATERIALIZED
 -- ============================================================================
 
 USE ROLE SYSADMIN;
-USE DATABASE SI_DEMOS;
+USE DATABASE <% database %>;  -- Set via: EXECUTE IMMEDIATE FROM @stage USING (database => 'MY_DB');
 
 -- Create schema for ML assets
 CREATE SCHEMA IF NOT EXISTS ML_DEMO;
@@ -36,7 +40,7 @@ USE SCHEMA ML_DEMO;
 
 COMMENT ON SCHEMA ML_DEMO IS 
 'Snowflake ML Demo: Predictive Asset Maintenance for Transformer Failure Prediction. 
-Aligned with CNP #engagement strategy.';
+Demonstrates Snowflake ML capabilities for utility asset management.';
 
 -- ============================================================================
 -- SECTION 2: CREATE TRAINING DATA VIEW
@@ -86,7 +90,7 @@ SELECT
     -- Data quality filter
     DATA_QUALITY_RELIABLE
     
-FROM SI_DEMOS.PRODUCTION.TRANSFORMER_THERMAL_STRESS_MATERIALIZED
+FROM <% database %>.PRODUCTION.TRANSFORMER_THERMAL_STRESS_MATERIALIZED
 WHERE DATA_QUALITY_RELIABLE = TRUE;
 
 COMMENT ON VIEW V_TRANSFORMER_ML_FEATURES IS 
@@ -158,7 +162,7 @@ SELECT
     m.LOCATION_AREA
     
 FROM V_TRANSFORMER_ML_FEATURES t
-JOIN SI_DEMOS.PRODUCTION.TRANSFORMER_METADATA m 
+JOIN <% database %>.PRODUCTION.TRANSFORMER_METADATA m 
     ON t.TRANSFORMER_ID = m.TRANSFORMER_ID
 WHERE t.YEAR = 2025 AND t.MONTH = 8;  -- Current period (August 2025)
 

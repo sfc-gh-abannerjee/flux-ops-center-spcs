@@ -51,10 +51,16 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 class Settings(BaseSettings):
     snowflake_host: Optional[str] = None
     snowflake_account: Optional[str] = None
-    snowflake_database: str = "SI_DEMOS"
+    snowflake_database: str = os.getenv("SNOWFLAKE_DATABASE", "FLUX_DB")  # Override with SNOWFLAKE_DATABASE env var
     snowflake_schema: str = "APPLICATIONS"
-    snowflake_warehouse: str = "SI_DEMO_WH"
-    snowflake_connection_name: str = "cpe_demo_CLI"
+    snowflake_warehouse: str = os.getenv("SNOWFLAKE_WAREHOUSE", "FLUX_WH")
+    snowflake_connection_name: str = os.getenv("SNOWFLAKE_CONNECTION", "cpe_demo_CLI")
+    
+    # Cortex Agent configuration - users must ensure this agent exists and is accessible
+    # Format: DATABASE.SCHEMA.AGENT_NAME (the full path will be constructed from these)
+    cortex_agent_database: str = os.getenv("CORTEX_AGENT_DATABASE", "SNOWFLAKE_INTELLIGENCE")
+    cortex_agent_schema: str = os.getenv("CORTEX_AGENT_SCHEMA", "AGENTS")
+    cortex_agent_name: str = os.getenv("CORTEX_AGENT_NAME", "GRID_INTELLIGENCE_AGENT")
     
     vite_postgres_host: Optional[str] = None
     vite_postgres_port: int = 5432
@@ -83,6 +89,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Database reference helper - configurable via SNOWFLAKE_DATABASE env var
+DB = settings.snowflake_database
 
 
 postgres_pool: Optional[asyncpg.Pool] = None
@@ -368,7 +377,7 @@ class SnowflakeConnectionPool:
     def _create_connection(self):
         token = get_login_token()
         if token and settings.snowflake_host:
-            return snowflake.connector.connect(
+            conn = snowflake.connector.connect(
                 host=settings.snowflake_host,
                 account=settings.snowflake_account,
                 token=token,
@@ -378,9 +387,17 @@ class SnowflakeConnectionPool:
                 warehouse=settings.snowflake_warehouse
             )
         else:
-            return snowflake.connector.connect(
+            conn = snowflake.connector.connect(
                 connection_name=settings.snowflake_connection_name
             )
+            # Explicitly set database, schema, and warehouse from settings
+            # (connection config may reference non-existent or wrong resources)
+            cursor = conn.cursor()
+            cursor.execute(f"USE WAREHOUSE {settings.snowflake_warehouse}")
+            cursor.execute(f"USE DATABASE {settings.snowflake_database}")
+            cursor.execute(f"USE SCHEMA {settings.snowflake_schema}")
+            cursor.close()
+        return conn
     
     async def get_connection(self):
         await self._semaphore.acquire()
@@ -464,11 +481,11 @@ async def warm_cache_background():
         def _fetch_metro():
             conn = get_snowflake_connection()
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT SUBSTATION_ID, SUBSTATION_NAME, LATITUDE, LONGITUDE,
                        CAPACITY_MVA, AVG_LOAD_PCT, ACTIVE_OUTAGES,
                        TRANSFORMER_COUNT, TOTAL_CAPACITY_KVA
-                FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_METRO
+                FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_METRO
             """)
             results = []
             for row in cursor.fetchall():
@@ -493,7 +510,7 @@ async def warm_cache_background():
         def _fetch_kpis():
             conn = get_snowflake_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_KPIS")
+            cursor.execute(f"SELECT * FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_KPIS")
             row = cursor.fetchone()
             kpis = {}
             if row:
@@ -791,9 +808,17 @@ def get_snowflake_connection():
             warehouse=settings.snowflake_warehouse
         )
     else:
-        return snowflake.connector.connect(
+        conn = snowflake.connector.connect(
             connection_name=settings.snowflake_connection_name
         )
+        # Explicitly set database, schema, and warehouse from settings
+        # (connection config may reference non-existent or wrong resources)
+        cursor = conn.cursor()
+        cursor.execute(f"USE WAREHOUSE {settings.snowflake_warehouse}")
+        cursor.execute(f"USE DATABASE {settings.snowflake_database}")
+        cursor.execute(f"USE SCHEMA {settings.snowflake_schema}")
+        cursor.close()
+        return conn
 
 
 @asynccontextmanager
@@ -968,12 +993,12 @@ async def get_initial_load(request: Request, bypass_cache: bool = Query(False)):
         def _fetch():
             conn = get_snowflake_connection()
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     SUBSTATION_ID, SUBSTATION_NAME, LATITUDE, LONGITUDE,
                     CAPACITY_MVA, AVG_LOAD_PCT, ACTIVE_OUTAGES,
                     TRANSFORMER_COUNT, TOTAL_CAPACITY_KVA
-                FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_METRO
+                FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_METRO
             """)
             results = []
             for row in cursor.fetchall():
@@ -1010,13 +1035,13 @@ async def get_initial_load(request: Request, bypass_cache: bool = Query(False)):
         def _fetch():
             conn = get_snowflake_connection()
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     SUBSTATION_ID, TRANSFORMER_ID, CONNECTION_TYPE,
                     FROM_LATITUDE, FROM_LONGITUDE, TO_LATITUDE, TO_LONGITUDE,
                     LOAD_UTILIZATION_PCT, CIRCUIT_ID, RATED_KVA,
                     DISTANCE_KM, VOLTAGE_LEVEL
-                FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_FEEDERS
+                FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_FEEDERS
             """)
             results = []
             for row in cursor.fetchall():
@@ -1081,10 +1106,10 @@ async def get_initial_load(request: Request, bypass_cache: bool = Query(False)):
         def _fetch():
             conn = get_snowflake_connection()
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT CIRCUIT_ID, SUBSTATION_ID, SUBSTATION_NAME,
                        CENTROID_LAT, CENTROID_LON, AVG_LOAD_PERCENT, AVG_HEALTH_SCORE
-                FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_SERVICE_AREAS_MV
+                FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_SERVICE_AREAS_MV
             """)
             results = []
             for row in cursor.fetchall():
@@ -1119,7 +1144,7 @@ async def get_initial_load(request: Request, bypass_cache: bool = Query(False)):
         def _fetch():
             conn = get_snowflake_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_KPIS")
+            cursor.execute(f"SELECT * FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_KPIS")
             row = cursor.fetchone()
             kpis = {}
             if row:
@@ -1316,13 +1341,13 @@ async def get_assets_from_snowflake(
         query = f"""
             WITH latest_transformer_load AS (
                 SELECT TRANSFORMER_ID, AVG(LOAD_FACTOR_PCT) as avg_load_percent
-                FROM SI_DEMOS.PRODUCTION.TRANSFORMER_HOURLY_LOAD
+                FROM {DB}.PRODUCTION.TRANSFORMER_HOURLY_LOAD
                 WHERE LOAD_HOUR >= DATEADD(hour, -1, CURRENT_TIMESTAMP())
                 GROUP BY TRANSFORMER_ID
             ),
             recent_meter_usage AS (
                 SELECT METER_ID, AVG(USAGE_KWH) as avg_usage_kwh
-                FROM SI_DEMOS.PRODUCTION.AMI_INTERVAL_READINGS
+                FROM {DB}.PRODUCTION.AMI_INTERVAL_READINGS
                 WHERE TIMESTAMP >= DATEADD(hour, -24, CURRENT_TIMESTAMP())
                 GROUP BY METER_ID
             ),
@@ -1339,7 +1364,7 @@ async def get_assets_from_snowflake(
                         PARTITION BY ROUND(m.METER_LATITUDE / 0.005), ROUND(m.METER_LONGITUDE / 0.005)
                         ORDER BY COALESCE(u.avg_usage_kwh, UNIFORM(5, 50, RANDOM())) DESC
                     ) as rn
-                FROM SI_DEMOS.PRODUCTION.METER_INFRASTRUCTURE m
+                FROM {DB}.PRODUCTION.METER_INFRASTRUCTURE m
                 LEFT JOIN recent_meter_usage u ON m.METER_ID = u.METER_ID
                 WHERE m.METER_LATITUDE IS NOT NULL AND m.METER_LONGITUDE IS NOT NULL
             )
@@ -1356,7 +1381,7 @@ async def get_assets_from_snowflake(
                     VOLTAGE_LEVEL as VOLTAGE, OPERATIONAL_STATUS as STATUS,
                     COMMISSIONED_DATE, CAPACITY_MVA as CAPACITY_OR_KVA,
                     NULL as POLE_HEIGHT_FT, NULL as CUSTOMER_SEGMENT, NULL as CIRCUIT_ID
-                FROM SI_DEMOS.PRODUCTION.SUBSTATIONS
+                FROM {DB}.PRODUCTION.SUBSTATIONS
                 WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
                 
                 UNION ALL
@@ -1370,7 +1395,7 @@ async def get_assets_from_snowflake(
                     t.LAST_MAINTENANCE_DATE as COMMISSIONED_DATE,
                     t.RATED_KVA as CAPACITY_OR_KVA, NULL as POLE_HEIGHT_FT,
                     NULL as CUSTOMER_SEGMENT, t.CIRCUIT_ID
-                FROM SI_DEMOS.PRODUCTION.TRANSFORMER_METADATA t
+                FROM {DB}.PRODUCTION.TRANSFORMER_METADATA t
                 LEFT JOIN latest_transformer_load l ON t.TRANSFORMER_ID = l.TRANSFORMER_ID
                 WHERE t.LATITUDE IS NOT NULL AND t.LONGITUDE IS NOT NULL
                     {combined_where}
@@ -1385,7 +1410,7 @@ async def get_assets_from_snowflake(
                     LAST_INSPECTION_DATE as COMMISSIONED_DATE,
                     NULL as CAPACITY_OR_KVA, POLE_HEIGHT_FT,
                     NULL as CUSTOMER_SEGMENT, CIRCUIT_ID
-                FROM SI_DEMOS.PRODUCTION.GRID_POLES_INFRASTRUCTURE
+                FROM {DB}.PRODUCTION.GRID_POLES_INFRASTRUCTURE
                 WHERE LATITUDE IS NOT NULL AND LONGITUDE IS NOT NULL
                     {combined_where}
                 
@@ -1497,7 +1522,7 @@ async def get_topology(
                 from_longitude as FROM_LON,
                 to_latitude as TO_LAT,
                 to_longitude as TO_LON
-            FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY
+            FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY
             WHERE from_latitude IS NOT NULL 
               AND to_latitude IS NOT NULL
             LIMIT {limit}
@@ -1543,12 +1568,12 @@ async def get_metro_topology(request: Request, bypass_cache: bool = Query(False)
     def _fetch_metro():
         conn = get_snowflake_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 SUBSTATION_ID, SUBSTATION_NAME, LATITUDE, LONGITUDE,
                 CAPACITY_MVA, AVG_LOAD_PCT, ACTIVE_OUTAGES,
                 TRANSFORMER_COUNT, TOTAL_CAPACITY_KVA
-            FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_METRO
+            FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_METRO
         """)
         results = []
         for row in cursor.fetchall():
@@ -1591,13 +1616,13 @@ async def get_feeder_topology(request: Request, bypass_cache: bool = Query(False
     def _fetch_feeders():
         conn = get_snowflake_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 SUBSTATION_ID, TRANSFORMER_ID, CONNECTION_TYPE,
                 FROM_LATITUDE, FROM_LONGITUDE, TO_LATITUDE, TO_LONGITUDE,
                 LOAD_UTILIZATION_PCT, CIRCUIT_ID, RATED_KVA,
                 DISTANCE_KM, VOLTAGE_LEVEL
-            FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_FEEDERS
+            FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_TOPOLOGY_FEEDERS
         """)
         results = []
         for row in cursor.fetchall():
@@ -1643,7 +1668,7 @@ async def get_kpis(request: Request, bypass_cache: bool = Query(False)):
     def _fetch_kpis():
         conn = get_snowflake_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_KPIS")
+        cursor.execute(f"SELECT * FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_KPIS")
         row = cursor.fetchone()
         kpis = {}
         if row:
@@ -1717,12 +1742,12 @@ async def get_service_areas_from_snowflake(cache_key: str = "service_areas") -> 
     def _fetch_service_areas():
         conn = get_snowflake_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 CIRCUIT_ID, SUBSTATION_ID, SUBSTATION_NAME,
                 CIRCUIT_CENTER_LAT, CIRCUIT_CENTER_LON,
                 AVG_LOAD_UTILIZATION_PCT, AVG_HEALTH_INDEX
-            FROM SI_DEMOS.APPLICATIONS.FLUX_OPS_CENTER_SERVICE_AREAS_MV
+            FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_SERVICE_AREAS_MV
         """)
         service_areas = []
         for row in cursor.fetchall():
@@ -1763,9 +1788,9 @@ async def get_weather(request: Request, bypass_cache: bool = Query(False)):
     def _fetch_weather():
         conn = get_snowflake_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT TIMESTAMP_UTC, TEMP_F, HUMIDITY_PCT
-            FROM SI_DEMOS.PRODUCTION.HOUSTON_WEATHER_HOURLY
+            FROM {DB}.PRODUCTION.HOUSTON_WEATHER_HOURLY
             ORDER BY TIMESTAMP_UTC ASC
         """)
         weather = []
@@ -1882,7 +1907,7 @@ async def get_postgres_substation_status():
         conn = get_snowflake_connection()
         cursor = conn.cursor()
         
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 SUBSTATION_ID as substation_id,
                 SUBSTATION_NAME as substation_name,
@@ -1899,7 +1924,7 @@ async def get_postgres_substation_status():
                     ELSE 'good'
                 END as status,
                 MAX(LAST_UPDATED) as last_updated
-            FROM SI_DEMOS.APPLICATIONS.CIRCUIT_STATUS_REALTIME
+            FROM {DB}.APPLICATIONS.CIRCUIT_STATUS_REALTIME
             GROUP BY SUBSTATION_ID, SUBSTATION_NAME
             ORDER BY worst_circuit_load DESC NULLS LAST
         """)
@@ -1945,7 +1970,7 @@ async def get_substations():
     def _fetch_substations():
         conn = get_snowflake_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 SUBSTATION_ID as substation_id,
                 SUBSTATION_NAME as substation_name,
@@ -1955,7 +1980,7 @@ async def get_substations():
                 VOLTAGE_LEVEL as voltage_level,
                 COMMISSIONED_DATE as commissioned_date,
                 OPERATIONAL_STATUS as operational_status
-            FROM SI_DEMOS.PRODUCTION.SUBSTATIONS
+            FROM {DB}.PRODUCTION.SUBSTATIONS
             ORDER BY SUBSTATION_NAME
         """)
         columns = [desc[0] for desc in cursor.description]
@@ -2041,7 +2066,7 @@ async def get_circuit_metadata(
                 MAX_LAT as max_lat,
                 MIN_LON as min_lon,
                 MAX_LON as max_lon
-            FROM SI_DEMOS.PRODUCTION.CIRCUIT_METADATA
+            FROM {DB}.PRODUCTION.CIRCUIT_METADATA
             {where_sql}
             ORDER BY CIRCUIT_ID
         """
@@ -2148,7 +2173,7 @@ async def get_active_outages(
                 CUSTOMER_PRIORITY_SCORE as customer_priority_score,
                 EQUIPMENT_DAMAGE_SEVERITY as equipment_damage_severity,
                 LAST_UPDATED_TIMESTAMP as last_updated_timestamp
-            FROM SI_DEMOS.PRODUCTION.OUTAGE_RESTORATION_TRACKER
+            FROM {DB}.PRODUCTION.OUTAGE_RESTORATION_TRACKER
             {where_sql}
             ORDER BY SEVERITY_LEVEL DESC, OUTAGE_START_TIMESTAMP DESC
         """
@@ -2262,7 +2287,7 @@ async def get_active_work_orders(
                 COST_USD as cost_usd,
                 LABOR_HOURS as labor_hours,
                 ASSIGNED_CREW as assigned_crew
-            FROM SI_DEMOS.PRODUCTION.WORK_ORDERS
+            FROM {DB}.PRODUCTION.WORK_ORDERS
             {where_sql}
             ORDER BY 
                 CASE PRIORITY 
@@ -2389,9 +2414,11 @@ async def agent_stream(request: Request):
         
         agent_url = (
             f"https://{snowflake_host}"
-            f"/api/v2/databases/SNOWFLAKE_INTELLIGENCE/schemas/AGENTS"
-            f"/agents/GRID_INTELLIGENCE_AGENT:run"
+            f"/api/v2/databases/{settings.cortex_agent_database}/schemas/{settings.cortex_agent_schema}"
+            f"/agents/{settings.cortex_agent_name}:run"
         )
+        
+        logger.info(f"Using Cortex Agent: {settings.cortex_agent_database}.{settings.cortex_agent_schema}.{settings.cortex_agent_name}")
         
         payload = {
             "messages": [{
@@ -2548,8 +2575,8 @@ async def submit_feedback(feedback: FeedbackRequest):
         
         feedback_url = (
             f"https://{snowflake_host}"
-            f"/api/v2/databases/SNOWFLAKE_INTELLIGENCE/schemas/AGENTS"
-            f"/agents/GRID_INTELLIGENCE_AGENT:feedback"
+            f"/api/v2/databases/{settings.cortex_agent_database}/schemas/{settings.cortex_agent_schema}"
+            f"/agents/{settings.cortex_agent_name}:feedback"
         )
         
         headers = {
@@ -2590,7 +2617,7 @@ async def submit_feedback(feedback: FeedbackRequest):
 
 # =============================================================================
 # PostGIS SPATIAL QUERY ENDPOINTS
-# Engineering Enhancement: CNP Use Case 7 (Geospatial Analysis)
+# Engineering Enhancement: Use Case 7 (Geospatial Analysis)
 # Demonstrates <20ms response times with industry-standard PostGIS queries
 # =============================================================================
 
@@ -3251,7 +3278,7 @@ async def get_h3_vegetation_heatmap(
             ROUND(AVG(HEIGHT_M), 1) as avg_tree_height,
             ROUND(AVG(LONGITUDE), 6) as centroid_lon,
             ROUND(AVG(LATITUDE), 6) as centroid_lat
-        FROM SI_DEMOS.APPLICATIONS.VEGETATION_RISK_COMPUTED
+        FROM {DB}.APPLICATIONS.VEGETATION_RISK_COMPUTED
         WHERE GEOM IS NOT NULL
         GROUP BY 1
         HAVING AVG(RISK_SCORE) >= {min_risk}
@@ -3260,7 +3287,7 @@ async def get_h3_vegetation_heatmap(
         """
         
         result = subprocess.run(
-            ["snow", "sql", "-q", query, "-c", "cpe_demo_CLI", "--format", "json"],
+            ["snow", "sql", "-q", query, "-c", settings.snowflake_connection_name, "--format", "json"],
             capture_output=True, text=True, timeout=60
         )
         
@@ -4394,7 +4421,7 @@ async def get_building_footprints_layer(
                     ST_X(ST_CENTROID(GEOMETRY)) as centroid_lon,
                     ST_Y(ST_CENTROID(GEOMETRY)) as centroid_lat,
                     ST_ASGEOJSON(GEOMETRY) as geojson
-                FROM SI_DEMOS.RAW.HOUSTON_BUILDINGS_FOOTPRINTS
+                FROM {DB}.RAW.HOUSTON_BUILDINGS_FOOTPRINTS
                 WHERE ST_X(ST_CENTROID(GEOMETRY)) BETWEEN {min_lon} AND {max_lon}
                   AND ST_Y(ST_CENTROID(GEOMETRY)) BETWEEN {min_lat} AND {max_lat}
                 LIMIT {min(limit, 100000)}
@@ -4540,7 +4567,7 @@ async def get_cascade_grid_topology(
                     NODE_ID, NODE_NAME, NODE_TYPE, LAT, LON, REGION,
                     CAPACITY_KW, VOLTAGE_KV, CRITICALITY_SCORE,
                     DOWNSTREAM_TRANSFORMERS, DOWNSTREAM_CAPACITY_KVA
-                FROM SI_DEMOS.ML_DEMO.GRID_NODES
+                FROM {DB}.ML_DEMO.GRID_NODES
                 {('WHERE ' + ' AND '.join(node_where)) if node_where else ''}
                 ORDER BY CRITICALITY_SCORE DESC
                 LIMIT {limit}
@@ -4574,7 +4601,7 @@ async def get_cascade_grid_topology(
                     SELECT 
                         EDGE_ID, FROM_NODE_ID, TO_NODE_ID, EDGE_TYPE,
                         CIRCUIT_ID, DISTANCE_KM, IMPEDANCE_PU
-                    FROM SI_DEMOS.ML_DEMO.GRID_EDGES
+                    FROM {DB}.ML_DEMO.GRID_EDGES
                     WHERE FROM_NODE_ID IN ({placeholders})
                        OR TO_NODE_ID IN ({placeholders})
                     LIMIT 5000
@@ -4664,13 +4691,13 @@ async def get_high_risk_cascade_nodes(
                     COALESCE(c.TOTAL_REACH, 0) as TOTAL_REACH,
                     COALESCE(c.NEIGHBORS_1HOP, 0) as NEIGHBORS_1HOP,
                     COALESCE(c.NEIGHBORS_2HOP, 0) as NEIGHBORS_2HOP
-                FROM SI_DEMOS.ML_DEMO.GRID_NODES n
+                FROM {DB}.ML_DEMO.GRID_NODES n
                 LEFT JOIN (
                     SELECT FROM_NODE_ID as NODE_ID, COUNT(*) as EDGE_COUNT
-                    FROM SI_DEMOS.ML_DEMO.GRID_EDGES
+                    FROM {DB}.ML_DEMO.GRID_EDGES
                     GROUP BY FROM_NODE_ID
                 ) e ON n.NODE_ID = e.NODE_ID
-                LEFT JOIN SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c 
+                LEFT JOIN {DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c 
                     ON n.NODE_ID = c.NODE_ID
                 WHERE c.CASCADE_RISK_SCORE_NORMALIZED >= {risk_threshold}
                   AND e.EDGE_COUNT > 5  -- Must have meaningful propagation paths for realistic cascade
@@ -4720,7 +4747,7 @@ async def get_high_risk_cascade_nodes(
             "count": len(nodes),
             "risk_threshold": risk_threshold,
             "query_time_ms": query_time,
-            "ml_source": "SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2",
+            f"ml_source": "{DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2",
             "analysis_note": "CASCADE_RISK_SCORE computed via Snowflake ML graph centrality analysis (PageRank, Betweenness, Eigenvector)"
         }
     
@@ -4751,14 +4778,14 @@ async def simulate_cascade_failure(scenario: CascadeScenario):
                 patient_zero_query = f"""
                     SELECT NODE_ID, NODE_NAME, NODE_TYPE, LAT, LON, 
                            CAPACITY_KW, CRITICALITY_SCORE, DOWNSTREAM_CAPACITY_KVA
-                    FROM SI_DEMOS.ML_DEMO.GRID_NODES
+                    FROM {DB}.ML_DEMO.GRID_NODES
                     WHERE NODE_ID = '{scenario.initial_failure_node}'
                 """
             else:
-                patient_zero_query = """
+                patient_zero_query = f"""
                     SELECT NODE_ID, NODE_NAME, NODE_TYPE, LAT, LON,
                            CAPACITY_KW, CRITICALITY_SCORE, DOWNSTREAM_CAPACITY_KVA
-                    FROM SI_DEMOS.ML_DEMO.GRID_NODES
+                    FROM {DB}.ML_DEMO.GRID_NODES
                     WHERE NODE_TYPE = 'SUBSTATION'
                     ORDER BY CRITICALITY_SCORE DESC
                     LIMIT 1
@@ -4806,8 +4833,8 @@ async def simulate_cascade_failure(scenario: CascadeScenario):
                             n.CAPACITY_KW,
                             n.CRITICALITY_SCORE,
                             e.DISTANCE_KM
-                        FROM SI_DEMOS.ML_DEMO.GRID_EDGES e
-                        JOIN SI_DEMOS.ML_DEMO.GRID_NODES n ON e.TO_NODE_ID = n.NODE_ID
+                        FROM {DB}.ML_DEMO.GRID_EDGES e
+                        JOIN {DB}.ML_DEMO.GRID_NODES n ON e.TO_NODE_ID = n.NODE_ID
                         WHERE e.FROM_NODE_ID = '{failed_node_id}'
                           AND e.TO_NODE_ID NOT IN ({','.join([f"'{k}'" for k in failed_nodes.keys()])})
                         ORDER BY n.CRITICALITY_SCORE DESC
@@ -4995,12 +5022,12 @@ async def get_transformer_risk_predictions(
                         (1 + COALESCE(TRY_TO_DOUBLE(t.STRESS_VS_HISTORICAL), 0) / 100) *
                         (1 + t.TRANSFORMER_AGE_YEARS / 50)
                     ) as PREDICTED_RISK
-                FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING t
-                JOIN SI_DEMOS.PRODUCTION.TRANSFORMER_METADATA tm 
+                FROM {DB}.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING t
+                JOIN {DB}.PRODUCTION.TRANSFORMER_METADATA tm 
                     ON t.TRANSFORMER_ID = tm.TRANSFORMER_ID
                 WHERE t.PREDICTION_DATE = (
                     SELECT MAX(PREDICTION_DATE) 
-                    FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING
+                    FROM {DB}.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING
                 )
                 QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRANSFORMER_ID ORDER BY t.MORNING_TIMESTAMP DESC) = 1
                 ORDER BY PREDICTED_RISK DESC
@@ -5130,8 +5157,8 @@ async def predict_transformer_failures_with_ml_model(
                         v.LOAD_FACTOR_PCT_SCALED,
                         v.TRANSFORMER_AGE_YEARS_SCALED,
                         v.STRESS_ENCODED_ABOVE_HISTORICAL_PATTERN
-                    FROM SI_DEMOS.ML_DEMO.V_TRANSFORMER_ML_INFERENCE v
-                    JOIN SI_DEMOS.PRODUCTION.TRANSFORMER_METADATA tm 
+                    FROM {DB}.ML_DEMO.V_TRANSFORMER_ML_INFERENCE v
+                    JOIN {DB}.PRODUCTION.TRANSFORMER_METADATA tm 
                         ON v.TRANSFORMER_ID = tm.TRANSFORMER_ID
                     WHERE v.LOAD_FACTOR_PCT >= {min_load_pct}
                     {county_filter}
@@ -5231,8 +5258,8 @@ async def predict_transformer_failures_with_ml_model(
                     "capacity": 0.05
                 },
                 "training_data": "July 2025 Summer Peak (100K records)",
-                "registry": "SI_DEMOS.ML_DEMO.TRANSFORMER_FAILURE_PREDICTOR",
-                "scaler_params": "SI_DEMOS.ML_DEMO.T_SCALER_PARAMETERS"
+                f"registry": "{DB}.ML_DEMO.TRANSFORMER_FAILURE_PREDICTOR",
+                f"scaler_params": "{DB}.ML_DEMO.T_SCALER_PARAMETERS"
             },
             "analysis_note": "ML-calibrated inference using preprocessed features (StandardScaler + OneHotEncoder). Ready for SPCS service upgrade."
         }
@@ -5268,9 +5295,9 @@ async def predict_transformer_risk_heuristic(county, min_load_pct, limit):
                     (1 + COALESCE(TRY_TO_DOUBLE(t.STRESS_VS_HISTORICAL), 0) / 100) *
                     (1 + t.TRANSFORMER_AGE_YEARS / 50)
                 ) as HEURISTIC_RISK
-            FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING t
-            JOIN SI_DEMOS.PRODUCTION.TRANSFORMER_METADATA tm ON t.TRANSFORMER_ID = tm.TRANSFORMER_ID
-            WHERE t.PREDICTION_DATE = (SELECT MAX(PREDICTION_DATE) FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING)
+            FROM {DB}.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING t
+            JOIN {DB}.PRODUCTION.TRANSFORMER_METADATA tm ON t.TRANSFORMER_ID = tm.TRANSFORMER_ID
+            WHERE t.PREDICTION_DATE = (SELECT MAX(PREDICTION_DATE) FROM {DB}.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING)
             AND t.MORNING_LOAD_PCT >= {min_load_pct}
             {county_filter}
             QUALIFY ROW_NUMBER() OVER (PARTITION BY t.TRANSFORMER_ID ORDER BY t.MORNING_TIMESTAMP DESC) = 1
@@ -5453,7 +5480,7 @@ async def get_cascade_ml_metadata():
                 "name": "NetworkX Centrality Analysis",
                 "platform": "Snowpark Python UDF",
                 "description": "Calculates betweenness centrality, degree centrality, and PageRank to identify critical nodes",
-                "training_data": "SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2",
+                f"training_data": "{DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2",
                 "node_count": 1873,
                 "last_updated": "2025-01-15",
                 "metrics": {
@@ -5466,7 +5493,7 @@ async def get_cascade_ml_metadata():
                 "name": "Transformer Temporal Risk Model",
                 "platform": "Snowflake ML (Feature Store + Model Registry)",
                 "description": "Predicts afternoon (4 PM) transformer risk from morning (8 AM) operational state",
-                "training_data": "SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING",
+                f"training_data": "{DB}.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING",
                 "features": [
                     "morning_load_pct",
                     "transformer_age_years", 
@@ -5480,7 +5507,7 @@ async def get_cascade_ml_metadata():
                 "name": "BFS Cascade Propagation",
                 "platform": "Python (FastAPI) with Snowflake Data",
                 "description": "Breadth-first search simulation of failure propagation through grid topology",
-                "data_source": "SI_DEMOS.ML_DEMO.GRID_NODES + GRID_EDGES",
+                f"data_source": "{DB}.ML_DEMO.GRID_NODES + GRID_EDGES",
                 "parameters": ["temperature_c", "load_multiplier", "failure_threshold"],
                 "future_enhancement": "GNN model on Snowpark Container Services"
             },
@@ -5523,7 +5550,7 @@ async def get_precomputed_cascade_scenarios():
             cursor = conn.cursor()
             
             # Fetch pre-computed scenarios
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     scenario_id,
                     scenario_name,
@@ -5538,7 +5565,7 @@ async def get_precomputed_cascade_scenarios():
                     estimated_customers_affected,
                     max_cascade_depth,
                     simulation_timestamp
-                FROM SI_DEMOS.CASCADE_ANALYSIS.PRECOMPUTED_CASCADES
+                FROM {DB}.CASCADE_ANALYSIS.PRECOMPUTED_CASCADES
                 ORDER BY computed_at DESC
                 LIMIT 10
             """)
@@ -5619,7 +5646,7 @@ async def simulate_cascade_realtime(
             cursor = conn.cursor()
             
             # Load nodes with centrality features
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT 
                     n.NODE_ID,
                     n.NODE_NAME,
@@ -5632,8 +5659,8 @@ async def simulate_cascade_realtime(
                     COALESCE(n.DOWNSTREAM_TRANSFORMERS, 0) as DOWNSTREAM_TRANSFORMERS,
                     COALESCE(c.BETWEENNESS_CENTRALITY, 0) as BETWEENNESS,
                     COALESCE(c.PAGERANK, 0) as PAGERANK
-                FROM SI_DEMOS.ML_DEMO.GRID_NODES n
-                LEFT JOIN SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c 
+                FROM {DB}.ML_DEMO.GRID_NODES n
+                LEFT JOIN {DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c 
                     ON n.NODE_ID = c.NODE_ID
                 WHERE n.LAT IS NOT NULL AND n.LON IS NOT NULL
             """)
@@ -5655,9 +5682,9 @@ async def simulate_cascade_realtime(
                 }
             
             # Build adjacency list
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT FROM_NODE_ID, TO_NODE_ID, COALESCE(DISTANCE_KM, 1.0) as DISTANCE_KM
-                FROM SI_DEMOS.ML_DEMO.GRID_EDGES
+                FROM {DB}.ML_DEMO.GRID_EDGES
             """)
             
             adjacency = {}
@@ -5862,9 +5889,9 @@ async def get_patient_zero_candidates(
                             n.DOWNSTREAM_TRANSFORMERS,
                             COALESCE(g.GNN_CASCADE_RISK, c.CASCADE_RISK_SCORE_NORMALIZED, n.CRITICALITY_SCORE) as RISK_SCORE,
                             CASE WHEN g.GNN_CASCADE_RISK IS NOT NULL THEN 'gnn_model' ELSE 'centrality' END as RISK_SOURCE
-                        FROM SI_DEMOS.ML_DEMO.GRID_NODES n
-                        LEFT JOIN SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c ON n.NODE_ID = c.NODE_ID
-                        LEFT JOIN SI_DEMOS.CASCADE_ANALYSIS.GNN_PREDICTIONS g ON n.NODE_ID = g.NODE_ID
+                        FROM {DB}.ML_DEMO.GRID_NODES n
+                        LEFT JOIN {DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c ON n.NODE_ID = c.NODE_ID
+                        LEFT JOIN {DB}.CASCADE_ANALYSIS.GNN_PREDICTIONS g ON n.NODE_ID = g.NODE_ID
                         WHERE n.LAT IS NOT NULL AND n.LON IS NOT NULL
                         ORDER BY RISK_SCORE DESC
                         LIMIT {limit}
@@ -5888,8 +5915,8 @@ async def get_patient_zero_candidates(
                         n.DOWNSTREAM_TRANSFORMERS,
                         COALESCE(c.CASCADE_RISK_SCORE_NORMALIZED, n.CRITICALITY_SCORE / 10.0) as RISK_SCORE,
                         CASE WHEN c.CASCADE_RISK_SCORE_NORMALIZED IS NOT NULL THEN 'true_centrality' ELSE 'criticality_proxy' END as RISK_SOURCE
-                    FROM SI_DEMOS.ML_DEMO.GRID_NODES n
-                    {join_type} SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c ON n.NODE_ID = c.NODE_ID
+                    FROM {DB}.ML_DEMO.GRID_NODES n
+                    {join_type} {DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c ON n.NODE_ID = c.NODE_ID
                     WHERE n.LAT IS NOT NULL AND n.LON IS NOT NULL
                     ORDER BY RISK_SCORE DESC
                     LIMIT {limit}
@@ -5958,7 +5985,7 @@ async def get_precomputed_cascade_by_id(scenario_id: str):
                     estimated_customers_affected,
                     max_cascade_depth,
                     simulation_timestamp
-                FROM SI_DEMOS.CASCADE_ANALYSIS.PRECOMPUTED_CASCADES
+                FROM {DB}.CASCADE_ANALYSIS.PRECOMPUTED_CASCADES
                 WHERE scenario_id = '{scenario_id}'
             """)
             
@@ -6482,8 +6509,8 @@ async def compare_mitigation_investments(
                     COALESCE(c.CASCADE_RISK_SCORE_NORMALIZED, 0) as RISK_SCORE,
                     COALESCE(c.BETWEENNESS_CENTRALITY, 0) as BETWEENNESS,
                     COALESCE(c.TOTAL_REACH, 0) as NETWORK_REACH
-                FROM SI_DEMOS.ML_DEMO.GRID_NODES n
-                LEFT JOIN SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c 
+                FROM {DB}.ML_DEMO.GRID_NODES n
+                LEFT JOIN {DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c 
                     ON n.NODE_ID = c.NODE_ID
                 {node_filter}
             """)
@@ -6616,19 +6643,19 @@ async def get_realtime_cascade_risk():
             cursor = conn.cursor()
             
             # Get current grid state indicators
-            cursor.execute("""
+            cursor.execute(f"""
                 WITH current_load AS (
                     SELECT 
                         AVG(MORNING_LOAD_PCT) as avg_load_pct,
                         MAX(MORNING_LOAD_PCT) as max_load_pct,
                         COUNT(CASE WHEN MORNING_LOAD_PCT > 80 THEN 1 END) as high_load_count,
                         COUNT(*) as total_transformers
-                    FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING
-                    WHERE PREDICTION_DATE = (SELECT MAX(PREDICTION_DATE) FROM SI_DEMOS.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING)
+                    FROM {DB}.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING
+                    WHERE PREDICTION_DATE = (SELECT MAX(PREDICTION_DATE) FROM {DB}.ML_DEMO.T_TRANSFORMER_TEMPORAL_TRAINING)
                 ),
                 high_risk_nodes AS (
                     SELECT COUNT(*) as high_risk_count
-                    FROM SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2
+                    FROM {DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2
                     WHERE CASCADE_RISK_SCORE_NORMALIZED > 0.7
                 )
                 SELECT 

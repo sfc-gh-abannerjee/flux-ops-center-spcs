@@ -73,16 +73,40 @@ docker tag flux_ops_center:latest <full_repo_url>/flux_ops_center:latest
 docker push <full_repo_url>/flux_ops_center:latest
 ```
 
-### 2. Create the SPCS Service
+### 2. Set Up Snowflake Postgres
+
+```bash
+# Get the Postgres setup SQL
+terraform output postgres_setup_sql
+
+# Run in Snowflake Worksheets
+# IMPORTANT: Save the credentials shown - they cannot be retrieved later!
+```
+
+### 3. Load PostGIS Spatial Data (REQUIRED)
+
+After Postgres is running, load the spatial data for map visualization:
+
+```bash
+# Get the Postgres host from: SHOW POSTGRES INSTANCES LIKE 'FLUX_OPS_POSTGRES';
+# Create a pg_service.conf entry or use direct connection
+
+python backend/scripts/load_postgis_data.py --service flux_ops_postgres
+```
+
+This loads ~390MB of spatial data from [GitHub Releases](https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs/releases/tag/v1.0.0-data).
+
+### 4. Create the SPCS Service
 
 ```bash
 # Get the CREATE SERVICE SQL
-terraform output create_service_sql
+terraform output spcs_setup_sql
 
+# Update the <POSTGRES_HOST> placeholder with your Postgres host
 # Run in Snowflake Worksheets or via SnowSQL
 ```
 
-### 3. Get Service URL
+### 5. Get Service URL
 
 ```sql
 SHOW ENDPOINTS IN SERVICE FLUX_OPS_CENTER_SERVICE;

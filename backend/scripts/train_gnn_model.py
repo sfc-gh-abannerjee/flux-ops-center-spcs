@@ -33,6 +33,10 @@ from typing import Dict, List, Tuple, Optional
 from collections import deque
 from dataclasses import dataclass
 
+# Import centralized configuration
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import DB, CONNECTION, SCHEMA_ML_DEMO, SCHEMA_CASCADE_ANALYSIS
+
 # Check for PyTorch
 try:
     import torch
@@ -57,7 +61,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, precision_recall_fscore_support, average_precision_score
 
 # Configuration
-CONNECTION_NAME = os.getenv("SNOWFLAKE_CONNECTION_NAME", "cpe_demo_CLI")
+CONNECTION_NAME = CONNECTION
 MODEL_NAME = "CASCADE_GCN_MODEL"
 MODEL_VERSION = "v2_production"
 
@@ -183,7 +187,7 @@ class GNNTrainer:
         
         # Load nodes with centrality features
         print("\nLoading nodes with centrality features...")
-        self.nodes_df = session.sql("""
+        self.nodes_df = session.sql(f"""
             SELECT 
                 n.NODE_ID,
                 n.NODE_TYPE,
@@ -199,8 +203,8 @@ class GNNTrainer:
                 COALESCE(c.PAGERANK, 0) as PAGERANK,
                 COALESCE(c.CLUSTERING_COEFFICIENT, 0) as CLUSTERING_COEFFICIENT,
                 COALESCE(c.CASCADE_RISK_SCORE, n.CRITICALITY_SCORE) as CASCADE_RISK_SCORE
-            FROM SI_DEMOS.ML_DEMO.GRID_NODES n
-            LEFT JOIN SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES c 
+            FROM {DB}.{SCHEMA_ML_DEMO}.GRID_NODES n
+            LEFT JOIN {DB}.{SCHEMA_CASCADE_ANALYSIS}.NODE_CENTRALITY_FEATURES c 
                 ON n.NODE_ID = c.NODE_ID
             WHERE n.LAT IS NOT NULL AND n.LON IS NOT NULL
         """).to_pandas()
@@ -208,9 +212,9 @@ class GNNTrainer:
         
         # Load edges
         print("Loading edges...")
-        self.edges_df = session.sql("""
+        self.edges_df = session.sql(f"""
             SELECT FROM_NODE_ID, TO_NODE_ID, DISTANCE_KM, EDGE_TYPE
-            FROM SI_DEMOS.ML_DEMO.GRID_EDGES
+            FROM {DB}.{SCHEMA_ML_DEMO}.GRID_EDGES
         """).to_pandas()
         print(f"  Loaded {len(self.edges_df)} edges")
         
@@ -496,11 +500,10 @@ class GNNTrainer:
         
         session = self.create_session()
         snowpark_df = session.create_dataframe(predictions_df)
-        snowpark_df.write.mode("overwrite").save_as_table(
-            "SI_DEMOS.CASCADE_ANALYSIS.GNN_PREDICTIONS"
-        )
+        table_path = f"{DB}.{SCHEMA_CASCADE_ANALYSIS}.GNN_PREDICTIONS"
+        snowpark_df.write.mode("overwrite").save_as_table(table_path)
         
-        print("  Written to SI_DEMOS.CASCADE_ANALYSIS.GNN_PREDICTIONS")
+        print(f"  Written to {table_path}")
     
     def register_model(self) -> None:
         """Register model in Snowflake Model Registry."""
@@ -512,7 +515,7 @@ class GNNTrainer:
             from snowflake.ml.registry import Registry
             
             session = self.create_session()
-            registry = Registry(session=session, database_name="SI_DEMOS", schema_name="CASCADE_ANALYSIS")
+            registry = Registry(session=session, database_name=DB, schema_name=SCHEMA_CASCADE_ANALYSIS)
             
             # Save model locally first
             model_path = self.save_model_locally()

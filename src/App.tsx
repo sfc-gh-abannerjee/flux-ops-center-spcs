@@ -200,7 +200,7 @@ interface AssetCluster {
   transformers: Asset[];
   poles: Asset[];
   meters: Asset[];
-  districtId?: string; // CNP-style service district ID (e.g., "BA-SD1", "AD-SD2")
+  districtId?: string; // Utility-style service district ID (e.g., "BA-SD1", "AD-SD2")
 }
 
 // ENGINEERING: Substation-based operational clustering
@@ -208,7 +208,7 @@ interface AssetCluster {
 // SOLUTION: Cluster assets by substation service areas (natural operational boundaries)
 // BENEFIT: Aligns with utility actual grid management structure (competing with Grid 360)
 
-// Helper: Generate CNP-style substation code (e.g., "BAMMEL" → "BA", "ALDINE" → "AD")
+// Helper: Generate utility-style substation code (e.g., "BAMMEL" → "BA", "ALDINE" → "AD")
 function generateSubstationCode(substationName: string): string {
   // Extract first letters of each word, max 3 characters
   const words = substationName.toUpperCase().split(/[\s_-]+/);
@@ -266,7 +266,7 @@ function subdivideClusterGeographically(cluster: AssetCluster, numDistricts: num
     transformers: [],
     poles: [],
     meters: [],
-    // CNP-style service district ID: {SUBSTATION_CODE}-SD{NUMBER}
+    // Utility-style service district ID: {SUBSTATION_CODE}-SD{NUMBER}
     districtId: `${substationCode}-SD${idx + 1}`
   }));
   
@@ -350,7 +350,7 @@ function substationBasedClustering(substations: Asset[], transformers: Asset[], 
     return gridBinAssets([...transformers, ...poles, ...meters], 0.01);
   }
   
-  // REALISTIC DISTRIBUTION: CNP-style service area boundaries with distance weighting
+  // REALISTIC DISTRIBUTION: Utility-style service area boundaries with distance weighting
   // Edge substations have smaller service areas (sparser), central have larger (denser)
   // Distance penalty prevents edge substations from "vacuuming up" outlying assets
   const MAX_SERVICE_RADIUS_KM = 25; // Extended for outlying areas

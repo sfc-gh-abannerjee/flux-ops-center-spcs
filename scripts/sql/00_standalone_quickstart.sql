@@ -1,0 +1,829 @@
+-- =============================================================================
+-- Flux Ops Center - Standalone Quick Start
+-- =============================================================================
+-- This script deploys EVERYTHING needed for Flux Ops Center in a single file.
+-- Use this if you want to get started quickly without deploying other repos.
+--
+-- WHAT THIS CREATES:
+--   - Database with all required schemas
+--   - Core infrastructure tables (substations, transformers, meters, circuits)
+--   - Application views for the Ops Center UI
+--   - ML and cascade analysis tables
+--   - Sample data to get started immediately
+--
+-- HOW TO USE:
+--   Option 1: Copy this entire script into a Snowflake Worksheet and run it
+--   Option 2: Use Snow CLI:
+--             snow sql -f scripts/sql/00_standalone_quickstart.sql -c your_connection
+--
+-- CUSTOMIZATION:
+--   Change these values at the top of the script to match your environment:
+--     - database_name: Name for your database (default: FLUX_OPS_CENTER)
+--     - warehouse_name: Name for your warehouse (default: FLUX_WH)
+--
+-- AFTER RUNNING:
+--   1. Deploy the SPCS service using scripts 01-03
+--   2. Or run locally for development (see docs/LOCAL_DEVELOPMENT_GUIDE.md)
+-- =============================================================================
+
+-- ============================================================================
+-- CONFIGURATION - Change these values for your environment
+-- ============================================================================
+SET database_name = 'FLUX_OPS_CENTER';
+SET warehouse_name = 'FLUX_WH';
+
+-- ============================================================================
+-- SECTION 1: CREATE DATABASE AND SCHEMAS
+-- ============================================================================
+
+USE ROLE SYSADMIN;
+
+CREATE DATABASE IF NOT EXISTS IDENTIFIER($database_name)
+    DATA_RETENTION_TIME_IN_DAYS = 7
+    COMMENT = 'Flux Operations Center - Grid Analytics & Visualization';
+
+USE DATABASE IDENTIFIER($database_name);
+
+CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER($warehouse_name)
+    WAREHOUSE_SIZE = 'MEDIUM'
+    AUTO_SUSPEND = 300
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = FALSE
+    COMMENT = 'Flux Operations Center compute warehouse';
+
+USE WAREHOUSE IDENTIFIER($warehouse_name);
+
+-- Create schemas
+CREATE SCHEMA IF NOT EXISTS PRODUCTION
+    COMMENT = 'Production data: grid infrastructure, meters, transformers';
+
+CREATE SCHEMA IF NOT EXISTS APPLICATIONS  
+    COMMENT = 'Application views and computed tables for Flux Ops Center UI';
+
+CREATE SCHEMA IF NOT EXISTS ML_DEMO
+    COMMENT = 'Machine Learning demo: transformer failure prediction';
+
+CREATE SCHEMA IF NOT EXISTS CASCADE_ANALYSIS
+    COMMENT = 'Graph Neural Network cascade failure analysis';
+
+-- ============================================================================
+-- SECTION 2: PRODUCTION TABLES - Core Infrastructure
+-- ============================================================================
+USE SCHEMA PRODUCTION;
+
+-- Substations (root of grid hierarchy)
+CREATE TABLE IF NOT EXISTS SUBSTATIONS (
+    SUBSTATION_ID VARCHAR(50) PRIMARY KEY,
+    SUBSTATION_NAME VARCHAR(200),
+    LATITUDE FLOAT,
+    LONGITUDE FLOAT,
+    CAPACITY_MVA NUMBER(8,2),
+    VOLTAGE_CLASS VARCHAR(20),
+    REGION VARCHAR(50),
+    OPERATIONAL_STATUS VARCHAR(20) DEFAULT 'ACTIVE',
+    COMMISSIONED_DATE DATE,
+    LAST_INSPECTION_DATE DATE,
+    CURRENT_LOAD_MW NUMBER(8,2),
+    PEAK_LOAD_MW NUMBER(8,2),
+    LOAD_FACTOR_PCT NUMBER(5,2)
+);
+
+-- Transformers (connected to substations)
+CREATE TABLE IF NOT EXISTS TRANSFORMER_METADATA (
+    TRANSFORMER_ID VARCHAR(50) PRIMARY KEY,
+    TRANSFORMER_NAME VARCHAR(200),
+    SUBSTATION_ID VARCHAR(50),
+    LATITUDE FLOAT,
+    LONGITUDE FLOAT,
+    CAPACITY_KVA NUMBER(10,2),
+    PRIMARY_VOLTAGE_KV NUMBER(8,2),
+    SECONDARY_VOLTAGE_KV NUMBER(8,2),
+    INSTALL_YEAR NUMBER(4,0),
+    MANUFACTURER VARCHAR(100),
+    MODEL VARCHAR(100),
+    LAST_MAINTENANCE_DATE DATE,
+    CURRENT_LOAD_KVA NUMBER(10,2),
+    HEALTH_SCORE NUMBER(5,2),
+    RISK_CATEGORY VARCHAR(20)
+);
+
+-- Circuits/Feeders
+CREATE TABLE IF NOT EXISTS CIRCUIT_METADATA (
+    CIRCUIT_ID VARCHAR(50) PRIMARY KEY,
+    CIRCUIT_NAME VARCHAR(200),
+    SUBSTATION_ID VARCHAR(50),
+    VOLTAGE_CLASS VARCHAR(20),
+    LENGTH_MILES NUMBER(8,2),
+    CONDUCTOR_TYPE VARCHAR(50),
+    STATUS VARCHAR(20) DEFAULT 'ENERGIZED',
+    CUSTOMER_COUNT NUMBER(10,0)
+);
+
+-- Meters
+CREATE TABLE IF NOT EXISTS METER_INFRASTRUCTURE (
+    METER_ID VARCHAR(50) PRIMARY KEY,
+    METER_NUMBER VARCHAR(50),
+    TRANSFORMER_ID VARCHAR(50),
+    CIRCUIT_ID VARCHAR(50),
+    LATITUDE FLOAT,
+    LONGITUDE FLOAT,
+    METER_TYPE VARCHAR(50),
+    INSTALL_DATE DATE,
+    STATUS VARCHAR(20) DEFAULT 'ACTIVE',
+    CUSTOMER_CLASS VARCHAR(50)
+);
+
+-- AMI Readings (time-series data)
+CREATE TABLE IF NOT EXISTS AMI_INTERVAL_READINGS (
+    READING_ID VARCHAR(50) DEFAULT UUID_STRING(),
+    METER_ID VARCHAR(50),
+    READING_TIMESTAMP TIMESTAMP_NTZ,
+    USAGE_KWH NUMBER(10,4),
+    VOLTAGE_V NUMBER(8,2),
+    CURRENT_A NUMBER(8,2),
+    POWER_FACTOR NUMBER(5,3),
+    DATA_QUALITY VARCHAR(20) DEFAULT 'VALID'
+)
+CLUSTER BY (DATE_TRUNC('DAY', READING_TIMESTAMP), METER_ID);
+
+-- Transformer Hourly Load
+CREATE TABLE IF NOT EXISTS TRANSFORMER_HOURLY_LOAD (
+    TRANSFORMER_ID VARCHAR(50),
+    LOAD_HOUR TIMESTAMP_NTZ,
+    CURRENT_LOAD_KW NUMBER(10,2),
+    LOAD_FACTOR_PCT NUMBER(5,2),
+    TEMPERATURE_C NUMBER(5,1),
+    PRIMARY KEY (TRANSFORMER_ID, LOAD_HOUR)
+);
+
+-- Customers
+CREATE TABLE IF NOT EXISTS CUSTOMERS_MASTER_DATA (
+    CUSTOMER_ID VARCHAR(50) PRIMARY KEY,
+    FIRST_NAME VARCHAR(100),
+    LAST_NAME VARCHAR(100),
+    METER_ID VARCHAR(50),
+    SERVICE_ADDRESS VARCHAR(500),
+    CITY VARCHAR(100),
+    STATE VARCHAR(2),
+    ZIP_CODE VARCHAR(10),
+    CUSTOMER_CLASS VARCHAR(50),
+    ACCOUNT_STATUS VARCHAR(20) DEFAULT 'ACTIVE'
+);
+
+-- Weather Data
+CREATE TABLE IF NOT EXISTS WEATHER_HOURLY (
+    WEATHER_ID VARCHAR(50) DEFAULT UUID_STRING(),
+    OBSERVATION_TIME TIMESTAMP_NTZ,
+    LATITUDE FLOAT,
+    LONGITUDE FLOAT,
+    TEMPERATURE_F NUMBER(5,1),
+    HUMIDITY_PCT NUMBER(5,1),
+    WIND_SPEED_MPH NUMBER(5,1),
+    PRECIPITATION_IN NUMBER(5,2),
+    WEATHER_CONDITION VARCHAR(50)
+);
+
+-- ============================================================================
+-- SECTION 3: APPLICATIONS VIEWS - Ops Center UI
+-- ============================================================================
+USE SCHEMA APPLICATIONS;
+
+-- KPIs View
+CREATE OR REPLACE VIEW FLUX_OPS_CENTER_KPIS AS
+SELECT
+    (SELECT COUNT(*) FROM PRODUCTION.METER_INFRASTRUCTURE) AS TOTAL_CUSTOMERS,
+    COALESCE(
+        (SELECT COUNT(*) FROM PRODUCTION.CIRCUIT_METADATA WHERE STATUS = 'OUTAGE'),
+        0
+    ) AS ACTIVE_OUTAGES,
+    COALESCE(
+        (SELECT ROUND(SUM(CURRENT_LOAD_KW) / 1000, 2) 
+         FROM PRODUCTION.TRANSFORMER_HOURLY_LOAD 
+         WHERE LOAD_HOUR >= DATEADD('hour', -1, CURRENT_TIMESTAMP())),
+        ROUND(150 + RANDOM() * 50, 2)
+    ) AS TOTAL_LOAD_MW,
+    FLOOR(5 + RANDOM() * 10)::INT AS CREWS_ACTIVE,
+    ROUND(30 + RANDOM() * 60, 1) AS AVG_RESTORATION_MINUTES;
+
+-- Topology Metro View (Substations)
+CREATE OR REPLACE VIEW FLUX_OPS_CENTER_TOPOLOGY_METRO AS
+SELECT 
+    s.SUBSTATION_ID,
+    s.SUBSTATION_NAME,
+    s.LATITUDE,
+    s.LONGITUDE,
+    s.CAPACITY_MVA,
+    COALESCE(s.LOAD_FACTOR_PCT, ROUND(40 + RANDOM() * 40, 2)) AS AVG_LOAD_PCT,
+    0 AS ACTIVE_OUTAGES,
+    (SELECT COUNT(*) FROM PRODUCTION.TRANSFORMER_METADATA tm 
+     WHERE tm.SUBSTATION_ID = s.SUBSTATION_ID) AS TRANSFORMER_COUNT,
+    (SELECT COALESCE(SUM(CAPACITY_KVA), 0) FROM PRODUCTION.TRANSFORMER_METADATA tm 
+     WHERE tm.SUBSTATION_ID = s.SUBSTATION_ID) AS TOTAL_CAPACITY_KVA
+FROM PRODUCTION.SUBSTATIONS s;
+
+-- Topology Feeders View
+CREATE OR REPLACE VIEW FLUX_OPS_CENTER_TOPOLOGY_FEEDERS AS
+SELECT 
+    c.CIRCUIT_ID,
+    c.CIRCUIT_NAME,
+    c.SUBSTATION_ID,
+    s.SUBSTATION_NAME,
+    c.VOLTAGE_CLASS,
+    c.LENGTH_MILES,
+    COALESCE(c.STATUS, 'ENERGIZED') AS STATUS,
+    (SELECT COUNT(*) FROM PRODUCTION.METER_INFRASTRUCTURE m 
+     WHERE m.CIRCUIT_ID = c.CIRCUIT_ID) AS METER_COUNT,
+    CASE c.VOLTAGE_CLASS 
+        WHEN '4KV' THEN 4160 
+        WHEN '12KV' THEN 12470 
+        WHEN '25KV' THEN 24900 
+        ELSE 12470 
+    END * (0.98 + RANDOM() * 0.04) AS AVG_VOLTAGE,
+    CASE WHEN c.STATUS = 'OUTAGE' THEN TRUE ELSE FALSE END AS HAS_OUTAGE
+FROM PRODUCTION.CIRCUIT_METADATA c
+LEFT JOIN PRODUCTION.SUBSTATIONS s ON c.SUBSTATION_ID = s.SUBSTATION_ID;
+
+-- Grid Topology Edges
+CREATE OR REPLACE VIEW FLUX_OPS_CENTER_TOPOLOGY AS
+WITH 
+substation_transformer AS (
+    SELECT 
+        s.SUBSTATION_ID AS FROM_ASSET_ID,
+        'SUBSTATION' AS FROM_ASSET_TYPE,
+        s.LATITUDE AS FROM_LATITUDE,
+        s.LONGITUDE AS FROM_LONGITUDE,
+        tm.TRANSFORMER_ID AS TO_ASSET_ID,
+        'TRANSFORMER' AS TO_ASSET_TYPE,
+        tm.LATITUDE AS TO_LATITUDE,
+        tm.LONGITUDE AS TO_LONGITUDE,
+        s.SUBSTATION_ID,
+        NULL AS CIRCUIT_ID,
+        'ENERGIZED' AS STATUS,
+        COALESCE(tm.PRIMARY_VOLTAGE_KV, 12.47) AS VOLTAGE_KV
+    FROM PRODUCTION.SUBSTATIONS s
+    JOIN PRODUCTION.TRANSFORMER_METADATA tm ON tm.SUBSTATION_ID = s.SUBSTATION_ID
+    WHERE s.LATITUDE IS NOT NULL AND tm.LATITUDE IS NOT NULL
+),
+transformer_meter AS (
+    SELECT 
+        tm.TRANSFORMER_ID AS FROM_ASSET_ID,
+        'TRANSFORMER' AS FROM_ASSET_TYPE,
+        tm.LATITUDE AS FROM_LATITUDE,
+        tm.LONGITUDE AS FROM_LONGITUDE,
+        m.METER_ID AS TO_ASSET_ID,
+        'METER' AS TO_ASSET_TYPE,
+        m.LATITUDE AS TO_LATITUDE,
+        m.LONGITUDE AS TO_LONGITUDE,
+        tm.SUBSTATION_ID,
+        m.CIRCUIT_ID,
+        'ENERGIZED' AS STATUS,
+        0.240 AS VOLTAGE_KV
+    FROM PRODUCTION.TRANSFORMER_METADATA tm
+    JOIN PRODUCTION.METER_INFRASTRUCTURE m ON m.TRANSFORMER_ID = tm.TRANSFORMER_ID
+    WHERE tm.LATITUDE IS NOT NULL AND m.LATITUDE IS NOT NULL
+)
+SELECT * FROM substation_transformer
+UNION ALL
+SELECT * FROM transformer_meter;
+
+-- Topology Nodes
+CREATE OR REPLACE VIEW FLUX_OPS_CENTER_TOPOLOGY_NODES AS
+SELECT 
+    SUBSTATION_ID AS ASSET_ID,
+    'SUBSTATION' AS ASSET_TYPE,
+    SUBSTATION_ID,
+    NULL AS CIRCUIT_ID,
+    LATITUDE,
+    LONGITUDE,
+    'ENERGIZED' AS STATUS,
+    CAPACITY_MVA * 1000 AS VOLTAGE_KV
+FROM PRODUCTION.SUBSTATIONS
+WHERE LATITUDE IS NOT NULL
+UNION ALL
+SELECT 
+    TRANSFORMER_ID AS ASSET_ID,
+    'TRANSFORMER' AS ASSET_TYPE,
+    SUBSTATION_ID,
+    NULL AS CIRCUIT_ID,
+    LATITUDE,
+    LONGITUDE,
+    'ENERGIZED' AS STATUS,
+    COALESCE(PRIMARY_VOLTAGE_KV, 12.47) AS VOLTAGE_KV
+FROM PRODUCTION.TRANSFORMER_METADATA
+WHERE LATITUDE IS NOT NULL
+UNION ALL
+SELECT 
+    METER_ID AS ASSET_ID,
+    'METER' AS ASSET_TYPE,
+    NULL AS SUBSTATION_ID,
+    CIRCUIT_ID,
+    LATITUDE,
+    LONGITUDE,
+    'ACTIVE' AS STATUS,
+    0.240 AS VOLTAGE_KV
+FROM PRODUCTION.METER_INFRASTRUCTURE
+WHERE LATITUDE IS NOT NULL;
+
+-- Service Areas
+CREATE OR REPLACE VIEW FLUX_OPS_CENTER_SERVICE_AREAS_MV AS
+SELECT 
+    s.SUBSTATION_ID AS SERVICE_AREA_ID,
+    s.SUBSTATION_NAME AS SERVICE_AREA_NAME,
+    s.LATITUDE AS CENTER_LAT,
+    s.LONGITUDE AS CENTER_LON,
+    (SELECT COUNT(*) FROM PRODUCTION.METER_INFRASTRUCTURE m
+     JOIN PRODUCTION.TRANSFORMER_METADATA tm ON m.TRANSFORMER_ID = tm.TRANSFORMER_ID
+     WHERE tm.SUBSTATION_ID = s.SUBSTATION_ID) AS CUSTOMER_COUNT,
+    (SELECT COUNT(*) FROM PRODUCTION.TRANSFORMER_METADATA tm 
+     WHERE tm.SUBSTATION_ID = s.SUBSTATION_ID) AS TRANSFORMER_COUNT,
+    (SELECT COUNT(*) FROM PRODUCTION.CIRCUIT_METADATA c 
+     WHERE c.SUBSTATION_ID = s.SUBSTATION_ID) AS CIRCUIT_COUNT,
+    s.CAPACITY_MVA AS TOTAL_CAPACITY_MVA,
+    ROUND(99.5 + RANDOM() * 0.4, 2) AS RELIABILITY_PCT,
+    ROUND(0.5 + RANDOM() * 1.5, 2) AS SAIDI_MINUTES
+FROM PRODUCTION.SUBSTATIONS s;
+
+-- Vegetation Risk
+CREATE OR REPLACE VIEW VEGETATION_RISK_COMPUTED AS
+SELECT
+    'VEG_' || SEQ4() AS TREE_ID,
+    CASE MOD(SEQ4(), 5)
+        WHEN 0 THEN 'Oak' WHEN 1 THEN 'Pine' WHEN 2 THEN 'Maple'
+        WHEN 3 THEN 'Cypress' ELSE 'Elm'
+    END AS SPECIES,
+    -95.7 + RANDOM() * 0.7 AS LONGITUDE,
+    29.7 + RANDOM() * 0.3 AS LATITUDE,
+    ROUND(8 + RANDOM() * 25, 1) AS HEIGHT_M,
+    ROUND(RANDOM(), 3) AS RISK_SCORE,
+    CASE 
+        WHEN RANDOM() < 0.03 THEN 'critical'
+        WHEN RANDOM() < 0.10 THEN 'warning'
+        WHEN RANDOM() < 0.25 THEN 'monitor'
+        ELSE 'safe'
+    END AS RISK_LEVEL,
+    ROUND(2 + RANDOM() * 50, 1) AS DISTANCE_TO_LINE_M,
+    CURRENT_TIMESTAMP() AS COMPUTED_AT
+FROM TABLE(GENERATOR(ROWCOUNT => 5000));
+
+-- Circuit Status Realtime
+CREATE OR REPLACE VIEW CIRCUIT_STATUS_REALTIME AS
+SELECT 
+    c.CIRCUIT_ID,
+    c.CIRCUIT_NAME,
+    c.SUBSTATION_ID,
+    COALESCE(c.STATUS, 'ENERGIZED') AS STATUS,
+    CASE COALESCE(c.STATUS, 'ENERGIZED')
+        WHEN 'OUTAGE' THEN DATEADD('minute', -FLOOR(RANDOM() * 120)::INT, CURRENT_TIMESTAMP())
+        ELSE NULL
+    END AS OUTAGE_START_TIME,
+    CASE COALESCE(c.STATUS, 'ENERGIZED')
+        WHEN 'OUTAGE' THEN FLOOR(RANDOM() * 500)::INT
+        ELSE 0
+    END AS CUSTOMERS_AFFECTED,
+    CURRENT_TIMESTAMP() AS LAST_UPDATED
+FROM PRODUCTION.CIRCUIT_METADATA c;
+
+-- ============================================================================
+-- SECTION 4: ML_DEMO TABLES
+-- ============================================================================
+USE SCHEMA ML_DEMO;
+
+CREATE TABLE IF NOT EXISTS GRID_NODES (
+    NODE_ID VARCHAR(50) PRIMARY KEY,
+    NODE_TYPE VARCHAR(20) NOT NULL,
+    NODE_NAME VARCHAR(200),
+    LATITUDE FLOAT,
+    LONGITUDE FLOAT,
+    VOLTAGE_LEVEL VARCHAR(20),
+    CAPACITY_KVA FLOAT,
+    SUBSTATION_ID VARCHAR(50),
+    DEGREE_CENTRALITY FLOAT,
+    BETWEENNESS_CENTRALITY FLOAT,
+    LOAD_FACTOR FLOAT,
+    HEALTH_SCORE FLOAT,
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE TABLE IF NOT EXISTS GRID_EDGES (
+    EDGE_ID VARCHAR(50) PRIMARY KEY,
+    FROM_NODE_ID VARCHAR(50) NOT NULL,
+    TO_NODE_ID VARCHAR(50) NOT NULL,
+    EDGE_TYPE VARCHAR(20) NOT NULL,
+    LENGTH_METERS FLOAT,
+    CAPACITY_AMPS FLOAT,
+    IS_OPEN BOOLEAN DEFAULT FALSE,
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE TABLE IF NOT EXISTS T_TRANSFORMER_TEMPORAL_TRAINING (
+    RECORD_ID VARCHAR(50) DEFAULT UUID_STRING(),
+    TRANSFORMER_ID VARCHAR(50) NOT NULL,
+    PREDICTION_DATE DATE NOT NULL,
+    LOAD_FACTOR_AVG_7D FLOAT,
+    LOAD_FACTOR_MAX_7D FLOAT,
+    AGE_YEARS FLOAT,
+    HEALTH_SCORE FLOAT,
+    FAILURE_PROBABILITY FLOAT,
+    RISK_CATEGORY VARCHAR(20),
+    PRIMARY KEY (TRANSFORMER_ID, PREDICTION_DATE)
+);
+
+CREATE OR REPLACE VIEW V_TRANSFORMER_ML_INFERENCE AS
+SELECT 
+    t.TRANSFORMER_ID,
+    t.PREDICTION_DATE,
+    t.FAILURE_PROBABILITY,
+    t.RISK_CATEGORY,
+    t.LOAD_FACTOR_AVG_7D,
+    t.AGE_YEARS,
+    t.HEALTH_SCORE,
+    tm.TRANSFORMER_NAME,
+    tm.SUBSTATION_ID,
+    tm.LATITUDE,
+    tm.LONGITUDE
+FROM T_TRANSFORMER_TEMPORAL_TRAINING t
+JOIN PRODUCTION.TRANSFORMER_METADATA tm ON t.TRANSFORMER_ID = tm.TRANSFORMER_ID
+WHERE t.PREDICTION_DATE = (SELECT MAX(PREDICTION_DATE) FROM T_TRANSFORMER_TEMPORAL_TRAINING);
+
+-- ============================================================================
+-- SECTION 5: CASCADE_ANALYSIS TABLES
+-- ============================================================================
+USE SCHEMA CASCADE_ANALYSIS;
+
+CREATE TABLE IF NOT EXISTS NODE_CENTRALITY_FEATURES_V2 (
+    NODE_ID VARCHAR(50) PRIMARY KEY,
+    DEGREE_CENTRALITY FLOAT,
+    BETWEENNESS_CENTRALITY FLOAT,
+    CLOSENESS_CENTRALITY FLOAT,
+    PAGERANK_SCORE FLOAT,
+    CASCADE_IMPACT_SCORE FLOAT,
+    VULNERABILITY_SCORE FLOAT,
+    CRITICALITY_RANK INT,
+    NODE_TYPE VARCHAR(20),
+    SUBSTATION_ID VARCHAR(50),
+    COMPUTED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE TABLE IF NOT EXISTS PRECOMPUTED_CASCADES (
+    CASCADE_ID VARCHAR(50) PRIMARY KEY,
+    INITIATING_NODE_ID VARCHAR(50) NOT NULL,
+    INITIATING_NODE_NAME VARCHAR(200),
+    INITIATING_NODE_TYPE VARCHAR(20),
+    TOTAL_AFFECTED_NODES INT,
+    AFFECTED_CUSTOMERS INT,
+    LOAD_SHED_MW FLOAT,
+    CASCADE_PATH VARIANT,
+    CASCADE_DEPTH INT,
+    SIMULATION_SCENARIO VARCHAR(50),
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE TABLE IF NOT EXISTS GNN_PREDICTIONS (
+    PREDICTION_ID VARCHAR(50) DEFAULT UUID_STRING(),
+    NODE_ID VARCHAR(50) NOT NULL,
+    PREDICTION_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    FAILURE_PROBABILITY_1H FLOAT,
+    FAILURE_PROBABILITY_24H FLOAT,
+    CASCADE_RISK_SCORE FLOAT,
+    RISK_TIER VARCHAR(20),
+    PRIMARY KEY (NODE_ID, PREDICTION_TIMESTAMP)
+);
+
+-- ============================================================================
+-- SECTION 6: SAMPLE DATA - Get Started Immediately
+-- ============================================================================
+USE SCHEMA PRODUCTION;
+
+-- Insert sample substations (Houston area)
+INSERT INTO SUBSTATIONS (SUBSTATION_ID, SUBSTATION_NAME, LATITUDE, LONGITUDE, CAPACITY_MVA, VOLTAGE_CLASS, REGION, OPERATIONAL_STATUS)
+SELECT 
+    'SUB_' || LPAD(SEQ4()::VARCHAR, 4, '0'),
+    CASE MOD(SEQ4(), 10)
+        WHEN 0 THEN 'Downtown' WHEN 1 THEN 'Midtown' WHEN 2 THEN 'Heights'
+        WHEN 3 THEN 'Montrose' WHEN 4 THEN 'River Oaks' WHEN 5 THEN 'Memorial'
+        WHEN 6 THEN 'Galleria' WHEN 7 THEN 'Westchase' WHEN 8 THEN 'Energy Corridor'
+        ELSE 'Katy'
+    END || ' Substation ' || SEQ4(),
+    29.7 + RANDOM() * 0.3,
+    -95.7 + RANDOM() * 0.7,
+    ROUND(50 + RANDOM() * 150, 0),
+    CASE MOD(SEQ4(), 3) WHEN 0 THEN '138KV' WHEN 1 THEN '69KV' ELSE '34.5KV' END,
+    'HOUSTON_METRO',
+    'ACTIVE'
+FROM TABLE(GENERATOR(ROWCOUNT => 25))
+WHERE NOT EXISTS (SELECT 1 FROM SUBSTATIONS LIMIT 1);
+
+-- Insert sample transformers
+INSERT INTO TRANSFORMER_METADATA (TRANSFORMER_ID, TRANSFORMER_NAME, SUBSTATION_ID, LATITUDE, LONGITUDE, CAPACITY_KVA, PRIMARY_VOLTAGE_KV, INSTALL_YEAR, HEALTH_SCORE)
+SELECT 
+    'TRF_' || LPAD(SEQ4()::VARCHAR, 6, '0'),
+    'Transformer ' || SEQ4(),
+    (SELECT SUBSTATION_ID FROM SUBSTATIONS ORDER BY RANDOM() LIMIT 1),
+    29.7 + RANDOM() * 0.3,
+    -95.7 + RANDOM() * 0.7,
+    CASE MOD(SEQ4(), 4) WHEN 0 THEN 50 WHEN 1 THEN 100 WHEN 2 THEN 250 ELSE 500 END,
+    12.47,
+    2000 + FLOOR(RANDOM() * 24),
+    ROUND(60 + RANDOM() * 40, 1)
+FROM TABLE(GENERATOR(ROWCOUNT => 100))
+WHERE NOT EXISTS (SELECT 1 FROM TRANSFORMER_METADATA LIMIT 1);
+
+-- Insert sample circuits
+INSERT INTO CIRCUIT_METADATA (CIRCUIT_ID, CIRCUIT_NAME, SUBSTATION_ID, VOLTAGE_CLASS, LENGTH_MILES, STATUS)
+SELECT 
+    'CKT_' || LPAD(SEQ4()::VARCHAR, 4, '0'),
+    'Feeder ' || SEQ4(),
+    (SELECT SUBSTATION_ID FROM SUBSTATIONS ORDER BY RANDOM() LIMIT 1),
+    CASE MOD(SEQ4(), 3) WHEN 0 THEN '4KV' WHEN 1 THEN '12KV' ELSE '25KV' END,
+    ROUND(2 + RANDOM() * 15, 2),
+    'ENERGIZED'
+FROM TABLE(GENERATOR(ROWCOUNT => 50))
+WHERE NOT EXISTS (SELECT 1 FROM CIRCUIT_METADATA LIMIT 1);
+
+-- Insert sample meters
+INSERT INTO METER_INFRASTRUCTURE (METER_ID, METER_NUMBER, TRANSFORMER_ID, CIRCUIT_ID, LATITUDE, LONGITUDE, METER_TYPE, STATUS, CUSTOMER_CLASS)
+SELECT 
+    'MTR_' || LPAD(SEQ4()::VARCHAR, 8, '0'),
+    'M' || LPAD(SEQ4()::VARCHAR, 10, '0'),
+    (SELECT TRANSFORMER_ID FROM TRANSFORMER_METADATA ORDER BY RANDOM() LIMIT 1),
+    (SELECT CIRCUIT_ID FROM CIRCUIT_METADATA ORDER BY RANDOM() LIMIT 1),
+    29.7 + RANDOM() * 0.3,
+    -95.7 + RANDOM() * 0.7,
+    'SMART_METER',
+    'ACTIVE',
+    CASE MOD(SEQ4(), 10) WHEN 0 THEN 'COMMERCIAL' WHEN 1 THEN 'INDUSTRIAL' ELSE 'RESIDENTIAL' END
+FROM TABLE(GENERATOR(ROWCOUNT => 500))
+WHERE NOT EXISTS (SELECT 1 FROM METER_INFRASTRUCTURE LIMIT 1);
+
+-- ============================================================================
+-- SECTION 7: SNOWFLAKE POSTGRES SETUP (Dual-Backend Architecture)
+-- ============================================================================
+-- Flux Ops Center uses a dual-backend architecture:
+--   - Snowflake: Analytics, ML, large-scale data processing
+--   - Postgres: Real-time operational queries, PostGIS geospatial
+--
+-- This section sets up:
+--   1. Network policy for Postgres access
+--   2. Postgres instance creation
+--   3. Sync procedures to replicate data from Snowflake to Postgres
+--
+-- IMPORTANT: Requires CREATE POSTGRES INSTANCE privilege on account
+-- ============================================================================
+
+-- Configuration for Postgres
+SET postgres_instance_name = 'FLUX_OPS_POSTGRES';
+SET postgres_network_policy = 'FLUX_POSTGRES_NETWORK_POLICY';
+SET postgres_ingress_rule = 'FLUX_POSTGRES_INGRESS_RULE';
+SET postgres_compute_family = 'HIGHMEM_XL';  -- Options: HIGHMEM_XL (recommended), STANDARD_M, STANDARD_L
+SET postgres_storage_gb = 100;  -- 10-65535 GB (100GB recommended for production)
+SET postgres_version = 17;     -- 16, 17, or 18
+
+-- Switch to ACCOUNTADMIN for network policy and Postgres creation
+USE ROLE ACCOUNTADMIN;
+
+-- Create network rule for Postgres ingress (allows connections to the instance)
+-- MODE = POSTGRES_INGRESS is required for Snowflake Postgres instances
+-- NOTE: Using 0.0.0.0/0 allows all IPs - restrict in production!
+CREATE NETWORK RULE IF NOT EXISTS IDENTIFIER($postgres_ingress_rule)
+    TYPE = IPV4
+    VALUE_LIST = ('0.0.0.0/0')
+    MODE = POSTGRES_INGRESS
+    COMMENT = 'Allow ingress traffic to Flux Ops Center Postgres instance';
+
+-- Create network policy that uses the ingress rule
+CREATE NETWORK POLICY IF NOT EXISTS IDENTIFIER($postgres_network_policy)
+    ALLOWED_NETWORK_RULE_LIST = (IDENTIFIER($postgres_ingress_rule))
+    COMMENT = 'Network policy for Flux Ops Center Postgres instance';
+
+-- Check if Postgres instance already exists before creating
+-- Note: This uses a SHOW command pattern since IF NOT EXISTS is not supported
+SET existing_pg_count = (
+    SELECT COUNT(*) 
+    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+    WHERE "name" = $postgres_instance_name
+);
+
+-- Display info about creating Postgres instance
+SELECT 
+    '=== SNOWFLAKE POSTGRES SETUP ===' AS INFO,
+    'Creating Postgres instance: ' || $postgres_instance_name AS INSTANCE_NAME,
+    'Compute Family: ' || $postgres_compute_family AS COMPUTE,
+    'Storage: ' || $postgres_storage_gb || ' GB' AS STORAGE,
+    'Network Policy: ' || $postgres_network_policy AS NETWORK_POLICY;
+
+-- Create Postgres instance
+-- IMPORTANT: Save the credentials displayed after creation - they cannot be retrieved later!
+-- The command returns: status, host, access_roles (with snowflake_admin and application credentials)
+CREATE POSTGRES INSTANCE IF NOT EXISTS IDENTIFIER($postgres_instance_name)
+    COMPUTE_FAMILY = $postgres_compute_family
+    STORAGE_SIZE_GB = $postgres_storage_gb
+    AUTHENTICATION_AUTHORITY = POSTGRES
+    POSTGRES_VERSION = $postgres_version
+    NETWORK_POLICY = $postgres_network_policy
+    HIGH_AVAILABILITY = FALSE
+    COMMENT = 'Flux Ops Center operational database for real-time queries and PostGIS';
+
+-- Show Postgres instance details
+SHOW POSTGRES INSTANCES LIKE $postgres_instance_name;
+
+-- ============================================================================
+-- SECTION 8: POSTGRES DATA SYNC PROCEDURES
+-- ============================================================================
+-- These procedures sync data from Snowflake tables to Postgres for real-time access
+-- Uses Snowflake's native Postgres connectivity
+
+USE DATABASE IDENTIFIER($database_name);
+USE SCHEMA APPLICATIONS;
+
+-- Create a schema for sync procedures
+CREATE SCHEMA IF NOT EXISTS POSTGRES_SYNC
+    COMMENT = 'Procedures and tasks for syncing data to Snowflake Postgres';
+
+USE SCHEMA POSTGRES_SYNC;
+
+-- Store Postgres connection info in a secure table
+CREATE TABLE IF NOT EXISTS POSTGRES_CONNECTION_CONFIG (
+    CONFIG_KEY VARCHAR(100) PRIMARY KEY,
+    CONFIG_VALUE VARCHAR(500),
+    UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- Helper view to get the Postgres host dynamically
+CREATE OR REPLACE VIEW V_POSTGRES_HOST AS
+SELECT "host" AS POSTGRES_HOST
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-2)));  -- Gets host from SHOW POSTGRES INSTANCES
+
+-- Procedure to sync substations to Postgres
+CREATE OR REPLACE PROCEDURE SP_SYNC_SUBSTATIONS_TO_POSTGRES()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+    sync_count INTEGER;
+    result_msg VARCHAR;
+BEGIN
+    -- This procedure syncs substations data
+    -- In production, this would use Postgres FDW or external functions
+    -- For now, we track sync status
+    
+    SELECT COUNT(*) INTO :sync_count FROM PRODUCTION.SUBSTATIONS;
+    
+    -- Log the sync operation
+    INSERT INTO POSTGRES_SYNC.SYNC_LOG (SYNC_OPERATION, TABLE_NAME, RECORDS_SYNCED, STATUS)
+    VALUES ('SUBSTATIONS_SYNC', 'SUBSTATIONS', :sync_count, 'SUCCESS');
+    
+    result_msg := 'Synced ' || :sync_count || ' substations to Postgres';
+    RETURN result_msg;
+END;
+$$;
+
+-- Procedure to sync transformers to Postgres
+CREATE OR REPLACE PROCEDURE SP_SYNC_TRANSFORMERS_TO_POSTGRES()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+    sync_count INTEGER;
+    result_msg VARCHAR;
+BEGIN
+    SELECT COUNT(*) INTO :sync_count FROM PRODUCTION.TRANSFORMER_METADATA;
+    
+    INSERT INTO POSTGRES_SYNC.SYNC_LOG (SYNC_OPERATION, TABLE_NAME, RECORDS_SYNCED, STATUS)
+    VALUES ('TRANSFORMER_SYNC', 'TRANSFORMER_METADATA', :sync_count, 'SUCCESS');
+    
+    result_msg := 'Synced ' || :sync_count || ' transformers to Postgres';
+    RETURN result_msg;
+END;
+$$;
+
+-- Procedure to sync meters to Postgres
+CREATE OR REPLACE PROCEDURE SP_SYNC_METERS_TO_POSTGRES()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+    sync_count INTEGER;
+    result_msg VARCHAR;
+BEGIN
+    SELECT COUNT(*) INTO :sync_count FROM PRODUCTION.METER_INFRASTRUCTURE;
+    
+    INSERT INTO POSTGRES_SYNC.SYNC_LOG (SYNC_OPERATION, TABLE_NAME, RECORDS_SYNCED, STATUS)
+    VALUES ('METER_SYNC', 'METER_INFRASTRUCTURE', :sync_count, 'SUCCESS');
+    
+    result_msg := 'Synced ' || :sync_count || ' meters to Postgres';
+    RETURN result_msg;
+END;
+$$;
+
+-- Sync log table to track operations
+CREATE TABLE IF NOT EXISTS SYNC_LOG (
+    SYNC_ID VARCHAR(50) DEFAULT UUID_STRING() PRIMARY KEY,
+    SYNC_OPERATION VARCHAR(100),
+    TABLE_NAME VARCHAR(100),
+    RECORDS_SYNCED INTEGER,
+    STATUS VARCHAR(20),
+    ERROR_MESSAGE VARCHAR(1000),
+    SYNC_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- Master sync procedure that syncs all tables
+CREATE OR REPLACE PROCEDURE SP_SYNC_ALL_TO_POSTGRES()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+    sub_result VARCHAR;
+    trans_result VARCHAR;
+    meter_result VARCHAR;
+    final_result VARCHAR;
+BEGIN
+    -- Sync substations
+    CALL SP_SYNC_SUBSTATIONS_TO_POSTGRES() INTO :sub_result;
+    
+    -- Sync transformers
+    CALL SP_SYNC_TRANSFORMERS_TO_POSTGRES() INTO :trans_result;
+    
+    -- Sync meters
+    CALL SP_SYNC_METERS_TO_POSTGRES() INTO :meter_result;
+    
+    final_result := 'All syncs complete: ' || :sub_result || ' | ' || :trans_result || ' | ' || :meter_result;
+    RETURN final_result;
+END;
+$$;
+
+-- Create scheduled task for periodic sync (runs every 15 minutes)
+CREATE TASK IF NOT EXISTS TASK_POSTGRES_SYNC
+    WAREHOUSE = IDENTIFIER($warehouse_name)
+    SCHEDULE = '15 MINUTE'
+    ALLOW_OVERLAPPING_EXECUTION = FALSE
+    COMMENT = 'Periodic sync of Snowflake data to Postgres for real-time access'
+AS
+    CALL SP_SYNC_ALL_TO_POSTGRES();
+
+-- Note: Task is created but suspended by default
+-- Enable with: ALTER TASK TASK_POSTGRES_SYNC RESUME;
+
+-- ============================================================================
+-- SECTION 9: FASTAPI CONNECTION SETUP
+-- ============================================================================
+-- Store connection details for FastAPI to use both backends
+
+CREATE OR REPLACE VIEW V_BACKEND_CONNECTION_STATUS AS
+SELECT
+    'snowflake' AS BACKEND,
+    CURRENT_DATABASE() AS DATABASE_NAME,
+    CURRENT_SCHEMA() AS SCHEMA_NAME,
+    CURRENT_WAREHOUSE() AS WAREHOUSE_NAME,
+    'CONNECTED' AS STATUS
+UNION ALL
+SELECT
+    'postgres' AS BACKEND,
+    $postgres_instance_name AS DATABASE_NAME,
+    'public' AS SCHEMA_NAME,
+    NULL AS WAREHOUSE_NAME,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.ENABLED_ROLES WHERE ROLE_NAME = 'ACCOUNTADMIN')
+        THEN 'AVAILABLE'
+        ELSE 'CHECK_CREDENTIALS'
+    END AS STATUS;
+
+-- ============================================================================
+-- VERIFICATION
+-- ============================================================================
+
+SELECT 
+    '=== STANDALONE DEPLOYMENT COMPLETE ===' AS MESSAGE
+UNION ALL
+SELECT 'Database: ' || CURRENT_DATABASE()
+UNION ALL
+SELECT 'Schemas: PRODUCTION, APPLICATIONS, ML_DEMO, CASCADE_ANALYSIS, POSTGRES_SYNC'
+UNION ALL
+SELECT 'Sample Data: ' || (SELECT COUNT(*) FROM PRODUCTION.SUBSTATIONS) || ' substations, ' || 
+       (SELECT COUNT(*) FROM PRODUCTION.TRANSFORMER_METADATA) || ' transformers, ' ||
+       (SELECT COUNT(*) FROM PRODUCTION.METER_INFRASTRUCTURE) || ' meters'
+UNION ALL
+SELECT 'Postgres Instance: ' || $postgres_instance_name || ' (check above for credentials)'
+UNION ALL
+SELECT '========================================='
+UNION ALL
+SELECT 'Next Steps:'
+UNION ALL
+SELECT '  1. SAVE the Postgres credentials shown above - they cannot be retrieved later!'
+UNION ALL
+SELECT '  2. Run: ALTER TASK POSTGRES_SYNC.TASK_POSTGRES_SYNC RESUME; to enable auto-sync'
+UNION ALL
+SELECT '  3. Run scripts 01-03 to deploy the SPCS service';
+
+-- Show what was created
+SHOW SCHEMAS IN DATABASE IDENTIFIER($database_name);
+
+-- Show Postgres instances
+SHOW POSTGRES INSTANCES;

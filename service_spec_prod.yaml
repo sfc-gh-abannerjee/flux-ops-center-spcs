@@ -1,8 +1,9 @@
 spec:
   containers:
   - name: flux-ops-center
-    image: /<database>/applications/<repo>/flux-ops-center:<tag>
+    image: /<database>/applications/<repo>/flux_ops_center:<tag>
     env:
+      SNOWFLAKE_DATABASE: <your_database>
       SNOWFLAKE_WAREHOUSE: <your_warehouse>
       VITE_POSTGRES_HOST: <your_postgres_instance>.postgres.snowflake.app
       VITE_POSTGRES_PORT: "5432"
@@ -16,7 +17,13 @@ spec:
       requests:
         memory: 0.5Gi
         cpu: "0.5"
+    readinessProbe:
+      port: 8080
+      path: /
   endpoints:
   - name: ui
     port: 8080
     public: true
+  # High availability: minimum 2 instances eliminates cold start delays (30-45s)
+  min_instances: 2
+  max_instances: 5

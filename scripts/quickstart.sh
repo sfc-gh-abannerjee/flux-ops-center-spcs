@@ -36,11 +36,12 @@ IMAGE_REPO="${IMAGE_REPO:-FLUX_OPS_CENTER_REPO}"
 SERVICE_NAME="${SERVICE_NAME:-FLUX_OPS_CENTER_SERVICE}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
-# Optional: PostgreSQL configuration for external data sync
-POSTGRES_HOST="${POSTGRES_HOST:-}"
-POSTGRES_PORT="${POSTGRES_PORT:-5432}"
-POSTGRES_DATABASE="${POSTGRES_DATABASE:-}"
-POSTGRES_USER="${POSTGRES_USER:-}"
+# Snowflake Postgres configuration (dual-backend architecture)
+POSTGRES_INSTANCE="${POSTGRES_INSTANCE:-FLUX_OPS_POSTGRES}"
+POSTGRES_COMPUTE_FAMILY="${POSTGRES_COMPUTE_FAMILY:-HIGHMEM_XL}"
+POSTGRES_STORAGE_GB="${POSTGRES_STORAGE_GB:-100}"
+POSTGRES_VERSION="${POSTGRES_VERSION:-17}"
+SETUP_POSTGRES="${SETUP_POSTGRES:-true}"  # Set to false to skip Postgres setup
 
 # -----------------------------------------------------------------------------
 # HELPER FUNCTIONS
@@ -145,6 +146,33 @@ if [ -z "$COMPUTE_POOL" ]; then
     read COMPUTE_POOL
 fi
 
+# Postgres configuration
+if [ "$SETUP_POSTGRES" = "true" ]; then
+    echo ""
+    print_step "Snowflake Postgres Configuration (Dual-Backend Architecture)"
+    echo "  Flux Ops Center uses Snowflake Postgres for real-time operational queries."
+    echo "  Press Enter to accept defaults, or enter custom values."
+    echo ""
+    
+    if [ -z "$POSTGRES_INSTANCE" ] || [ "$POSTGRES_INSTANCE" = "FLUX_OPS_POSTGRES" ]; then
+        echo -n "Postgres instance name [FLUX_OPS_POSTGRES]: "
+        read input
+        POSTGRES_INSTANCE="${input:-FLUX_OPS_POSTGRES}"
+    fi
+    
+    echo -n "Postgres compute family (HIGHMEM_XL/HIGHMEM_L/STANDARD_M) [HIGHMEM_XL]: "
+    read input
+    POSTGRES_COMPUTE_FAMILY="${input:-HIGHMEM_XL}"
+    
+    echo -n "Postgres storage GB (10-65535) [100]: "
+    read input
+    POSTGRES_STORAGE_GB="${input:-100}"
+    
+    echo -n "Postgres version (16/17/18) [17]: "
+    read input
+    POSTGRES_VERSION="${input:-17}"
+fi
+
 # Validate all required variables
 print_step "Validating configuration..."
 MISSING=0
@@ -173,6 +201,9 @@ echo "  Schema:       $SNOWFLAKE_SCHEMA"
 echo "  Warehouse:    $SNOWFLAKE_WAREHOUSE"
 echo "  Compute Pool: $COMPUTE_POOL"
 echo "  Image:        $FULL_IMAGE"
+if [ "$SETUP_POSTGRES" = "true" ]; then
+echo "  Postgres:     $POSTGRES_INSTANCE ($POSTGRES_COMPUTE_FAMILY, ${POSTGRES_STORAGE_GB}GB, v$POSTGRES_VERSION)"
+fi
 echo ""
 
 # Confirm
@@ -262,6 +293,7 @@ cat > "$SQL_FILE" << EOF
 -- This SQL deploys Flux Ops Center as an SPCS service with:
 --   - React frontend (MapLibre GL grid visualization)
 --   - FastAPI backend (GNN risk prediction, cascade analysis)
+--   - Dual-backend: Snowflake analytics + Postgres real-time spatial
 -- =============================================================================
 
 -- Use your database and schema
@@ -282,12 +314,19 @@ spec:
     - name: flux-ops-center
       image: /${SNOWFLAKE_DATABASE}/${SNOWFLAKE_SCHEMA}/${IMAGE_REPO}/flux_ops_center:${IMAGE_TAG}
       env:
+        # Snowflake configuration
         SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE}
         SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA}
         SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
         SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
-        # MapTiler API key for base maps (optional - uses OpenStreetMap fallback)
-        # MAPTILER_API_KEY: your_key_here
+        APPLICATIONS_SCHEMA: APPLICATIONS
+        ML_SCHEMA: ML_DEMO
+        CASCADE_SCHEMA: CASCADE_ANALYSIS
+        # Postgres configuration (dual-backend architecture)
+        # NOTE: Update VITE_POSTGRES_HOST after running postgres_setup_generated.sql
+        VITE_POSTGRES_HOST: \${POSTGRES_HOST:-UPDATE_AFTER_POSTGRES_SETUP}
+        VITE_POSTGRES_PORT: "5432"
+        VITE_POSTGRES_DATABASE: postgres
       resources:
         requests:
           cpu: 2
@@ -312,6 +351,105 @@ SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');
 SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME};
 EOF
 
+# Generate Postgres setup SQL if enabled
+if [ "$SETUP_POSTGRES" = "true" ]; then
+    POSTGRES_SQL_FILE="$PROJECT_ROOT/postgres_setup_generated.sql"
+    
+    cat > "$POSTGRES_SQL_FILE" << EOF
+-- =============================================================================
+-- Flux Operations Center - Snowflake Postgres Setup (Auto-Generated)
+-- Generated: $(date)
+-- =============================================================================
+-- This SQL sets up Snowflake Postgres for the dual-backend architecture:
+--   - Snowflake: Analytics, ML, large-scale data processing
+--   - Postgres: Real-time operational queries, PostGIS geospatial
+--
+-- IMPORTANT: Save the credentials displayed after running CREATE POSTGRES INSTANCE!
+--            They cannot be retrieved later.
+-- =============================================================================
+
+USE ROLE ACCOUNTADMIN;
+
+-- =============================================================================
+-- 1. NETWORK POLICY SETUP
+-- =============================================================================
+
+-- Create network rule for Postgres ingress (MODE = POSTGRES_INGRESS is required)
+-- NOTE: 0.0.0.0/0 allows all IPs - restrict to specific CIDR ranges in production!
+CREATE NETWORK RULE IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${POSTGRES_INSTANCE}_INGRESS_RULE
+    TYPE = IPV4
+    VALUE_LIST = ('0.0.0.0/0')
+    MODE = POSTGRES_INGRESS
+    COMMENT = 'Ingress rule for ${POSTGRES_INSTANCE} - restrict in production';
+
+-- Create egress rule for Postgres FDW connections
+CREATE NETWORK RULE IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${POSTGRES_INSTANCE}_EGRESS_RULE
+    TYPE = IPV4
+    VALUE_LIST = ('0.0.0.0/0')
+    MODE = POSTGRES_EGRESS
+    COMMENT = 'Egress rule for ${POSTGRES_INSTANCE} FDW - restrict in production';
+
+-- Create network policy combining both rules
+CREATE NETWORK POLICY IF NOT EXISTS ${POSTGRES_INSTANCE}_NETWORK_POLICY
+    ALLOWED_NETWORK_RULE_LIST = (
+        ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${POSTGRES_INSTANCE}_INGRESS_RULE,
+        ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${POSTGRES_INSTANCE}_EGRESS_RULE
+    )
+    COMMENT = 'Network policy for ${POSTGRES_INSTANCE}';
+
+-- =============================================================================
+-- 2. CREATE POSTGRES INSTANCE
+-- =============================================================================
+-- SAVE THE CREDENTIALS DISPLAYED BELOW - THEY CANNOT BE RETRIEVED LATER!
+
+CREATE POSTGRES INSTANCE IF NOT EXISTS ${POSTGRES_INSTANCE}
+    COMPUTE_FAMILY = '${POSTGRES_COMPUTE_FAMILY}'
+    STORAGE_SIZE_GB = ${POSTGRES_STORAGE_GB}
+    AUTHENTICATION_AUTHORITY = POSTGRES
+    POSTGRES_VERSION = ${POSTGRES_VERSION}
+    NETWORK_POLICY = '${POSTGRES_INSTANCE}_NETWORK_POLICY'
+    HIGH_AVAILABILITY = FALSE
+    COMMENT = 'Flux Ops Center operational database - PostGIS for geospatial queries';
+
+-- Show instance details (including host for connection)
+SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}';
+
+-- =============================================================================
+-- 3. POSTGRES SYNC SCHEMA
+-- =============================================================================
+
+USE DATABASE ${SNOWFLAKE_DATABASE};
+
+CREATE SCHEMA IF NOT EXISTS POSTGRES_SYNC
+    COMMENT = 'Procedures for syncing Snowflake data to Postgres';
+
+USE SCHEMA POSTGRES_SYNC;
+
+-- Sync log table
+CREATE TABLE IF NOT EXISTS SYNC_LOG (
+    SYNC_ID VARCHAR(50) DEFAULT UUID_STRING() PRIMARY KEY,
+    SYNC_OPERATION VARCHAR(100) NOT NULL,
+    TABLE_NAME VARCHAR(100) NOT NULL,
+    RECORDS_SYNCED INTEGER,
+    STATUS VARCHAR(20) NOT NULL,
+    ERROR_MESSAGE VARCHAR(2000),
+    DURATION_SECONDS NUMBER(10,2),
+    SYNC_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- =============================================================================
+-- NEXT STEPS
+-- =============================================================================
+-- 1. SAVE the Postgres credentials from CREATE POSTGRES INSTANCE output
+-- 2. Update .env with POSTGRES_HOST from SHOW POSTGRES INSTANCES
+-- 3. Configure FastAPI to connect to both backends
+-- 4. Run: SELECT * FROM POSTGRES_SYNC.SYNC_LOG; to monitor sync operations
+-- =============================================================================
+EOF
+
+    print_success "Postgres setup SQL generated: $POSTGRES_SQL_FILE"
+fi
+
 print_success "Deployment SQL generated: $SQL_FILE"
 
 # -----------------------------------------------------------------------------
@@ -326,14 +464,34 @@ echo ""
 echo "  1. Run the generated SQL in Snowflake Worksheets:"
 echo "     $SQL_FILE"
 echo ""
+if [ "$SETUP_POSTGRES" = "true" ]; then
+echo "  2. Set up Snowflake Postgres (dual-backend architecture):"
+echo "     $POSTGRES_SQL_FILE"
+echo "     IMPORTANT: Save the credentials shown after CREATE POSTGRES INSTANCE!"
+echo ""
+echo "  3. Wait for services to reach READY state:"
+echo "     SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');"
+echo "     SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}';"
+echo ""
+echo "  4. Load PostGIS spatial data (REQUIRED for map visualization):"
+echo "     python backend/scripts/load_postgis_data.py --service <pg_service_name>"
+echo "     See: https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs/releases/tag/v1.0.0-data"
+echo ""
+echo "  5. Update service with Postgres host (from SHOW POSTGRES INSTANCES):"
+echo "     ALTER SERVICE ${SERVICE_NAME} SET"
+echo "       SPECIFICATION_FILE = ... -- Update VITE_POSTGRES_HOST"
+echo ""
+echo "  6. Get the application URL:"
+else
 echo "  2. Wait for service to reach READY state:"
 echo "     SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');"
 echo ""
 echo "  3. Get the application URL:"
+fi
 echo "     SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME};"
 echo ""
-echo "  4. Open the 'app' endpoint URL in your browser"
+echo "  $([ "$SETUP_POSTGRES" = "true" ] && echo "7" || echo "4"). Open the 'app' endpoint URL in your browser"
 echo ""
-echo "  5. (Optional) Connect to Flux Data Forge for streaming AMI data"
+echo "  $([ "$SETUP_POSTGRES" = "true" ] && echo "8" || echo "5"). (Optional) Connect to Flux Data Forge for streaming AMI data"
 echo ""
 print_success "Happy demo-ing!"

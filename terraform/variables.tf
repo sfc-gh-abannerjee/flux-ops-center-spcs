@@ -143,3 +143,61 @@ variable "project" {
   type        = string
   default     = "flux-ops-center"
 }
+
+# -----------------------------------------------------------------------------
+# Snowflake Postgres (Dual-Backend Architecture)
+# -----------------------------------------------------------------------------
+# Flux Ops Center uses Snowflake Postgres for real-time operational queries
+# and PostGIS geospatial capabilities alongside Snowflake for analytics.
+
+variable "create_postgres" {
+  description = "Whether to set up Snowflake Postgres (network policy + instance SQL output)"
+  type        = bool
+  default     = true
+}
+
+variable "postgres_instance_name" {
+  description = "Name of the Snowflake Postgres instance"
+  type        = string
+  default     = "FLUX_OPS_POSTGRES"
+}
+
+variable "postgres_compute_family" {
+  description = "Compute family for Postgres instance (HIGHMEM_XL recommended for geospatial/PostGIS workloads)"
+  type        = string
+  default     = "HIGHMEM_XL"
+}
+
+variable "postgres_storage_gb" {
+  description = "Storage size in GB (10-65535)"
+  type        = number
+  default     = 100
+  
+  validation {
+    condition     = var.postgres_storage_gb >= 10 && var.postgres_storage_gb <= 65535
+    error_message = "Postgres storage must be between 10 and 65535 GB."
+  }
+}
+
+variable "postgres_version" {
+  description = "PostgreSQL version (16, 17, or 18)"
+  type        = number
+  default     = 17
+  
+  validation {
+    condition     = contains([16, 17, 18], var.postgres_version)
+    error_message = "Postgres version must be 16, 17, or 18."
+  }
+}
+
+variable "postgres_high_availability" {
+  description = "Enable high availability for Postgres instance"
+  type        = bool
+  default     = false
+}
+
+variable "postgres_network_cidr" {
+  description = "CIDR range for Postgres network access (0.0.0.0/0 allows all - restrict in production)"
+  type        = string
+  default     = "0.0.0.0/0"
+}

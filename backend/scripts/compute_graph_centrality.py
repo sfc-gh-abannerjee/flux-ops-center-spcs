@@ -26,8 +26,12 @@ import networkx as nx
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from snowflake.snowpark import Session
 
+# Import centralized configuration
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import DB, WAREHOUSE, CONNECTION, SCHEMA_ML_DEMO, SCHEMA_CASCADE_ANALYSIS
+
 # Configuration
-CONNECTION_NAME = os.getenv("SNOWFLAKE_CONNECTION_NAME", "cpe_demo_CLI")
+CONNECTION_NAME = CONNECTION
 BATCH_SIZE = 10000  # For parallel processing
 BETWEENNESS_SAMPLE_SIZE = 500  # Sample nodes for betweenness approximation
 
@@ -36,16 +40,16 @@ def create_session():
     """Create Snowflake session using connection name."""
     session = Session.builder.config("connection_name", CONNECTION_NAME).create()
     # Set default database and schema context
-    session.sql("USE DATABASE SI_DEMOS").collect()
-    session.sql("USE SCHEMA CASCADE_ANALYSIS").collect()
-    session.sql("USE WAREHOUSE SI_DEMO_WH").collect()
+    session.sql(f"USE DATABASE {DB}").collect()
+    session.sql(f"USE SCHEMA {SCHEMA_CASCADE_ANALYSIS}").collect()
+    session.sql(f"USE WAREHOUSE {WAREHOUSE}").collect()
     return session
 
 
 def load_grid_data(session):
     """Load grid nodes and edges from Snowflake."""
     print("Loading grid nodes...")
-    nodes_df = session.sql("""
+    nodes_df = session.sql(f"""
         SELECT 
             NODE_ID,
             NODE_NAME,
@@ -57,13 +61,13 @@ def load_grid_data(session):
             CRITICALITY_SCORE,
             DOWNSTREAM_TRANSFORMERS,
             DOWNSTREAM_CAPACITY_KVA
-        FROM SI_DEMOS.ML_DEMO.GRID_NODES
+        FROM {DB}.{SCHEMA_ML_DEMO}.GRID_NODES
         WHERE LAT IS NOT NULL AND LON IS NOT NULL
     """).to_pandas()
     print(f"  Loaded {len(nodes_df)} nodes")
     
     print("Loading grid edges...")
-    edges_df = session.sql("""
+    edges_df = session.sql(f"""
         SELECT 
             EDGE_ID,
             FROM_NODE_ID,
@@ -71,7 +75,7 @@ def load_grid_data(session):
             EDGE_TYPE,
             DISTANCE_KM,
             IMPEDANCE_PU
-        FROM SI_DEMOS.ML_DEMO.GRID_EDGES
+        FROM {DB}.{SCHEMA_ML_DEMO}.GRID_EDGES
     """).to_pandas()
     print(f"  Loaded {len(edges_df)} edges")
     
@@ -307,27 +311,26 @@ def write_to_snowflake(session, df):
     snowpark_df = session.create_dataframe(df)
     
     # Write to table (overwrite)
-    snowpark_df.write.mode("overwrite").save_as_table(
-        "SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2"
-    )
+    table_name = f"{DB}.{SCHEMA_CASCADE_ANALYSIS}.NODE_CENTRALITY_FEATURES_V2"
+    snowpark_df.write.mode("overwrite").save_as_table(table_name)
     
-    print("  Written to SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2")
+    print(f"  Written to {table_name}")
     
     # Drop existing table to create view (if it exists as table)
     try:
-        session.sql("""
-            DROP TABLE IF EXISTS SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES
+        session.sql(f"""
+            DROP TABLE IF EXISTS {DB}.{SCHEMA_CASCADE_ANALYSIS}.NODE_CENTRALITY_FEATURES
         """).collect()
     except:
         pass
     
     # Create view for backward compatibility
     try:
-        session.sql("""
-            CREATE OR REPLACE VIEW SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES AS
-            SELECT * FROM SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2
+        session.sql(f"""
+            CREATE OR REPLACE VIEW {DB}.{SCHEMA_CASCADE_ANALYSIS}.NODE_CENTRALITY_FEATURES AS
+            SELECT * FROM {DB}.{SCHEMA_CASCADE_ANALYSIS}.NODE_CENTRALITY_FEATURES_V2
         """).collect()
-        print("  Updated VIEW SI_DEMOS.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES")
+        print(f"  Updated VIEW {DB}.{SCHEMA_CASCADE_ANALYSIS}.NODE_CENTRALITY_FEATURES")
     except Exception as e:
         print(f"  Note: Could not create view (may already exist as table): {e}")
 

@@ -73,3 +73,11 @@ temp/
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb_checkpoints
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# IDE/Editor
+*.db
