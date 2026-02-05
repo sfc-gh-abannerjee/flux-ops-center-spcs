@@ -3,12 +3,51 @@
 [![Snowflake](https://img.shields.io/badge/Snowflake-29B5E8?logo=snowflake&logoColor=white)](https://www.snowflake.com)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-A utility grid operations demo platform built on Snowflake.
+**Real-time utility grid visualization and GNN-based cascade failure prediction on Snowflake.**
 
 <p align="center">
   <img width="49%" alt="midtown_substation_1" src="https://github.com/user-attachments/assets/0125a740-b678-4271-bbf2-aac7694b5b7e" />
   <img width="49%" alt="crockett_substation_cascade_SI_2" src="https://github.com/user-attachments/assets/328941a4-c25b-4793-a583-5202ff7ca602" />
 </p>
+
+---
+
+## TL;DR - Get Started in 3 Commands
+
+```bash
+git clone https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs.git
+cd flux_ops_center_spcs
+snow sql -c your_connection -f scripts/sql/00_standalone_quickstart.sql  # Creates database + sample data
+./scripts/quickstart.sh  # Deploys SPCS service (interactive)
+```
+
+Then load PostGIS data: `python backend/scripts/load_postgis_data.py --service your_pg_service`
+
+---
+
+## Table of Contents
+
+- [Choose Your Deployment Path](#choose-your-deployment-path)
+- [Standalone Quick Start](#standalone-quick-start-fastest) ⭐ Recommended for first-time users
+- [Integrated Deployment](#integrated-deployment-full-platform)
+- [PostGIS Spatial Data Setup](#postgis-spatial-data-setup-required) ⚠️ Required for map
+- [Local Development](#local-development)
+- [Features](#features)
+- [Dependencies & Feature Availability](#dependencies--feature-availability)
+- [Architecture](#architecture)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## Flux Utility Platform
+
+Flux Operations Center is part of a suite of Snowflake solutions:
+
+| Repository | Purpose | Deploy Order |
+|------------|---------|--------------|
+| [**Flux Utility Solutions**](https://github.com/sfc-gh-abannerjee/flux-utility-solutions) | Core platform - database, Cortex AI, semantic models | 1st (if using integrated path) |
+| [Flux Data Forge](https://github.com/sfc-gh-abannerjee/flux-data-forge) | Synthetic AMI data generation | Optional |
+| **Flux Ops Center** (this repo) | Real-time grid visualization | 2nd (or standalone) |
 
 ---
 
