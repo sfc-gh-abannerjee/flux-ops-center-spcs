@@ -8,21 +8,25 @@ Flux Operations Center exposes a REST API for grid operations, cascade analysis,
 
 ## API Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        FastAPI Server                           │
-│                         (port 3001)                             │
-├─────────────────────────────────────────────────────────────────┤
-│  /health, /api/metrics           Health & Metrics               │
-│  /api/initial-load               Initial Load (cached)          │
-│  /api/assets, /api/topology      Grid Assets & Topology         │
-│  /api/cascade/*                  Cascade Failure Analysis       │
-│  /api/spatial/*                  Geospatial Queries (PostGIS)   │
-│  /api/agent/*                    Cortex AI Agent                │
-├─────────────────────────────────────────────────────────────────┤
-│        Snowflake                      Snowflake Postgres        │
-│     (Analytics)                     (Transactional/PostGIS)     │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Server["FastAPI Server (port 3001)"]
+        direction TB
+        H["/health, /api/metrics<br/>Health & Metrics"]
+        I["/api/initial-load<br/>Initial Load (cached)"]
+        A["/api/assets, /api/topology<br/>Grid Assets & Topology"]
+        C["/api/cascade/*<br/>Cascade Failure Analysis"]
+        S["/api/spatial/*<br/>Geospatial Queries"]
+        AG["/api/agent/*<br/>Cortex AI Agent"]
+    end
+    
+    subgraph Data["Data Layer"]
+        SF["Snowflake<br/>(Analytics)"]
+        PG["Snowflake Postgres<br/>(Transactional/PostGIS)"]
+    end
+    
+    Server --> SF
+    Server --> PG
 ```
 
 ---
