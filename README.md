@@ -67,11 +67,11 @@ snow sql -c my_flux_demo -f scripts/sql/00_standalone_quickstart.sql
 ```
 
 **What this creates:**
-- `FLUX_OPS_CENTER` database with all required schemas
-- Core tables: substations, transformers, feeders, meters
+- `FLUX_DB` database with all required schemas (configurable in the script)
+- Core tables: substations, transformers, circuits, meters
 - Application views: grid topology, KPIs, service areas
 - ML tables: graph structure, cascade analysis
-- Sample data: 50 substations, 300 transformers, 1,000 feeders
+- Sample data: 25 substations, 200 transformers, 50 circuits, 500 meters
 
 ### Step 3: Deploy the Application
 
@@ -615,11 +615,12 @@ If you don't create an agent, the chat panel will be visible but queries will fa
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  00_standalone_quickstart.sql                                               │
-│  ├── Creates: FLUX_OPS_CENTER database (independent)                        │
+│  ├── Creates: FLUX_DB database (configurable, independent)                  │
 │  ├── Creates: PRODUCTION schema with sample data                            │
 │  ├── Creates: APPLICATIONS schema with views                                │
 │  ├── Creates: ML_DEMO schema (empty, ready for training)                    │
 │  ├── Creates: CASCADE_ANALYSIS schema (empty tables only)                   │
+│  ├── Creates: RAW schema (HOUSTON_BUILDINGS_FOOTPRINTS table)               │
 │  ├── Does NOT create: Cortex Agent                                          │
 │  └── Does NOT create: Semantic Model                                        │
 │                                                                             │
