@@ -64,10 +64,10 @@ The `06_postgres_sync.sql` stored procedures are designed for **dynamic** sync f
 - These have complex polygon geometries created in PostGIS
 - Load once using `load_postgis_data.py`
 
-**Dynamic Layers (Snowflake Sync - Future)**
+**Dynamic Layers (Snowflake Sync)**
 - Outage tracker, work orders, real-time circuit status
-- These change frequently and should sync from Snowflake
-- Sync procedures need to be updated (see `docs/SYNC_PROCEDURES_TODO.md`)
+- Sync procedures available in `scripts/sql/06_postgres_sync.sql`
+- See `docs/POSTGRES_SYNC_GUIDE.md` for setup instructions
 
 ---
 

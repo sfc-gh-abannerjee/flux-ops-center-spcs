@@ -1,8 +1,14 @@
-# Sync Procedures - Status
+# Postgres Sync Guide
 
-## Status: COMPLETE ✅
+This guide explains how Snowflake data is synchronized to the Postgres database for low-latency map visualization.
 
-### Static Data Loading - COMPLETE ✅
+## Overview
+
+The Flux Ops Center uses a hybrid data architecture:
+- **Snowflake**: Primary data store for all analytics and ML
+- **Postgres (PostGIS)**: Low-latency spatial queries for map rendering
+
+### Static Data Loading
 
 All static spatial data is loaded via bulk CSV exports using `load_postgis_data.py`:
 - Building footprints, water bodies, power lines, vegetation risk
@@ -11,7 +17,7 @@ All static spatial data is loaded via bulk CSV exports using `load_postgis_data.
 
 **No Snowflake→Postgres sync needed for static layers.**
 
-### Dynamic Data Sync - COMPLETE ✅
+### Dynamic Data Sync
 
 The following procedures were created in `scripts/sql/06_postgres_sync.sql`:
 

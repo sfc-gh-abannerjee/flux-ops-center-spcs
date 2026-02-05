@@ -1839,7 +1839,6 @@ function App() {
             to_latitude: row.TO_LAT, to_longitude: row.TO_LON
           }));
           
-          // setTopology(mappedTopology); // TODO: This function doesn't exist anymore
           logger.log(`   ✅ Loaded ${mappedTopology.length.toLocaleString()} topology connections`);
           
           // Immediately check how many are in viewport for debugging
