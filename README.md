@@ -74,6 +74,8 @@ Flux Operations Center can be deployed in two ways. **Pick the one that matches 
 - [Snowflake CLI (Snow CLI)](https://docs.snowflake.com/en/developer-guide/snowflake-cli/installation/installation) installed and configured
 - Docker Desktop installed and running
 
+<br/>
+
 ### Step 1: Set Up Your Snowflake CLI Connection
 
 If you haven't already configured the Snowflake CLI, run:
@@ -106,11 +108,14 @@ snow sql -c my_flux_demo -f scripts/sql/00_standalone_quickstart.sql
 ```
 
 **What this creates:**
+
 - `FLUX_DB` database with all required schemas (configurable in the script)
 - Core tables: substations, transformers, circuits, meters
 - Application views: grid topology, KPIs, service areas
 - ML tables: graph structure, cascade analysis
 - Sample data: 25 substations, 200 transformers, 50 circuits, 500 meters
+
+<br/>
 
 ### Step 3: Deploy the Application
 
@@ -120,12 +125,15 @@ snow sql -c my_flux_demo -f scripts/sql/00_standalone_quickstart.sql
 ```
 
 The script will guide you through:
+
 1. Validating your environment (Docker, credentials)
 2. Building the Docker image
 3. Pushing to Snowflake's image registry
 4. Creating a compute pool
 5. Deploying the SPCS service
 6. Setting up Snowflake Postgres (optional but recommended)
+
+<br/>
 
 ### Step 4: Load PostGIS Spatial Data
 
@@ -174,10 +182,13 @@ cd flux-utility-solutions
 ```
 
 This creates the shared `FLUX_DB` database with:
+
 - `PRODUCTION` schema: Core tables (substations, transformers, meters, circuits)
 - `APPLICATIONS` schema: Ops Center views (topology, KPIs, service areas)
 - `ML_DEMO` schema: Grid graph and transformer prediction tables
 - `CASCADE_ANALYSIS` schema: GNN cascade analysis tables
+
+<br/>
 
 ### Step 2: Deploy Flux Ops Center
 
@@ -188,6 +199,8 @@ cd ../flux_ops_center_spcs
 # Run the deployment script
 ./scripts/quickstart.sh
 ```
+
+<br/>
 
 ### Step 3: Load PostGIS Spatial Data
 
