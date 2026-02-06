@@ -77,6 +77,44 @@ check_info() {
 }
 
 # -----------------------------------------------------------------------------
+# TEST 0: PREREQUISITES (Tools Required)
+# -----------------------------------------------------------------------------
+
+print_header "Test 0: Prerequisites"
+
+# Check Node.js
+if command -v node &> /dev/null; then
+    NODE_VERSION=$(node --version)
+    check_pass "Node.js installed: $NODE_VERSION"
+else
+    check_fail "Node.js is NOT installed"
+    check_info "Install via: brew install node (macOS) or nvm install node"
+fi
+
+# Check npm
+if command -v npm &> /dev/null; then
+    NPM_VERSION=$(npm --version)
+    check_pass "npm installed: $NPM_VERSION"
+else
+    check_fail "npm is NOT installed"
+fi
+
+# Check Docker
+if command -v docker &> /dev/null; then
+    check_pass "Docker installed"
+    
+    # Check if Docker daemon is running
+    if docker info &> /dev/null; then
+        check_pass "Docker daemon is running"
+    else
+        check_fail "Docker daemon is NOT running"
+        check_info "Start Docker Desktop or run: sudo systemctl start docker"
+    fi
+else
+    check_fail "Docker is NOT installed"
+fi
+
+# -----------------------------------------------------------------------------
 # TEST 1: REQUIRED FILES EXIST
 # -----------------------------------------------------------------------------
 

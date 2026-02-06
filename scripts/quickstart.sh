@@ -95,6 +95,21 @@ echo "  3. Push to Snowflake Image Registry"
 echo "  4. Generate deployment SQL"
 echo ""
 
+# Check for Node.js (required for frontend build)
+if ! command -v node &> /dev/null; then
+    print_error "Node.js is not installed. Please install Node.js first."
+    print_warning "Install via: brew install node (macOS) or nvm install node"
+    exit 1
+fi
+print_success "Node.js found ($(node --version))"
+
+# Check for npm (required for frontend build)
+if ! command -v npm &> /dev/null; then
+    print_error "npm is not installed. Please install npm first."
+    exit 1
+fi
+print_success "npm found ($(npm --version))"
+
 # Check for Docker
 if ! command -v docker &> /dev/null; then
     print_error "Docker is not installed. Please install Docker first."
@@ -188,9 +203,40 @@ if [ $MISSING -eq 1 ]; then
     exit 1
 fi
 
+# Validate Snowflake account format (should be org-account or account identifier)
+# The registry URL requires a specific format
+if [[ "$SNOWFLAKE_ACCOUNT" == *" "* ]]; then
+    print_error "SNOWFLAKE_ACCOUNT contains spaces. Use org-account format (e.g., myorg-myaccount)"
+    exit 1
+fi
+
+# Validate Postgres version if enabled
+if [ "$SETUP_POSTGRES" = "true" ]; then
+    if [[ ! "$POSTGRES_VERSION" =~ ^(16|17|18)$ ]]; then
+        print_error "Invalid POSTGRES_VERSION: $POSTGRES_VERSION. Must be 16, 17, or 18."
+        exit 1
+    fi
+    
+    # Validate storage size is a number
+    if ! [[ "$POSTGRES_STORAGE_GB" =~ ^[0-9]+$ ]]; then
+        print_error "Invalid POSTGRES_STORAGE_GB: must be a number (10-65535)"
+        exit 1
+    fi
+    
+    if [ "$POSTGRES_STORAGE_GB" -lt 10 ] || [ "$POSTGRES_STORAGE_GB" -gt 65535 ]; then
+        print_error "POSTGRES_STORAGE_GB must be between 10 and 65535"
+        exit 1
+    fi
+fi
+
 # Derive registry URL
+# IMPORTANT: Docker requires all lowercase for image repository names
 REGISTRY_URL="${SNOWFLAKE_ACCOUNT}.registry.snowflakecomputing.com"
-FULL_IMAGE="${REGISTRY_URL}/${SNOWFLAKE_DATABASE}/${SNOWFLAKE_SCHEMA}/${IMAGE_REPO}/flux_ops_center:${IMAGE_TAG}"
+REGISTRY_URL_LOWER=$(echo "$REGISTRY_URL" | tr '[:upper:]' '[:lower:]')
+DB_LOWER=$(echo "$SNOWFLAKE_DATABASE" | tr '[:upper:]' '[:lower:]')
+SCHEMA_LOWER=$(echo "$SNOWFLAKE_SCHEMA" | tr '[:upper:]' '[:lower:]')
+REPO_LOWER=$(echo "$IMAGE_REPO" | tr '[:upper:]' '[:lower:]')
+FULL_IMAGE="${REGISTRY_URL_LOWER}/${DB_LOWER}/${SCHEMA_LOWER}/${REPO_LOWER}/flux_ops_center:${IMAGE_TAG}"
 
 echo ""
 print_success "Configuration validated"
@@ -220,10 +266,10 @@ fi
 
 print_header "Step 1: Login to Snowflake Registry"
 
-print_step "Logging in to $REGISTRY_URL..."
+print_step "Logging in to $REGISTRY_URL_LOWER..."
 echo "Enter your Snowflake password when prompted."
 
-if ! docker login "$REGISTRY_URL" -u "$SNOWFLAKE_USER"; then
+if ! docker login "$REGISTRY_URL_LOWER" -u "$SNOWFLAKE_USER"; then
     print_error "Failed to login to Snowflake registry"
     print_warning "Make sure your password is correct and the image repository exists"
     exit 1
