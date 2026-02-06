@@ -42,6 +42,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:scripts": "bats tests/scripts/",
+    "test:scripts:ci": "bats --formatter tap tests/scripts/",
+    "lint:scripts": "shellcheck scripts/*.sh",
+    "test": "npm run test:scripts"
   }
 }

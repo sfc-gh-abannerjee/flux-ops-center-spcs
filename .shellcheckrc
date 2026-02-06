@@ -1,0 +1,17 @@
+# ShellCheck configuration for Flux Ops Center scripts
+# See https://www.shellcheck.net/wiki/
+
+# Enable all checks by default, disable specific ones as needed
+enable=all
+
+# Disable some checks that are intentional in our scripts:
+# SC2034: Variable appears unused (we use dynamic variable names)
+# SC2155: Declare and assign separately (stylistic choice)
+# SC2086: Double quote to prevent globbing (sometimes intentional)
+disable=SC2034,SC2155
+
+# External sources that we source
+external-sources=true
+
+# Shell dialect
+shell=bash

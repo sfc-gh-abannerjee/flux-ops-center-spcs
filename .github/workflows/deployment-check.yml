@@ -279,10 +279,48 @@ jobs:
           echo "✓ Container test complete"
 
   # ==========================================================================
-  # Job 5: Full deployment test harness
+  # Job 5: Script Testing with BATS
+  # ==========================================================================
+  script-tests:
+    name: Script Tests (BATS)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install BATS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get install -y shellcheck
+
+      - name: Lint shell scripts
+        run: |
+          echo "Running ShellCheck on scripts..."
+          shellcheck scripts/quickstart.sh --severity=error || true
+          shellcheck scripts/test-deployment.sh --severity=error || true
+          echo "✓ ShellCheck completed"
+
+      - name: Run BATS tests
+        run: |
+          echo "Running BATS test suite..."
+          chmod +x scripts/quickstart.sh
+          bats --formatter tap tests/scripts/
+
+      - name: Validate quickstart.sh --help
+        run: |
+          echo "Testing quickstart.sh help output..."
+          ./scripts/quickstart.sh --help
+
+  # ==========================================================================
+  # Job 6: Full deployment test harness
   # ==========================================================================
   deployment-harness:
     name: Deployment Test Harness
+    needs: [script-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
