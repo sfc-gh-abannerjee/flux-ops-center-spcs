@@ -1108,7 +1108,7 @@ async def get_initial_load(request: Request, bypass_cache: bool = Query(False)):
             cursor = conn.cursor()
             cursor.execute(f"""
                 SELECT CIRCUIT_ID, SUBSTATION_ID, SUBSTATION_NAME,
-                       CENTROID_LAT, CENTROID_LON, AVG_LOAD_PERCENT, AVG_HEALTH_SCORE
+                       CIRCUIT_CENTER_LAT, CIRCUIT_CENTER_LON, AVG_LOAD_UTILIZATION_PCT, AVG_HEALTH_INDEX
                 FROM {DB}.APPLICATIONS.FLUX_OPS_CENTER_SERVICE_AREAS_MV
             """)
             results = []
