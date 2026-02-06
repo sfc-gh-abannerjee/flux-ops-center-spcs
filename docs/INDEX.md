@@ -1,22 +1,59 @@
-# Flux Operations Center - Documentation
+# Documentation
 
-**Utility Grid Operations Platform**
+Flux Operations Center - Utility Grid Operations Platform
 
 ---
 
-## Documentation
+## Getting Started
+
+| Guide | Description |
+|-------|-------------|
+| **[Quick Start](./deployment/QUICKSTART.md)** | Deploy in 15 minutes |
+| **[Docker Images](./DOCKER_IMAGES.md)** | Pre-built images, multi-arch |
+| **[Deployment Options](./deployment/)** | All deployment methods |
+
+---
+
+## Deployment Guides
+
+| Method | Best For | Guide |
+|--------|----------|-------|
+| Quick Start | Demos, first-time users | [deployment/QUICKSTART.md](./deployment/QUICKSTART.md) |
+| CLI Scripts | Step-by-step control | [deployment/CLI_SCRIPTS.md](./deployment/CLI_SCRIPTS.md) |
+| Terraform | Enterprise IaC | [deployment/TERRAFORM.md](./deployment/TERRAFORM.md) |
+| Notebooks | Workshops | [deployment/NOTEBOOKS.md](./deployment/NOTEBOOKS.md) |
+| Git Integration | CI/CD | [deployment/GIT_INTEGRATION.md](./deployment/GIT_INTEGRATION.md) |
+
+---
+
+## Development & Operations
 
 | Document | Description |
 |----------|-------------|
-| **[LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md)** | **START HERE** - Local dev setup, PAT auth, troubleshooting |
-| **[DATA_LOADING_GUIDE.md](./DATA_LOADING_GUIDE.md)** | **Load AMI data** - S3 stage access, bulk loading |
-| **[API_REFERENCE.md](./API_REFERENCE.md)** | REST API overview (62 endpoints across 13 categories) |
-| [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) | Cascade failure analysis tools, API, ML model |
-| [POSTGRES_SYNC_GUIDE.md](./POSTGRES_SYNC_GUIDE.md) | Postgres sync procedures for dynamic data |
-| [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) | Snowflake→Postgres sync architecture |
+| **[LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md)** | Local dev setup, PAT auth |
+| **[DATA_LOADING_GUIDE.md](./DATA_LOADING_GUIDE.md)** | Load AMI data from S3 |
+| **[API_REFERENCE.md](./API_REFERENCE.md)** | REST API (62 endpoints) |
+| [POSTGRES_SYNC_GUIDE.md](./POSTGRES_SYNC_GUIDE.md) | Postgres sync procedures |
+| [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) | Sync architecture |
+
+---
+
+## Features & Analysis
+
+| Document | Description |
+|----------|-------------|
+| [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) | Cascade failure analysis, ML model |
 | [VEGETATION_RISK_ARCHITECTURE.md](./VEGETATION_RISK_ARCHITECTURE.md) | Vegetation risk analysis |
-| [DATA_LAYER_MAPPING.md](./DATA_LAYER_MAPPING.md) | Data layer and source mapping |
+| [DATA_LAYER_MAPPING.md](./DATA_LAYER_MAPPING.md) | Data layer mapping |
+
+---
+
+## Reference
+
+| Document | Description |
+|----------|-------------|
 | [DEPLOYMENT_PARITY_ANALYSIS.md](./DEPLOYMENT_PARITY_ANALYSIS.md) | Deployment method comparison |
+| [DOCKER_IMAGES.md](./DOCKER_IMAGES.md) | Container images guide |
 
 ---
 
@@ -24,11 +61,12 @@
 
 | Task | Document |
 |------|----------|
+| Deploy for the first time | [deployment/QUICKSTART.md](./deployment/QUICKSTART.md) |
+| Pull Docker image | [DOCKER_IMAGES.md](./DOCKER_IMAGES.md) |
 | Set up local dev | [LOCAL_DEVELOPMENT_GUIDE.md](./LOCAL_DEVELOPMENT_GUIDE.md) |
-| Load AMI data | [DATA_LOADING_GUIDE.md](./DATA_LOADING_GUIDE.md) |
-| Configure Postgres sync | [POSTGRES_SYNC_GUIDE.md](./POSTGRES_SYNC_GUIDE.md) |
-| Fix topology not loading | [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) |
+| Load PostGIS data | [DATA_LOADING_GUIDE.md](./DATA_LOADING_GUIDE.md) |
 | Use cascade analysis | [CASCADE_ANALYSIS.md](./CASCADE_ANALYSIS.md) |
+| Fix topology issues | [POSTGRES_SYNC_RELIABILITY.md](./POSTGRES_SYNC_RELIABILITY.md) |
 
 ---
 
@@ -36,10 +74,11 @@
 
 | Object | Type | Purpose |
 |--------|------|---------|
-| `<database>.APPLICATIONS` | Schema | Main app tables, sync procedures |
-| `<database>.CASCADE_ANALYSIS` | Schema | Cascade analysis tables |
-| `<database>.ML_DEMO` | Schema | ML models, grid topology |
-| `SYNC_TOPOLOGY_TO_POSTGRES()` | Procedure | Sync topology to Postgres |
+| `FLUX_DB.APPLICATIONS` | Schema | App tables, sync procedures |
+| `FLUX_DB.CASCADE_ANALYSIS` | Schema | Cascade analysis tables |
+| `FLUX_DB.ML_DEMO` | Schema | ML models, grid topology |
+| `FLUX_DB.PRODUCTION` | Schema | Core data tables |
+| `SYNC_TOPOLOGY_TO_POSTGRES()` | Procedure | Sync to Postgres |
 
 ---
 
@@ -48,26 +87,22 @@
 ```
 flux_ops_center_spcs/
 ├── README.md                    # Project overview
-├── SECURITY.md                  # Security model, RBAC, credentials
-├── backend/
-│   ├── server_fastapi.py        # FastAPI server
-│   ├── gnn_training/            # GPU-based GNN training (SPCS)
-│   ├── ml/                      # ML model deployment
-│   └── scripts/                 # Utility scripts
-├── src/                         # React frontend (TypeScript)
-│   ├── App.tsx                  # Main application
-│   ├── ChatDrawer.tsx           # Cortex Agent chat
-│   └── components/              # UI components
-├── scripts/sql/                 # SQL deployment scripts
-│   └── 00_standalone_quickstart.sql  # Complete standalone setup
-└── docs/                        # Documentation
-    ├── INDEX.md                 # This file
-    ├── LOCAL_DEVELOPMENT_GUIDE.md
-    ├── DATA_LOADING_GUIDE.md
-    ├── CASCADE_ANALYSIS.md
-    ├── POSTGRES_SYNC_GUIDE.md
-    ├── POSTGRES_SYNC_RELIABILITY.md
-    ├── DATA_LAYER_MAPPING.md
-    ├── DEPLOYMENT_PARITY_ANALYSIS.md
-    └── VEGETATION_RISK_ARCHITECTURE.md
+├── docs/
+│   ├── INDEX.md                 # This file
+│   ├── DOCKER_IMAGES.md         # Container guide
+│   ├── deployment/              # Deployment guides
+│   │   ├── QUICKSTART.md
+│   │   ├── CLI_SCRIPTS.md
+│   │   ├── TERRAFORM.md
+│   │   ├── NOTEBOOKS.md
+│   │   └── GIT_INTEGRATION.md
+│   ├── LOCAL_DEVELOPMENT_GUIDE.md
+│   ├── API_REFERENCE.md
+│   └── ...
+├── backend/                     # FastAPI server
+├── src/                         # React frontend
+├── scripts/sql/                 # SQL scripts
+├── terraform/                   # IaC
+├── notebooks/                   # Snowflake notebooks
+└── git_deploy/                  # GitOps
 ```
