@@ -99,6 +99,11 @@ terraform output postgres_setup_sql
 python backend/scripts/load_postgis_data.py --service flux_ops_postgres
 ```
 
+This loads ~390MB of spatial data and automatically creates derived views:
+- `buildings_spatial` - Building footprints with centroid coordinates
+- `grid_assets` - Asset locations for risk analysis
+- `vegetation_risk_computed` - Pre-computed vegetation risk with spatial joins
+
 ### 4. Create SPCS Service
 
 ```bash

@@ -79,6 +79,7 @@ Complete SPCS deployment in 6 phases:
 
 **After running:**
 1. Load PostGIS data: `python backend/scripts/load_postgis_data.py`
+   - This also creates required derived views (buildings_spatial, grid_assets, vegetation_risk_computed)
 2. (Optional) Run cascade analysis scripts
 
 ---
