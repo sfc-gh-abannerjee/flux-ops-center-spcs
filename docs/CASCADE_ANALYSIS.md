@@ -200,15 +200,44 @@ Current cascade risk based on live grid state:
 
 ## Data Architecture
 
+### Grid Hierarchy
+
+The cascade analysis supports the **full grid hierarchy**:
+
+```
+Substation (275) → Transformer (91,554) → Pole (62,038) → Meter (596,906)
+```
+
+| Level | Node Type | Count | Avg Downstream Customers |
+|-------|-----------|-------|--------------------------|
+| 1 | SUBSTATION | 275 | 2,170 |
+| 2 | TRANSFORMER | 91,554 | 6.5 |
+| 3 | POLE | 62,038 | 9.6 |
+| 4 | METER | 596,906 | 1 |
+
 ### Tables
 
 | Table | Schema | Records | Description |
 |-------|--------|---------|-------------|
-| `GRID_NODES` | ML_DEMO | 91,829 | Grid topology nodes |
+| `GRID_NODES` | ML_DEMO | 91,829 | Grid topology (substations + transformers) |
+| `GRID_NODES_EXTENDED` | ML_DEMO | 750,773 | Full hierarchy (+ poles + meters) |
 | `GRID_EDGES` | ML_DEMO | 2.5M | Node connections |
-| `NODE_CENTRALITY_FEATURES_V2` | CASCADE_ANALYSIS | 1,873 | Precomputed centrality |
+| `GRID_EDGES_EXTENDED` | ML_DEMO | 3.16M | Full hierarchy edges |
+| `NODE_CENTRALITY_FEATURES_V2` | CASCADE_ANALYSIS | 91,829 | Centrality (substations + transformers) |
+| `NODE_CENTRALITY_FEATURES_EXTENDED` | CASCADE_ANALYSIS | 750,773 | Full hierarchy centrality |
+| `REAL_TIME_CASCADE_PREDICTIONS` | CASCADE_ANALYSIS | 750,773 | Dynamic table (auto-refresh) |
 | `HIGH_RISK_PATIENT_ZEROS` | CASCADE_ANALYSIS | ~100 | Top risk candidates |
 | `GNN_PREDICTIONS` | ML_DEMO | 91,829 | GNN risk predictions |
+
+### Online Feature Store
+
+For real-time serving with 30ms latency:
+
+```sql
+-- Point lookup for cascade risk
+SELECT * FROM TABLE(FEATURE_STORE.GET_CASCADE_RISK('SUB-HOU-121'));
+-- Returns: NODE_ID, NODE_TYPE, CASCADE_RISK_SCORE, RISK_LEVEL, DOWNSTREAM_CUSTOMERS
+```
 
 ### Node Features
 

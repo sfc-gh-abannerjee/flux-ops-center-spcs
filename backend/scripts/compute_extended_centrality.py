@@ -88,7 +88,7 @@ def compute_extended_centrality(
         """).to_pandas()
         
         edges_df = session.sql("""
-            SELECT FROM_NODE_ID, TO_NODE_ID, DISTANCE_KM, EDGE_TYPE
+            SELECT SOURCE_NODE_ID as FROM_NODE_ID, TARGET_NODE_ID as TO_NODE_ID, DISTANCE_KM, EDGE_TYPE
             FROM ML_DEMO.GRID_EDGES_EXTENDED
         """).to_pandas()
         logger.info("Using extended topology tables")

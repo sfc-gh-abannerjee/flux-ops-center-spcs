@@ -52,6 +52,7 @@ snow sql -c $CONN -f scripts/sql/04_validation.sql \
 | 6 | `06_postgres_sync.sql` | Sync procedures |
 | 7 | `07_create_cortex_search.sql` | Cortex Search services |
 | 8 | `08_create_cortex_agent.sql` | Grid Intelligence Agent |
+| 9 | `09_extend_cascade_hierarchy.sql` | Extend topology to poles + meters |
 
 ---
 
