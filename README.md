@@ -658,17 +658,13 @@ flowchart LR
     FDF -.->|streaming data| FOC
 ```
 
-```mermaid
-flowchart LR
-    subgraph Standalone["STANDALONE: 00_standalone_quickstart.sql"]
-        DB[("FLUX_DB")]
-        SCHEMAS["PRODUCTION ✓<br/>APPLICATIONS ✓<br/>ML_DEMO ✓<br/>CASCADE_ANALYSIS ✓<br/>RAW ✓"]
-        NO["Cortex Agent ✗<br/>Semantic Model ✗"]
-    end
-    
-    DB --> SCHEMAS
-    SCHEMAS --> NO
-```
+**Standalone Deployment** (`00_standalone_quickstart.sql`):
+
+| Creates | Does NOT Create |
+|---------|-----------------|
+| FLUX_DB, PRODUCTION, APPLICATIONS, ML_DEMO, CASCADE_ANALYSIS, RAW | Cortex Agent, Semantic Model |
+
+> Standalone is self-contained but has reduced AI features.
 
 ### Contingency: Missing Dependencies
 
