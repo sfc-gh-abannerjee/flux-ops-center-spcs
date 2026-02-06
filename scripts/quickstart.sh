@@ -1404,6 +1404,7 @@ step_11_load_postgis_data() {
     
     print_step "Loading PostGIS data (this may take 10-30 minutes)..."
     print_info "Data includes: buildings, water bodies, power lines, vegetation risk, etc."
+    print_info "Also creates derived views: buildings_spatial, grid_assets, vegetation_risk_computed"
     echo ""
     
     if confirm "Load PostGIS data now?" "y"; then
@@ -1414,11 +1415,11 @@ step_11_load_postgis_data() {
             --user "$POSTGRES_USER" \
             --password "$POSTGRES_PASSWORD" \
             --database postgres 2>&1 | while read line; do
-                if [[ "$line" == *"Loading"* ]] || [[ "$line" == *"Complete"* ]] || [[ "$line" == *"Error"* ]]; then
+                if [[ "$line" == *"Loading"* ]] || [[ "$line" == *"Complete"* ]] || [[ "$line" == *"Error"* ]] || [[ "$line" == *"SUCCESS"* ]] || [[ "$line" == *"DERIVED"* ]] || [[ "$line" == *"Creating"* ]]; then
                     print_substep "$line"
                 fi
             done; then
-            print_success "PostGIS data loaded successfully"
+            print_success "PostGIS data and derived views created successfully"
         else
             print_warning "PostGIS data loading had some issues"
             print_info "You can retry later with the command above"

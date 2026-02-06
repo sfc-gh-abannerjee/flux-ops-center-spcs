@@ -35,7 +35,7 @@ snow sql -c your_connection -f scripts/sql/00_standalone_quickstart.sql
 ./scripts/quickstart.sh
 ```
 
-Then load map data:
+Then load map data (includes 2.6M+ geospatial records and computed risk views):
 ```bash
 python backend/scripts/load_postgis_data.py --service your_pg_service
 ```

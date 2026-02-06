@@ -330,6 +330,170 @@ INDEXES = {
     ],
 }
 
+# =============================================================================
+# DERIVED VIEWS - Created after raw data is loaded
+# =============================================================================
+# These views/materialized views are required by the FastAPI backend but are
+# derived from the raw tables loaded above.
+
+DERIVED_VIEWS = {
+    # 1. buildings_spatial - View with centroid coordinates for spatial queries
+    "buildings_spatial": """
+        DROP VIEW IF EXISTS buildings_spatial CASCADE;
+        CREATE VIEW buildings_spatial AS 
+        SELECT 
+            building_id,
+            building_name,
+            building_type,
+            height_meters,
+            num_floors,
+            ST_X(ST_Centroid(geom)) AS longitude,
+            ST_Y(ST_Centroid(geom)) AS latitude,
+            geom
+        FROM building_footprints
+        WHERE geom IS NOT NULL;
+        
+        COMMENT ON VIEW buildings_spatial IS 'Building footprints with centroid coordinates for spatial queries';
+    """,
+    
+    # 2. grid_assets - Alias view for grid_assets_cache (backend expects this name)
+    "grid_assets": """
+        DROP VIEW IF EXISTS grid_assets CASCADE;
+        CREATE VIEW grid_assets AS 
+        SELECT 
+            asset_id,
+            asset_type,
+            asset_name,
+            circuit_id,
+            substation_id,
+            transformer_id,
+            health_score,
+            status,
+            ST_X(geom) AS longitude,
+            ST_Y(geom) AS latitude,
+            geom
+        FROM grid_assets_cache
+        WHERE geom IS NOT NULL;
+        
+        COMMENT ON VIEW grid_assets IS 'Alias for grid_assets_cache - provides asset locations for risk analysis';
+    """,
+    
+    # 3. vegetation_risk_computed - Materialized view with spatial analysis
+    #    This is the CRITICAL view that computes vegetation risk based on
+    #    proximity to power lines using PostGIS spatial joins.
+    "vegetation_risk_computed": """
+        DROP MATERIALIZED VIEW IF EXISTS vegetation_risk_computed CASCADE;
+        CREATE MATERIALIZED VIEW vegetation_risk_computed AS
+        WITH vegetation_with_coords AS (
+            SELECT 
+                tree_id,
+                species,
+                subtype,
+                ST_X(geom) AS longitude,
+                ST_Y(geom) AS latitude,
+                height_m,
+                canopy_radius_m,
+                risk_score AS base_risk_score,
+                risk_level AS base_risk_level,
+                geom
+            FROM vegetation_risk
+            WHERE geom IS NOT NULL
+        ),
+        nearest_powerline AS (
+            SELECT DISTINCT ON (v.tree_id)
+                v.tree_id,
+                p.line_id AS nearest_line_id,
+                p.voltage_class AS nearest_line_class,
+                p.line_type AS nearest_line_type,
+                ST_Distance(v.geom::geography, p.geom::geography) AS distance_to_line_m
+            FROM vegetation_with_coords v
+            CROSS JOIN LATERAL (
+                SELECT line_id, voltage_class, line_type, geom
+                FROM grid_power_lines
+                ORDER BY v.geom <-> geom
+                LIMIT 1
+            ) p
+        ),
+        nearest_asset AS (
+            SELECT DISTINCT ON (v.tree_id)
+                v.tree_id,
+                ga.asset_type AS nearest_asset_type,
+                ga.asset_id AS nearest_asset_id,
+                ST_Distance(v.geom::geography, ga.geom::geography) AS distance_to_asset_m
+            FROM vegetation_with_coords v
+            CROSS JOIN LATERAL (
+                SELECT asset_id, asset_type, geom
+                FROM grid_assets_cache
+                WHERE asset_type IN ('transformer', 'substation', 'pole')
+                ORDER BY v.geom <-> geom
+                LIMIT 1
+            ) ga
+        )
+        SELECT 
+            v.tree_id,
+            v.species,
+            v.subtype,
+            v.longitude,
+            v.latitude,
+            v.height_m,
+            v.canopy_radius_m,
+            -- Fall zone = height * 1.3 (safety factor for wind/lean)
+            ROUND((v.height_m * 1.3)::numeric, 2) AS fall_zone_m,
+            -- Distance to nearest power line
+            ROUND(np.distance_to_line_m::numeric, 2) AS distance_to_line_m,
+            np.nearest_line_id,
+            np.nearest_line_class,
+            -- Distance to nearest grid asset
+            na.nearest_asset_type,
+            na.nearest_asset_id,
+            ROUND(na.distance_to_asset_m::numeric, 2) AS distance_to_asset_m,
+            -- Compute actual risk score based on proximity
+            CASE
+                WHEN np.distance_to_line_m <= (v.height_m * 1.3) THEN 
+                    LEAST(1.0, 0.85 + (1 - np.distance_to_line_m / (v.height_m * 1.3)) * 0.15)
+                WHEN np.distance_to_line_m <= (v.height_m * 2.0) THEN 
+                    0.5 + (1 - np.distance_to_line_m / (v.height_m * 2.0)) * 0.3
+                WHEN np.distance_to_line_m <= 50 THEN 
+                    0.2 + (1 - np.distance_to_line_m / 50) * 0.2
+                ELSE 
+                    GREATEST(0.05, v.base_risk_score * 0.5)
+            END AS risk_score,
+            -- Risk level based on computed score
+            CASE
+                WHEN np.distance_to_line_m <= (v.height_m * 1.3) THEN 'critical'
+                WHEN np.distance_to_line_m <= (v.height_m * 2.0) THEN 'warning'
+                WHEN np.distance_to_line_m <= 50 THEN 'monitor'
+                ELSE 'safe'
+            END AS risk_level,
+            -- Human-readable explanation
+            CASE
+                WHEN np.distance_to_line_m <= (v.height_m * 1.3) THEN 
+                    'CRITICAL: Tree fall zone (' || ROUND((v.height_m * 1.3)::numeric, 1) || 'm) reaches ' || 
+                    COALESCE(np.nearest_line_class, 'power line') || ' at ' || ROUND(np.distance_to_line_m::numeric, 1) || 'm'
+                WHEN np.distance_to_line_m <= (v.height_m * 2.0) THEN 
+                    'WARNING: ' || COALESCE(np.nearest_line_class, 'Power line') || ' at ' || 
+                    ROUND(np.distance_to_line_m::numeric, 1) || 'm is within 2x fall zone'
+                WHEN np.distance_to_line_m <= 50 THEN 
+                    'MONITOR: ' || COALESCE(np.nearest_line_class, 'Power line') || ' at ' || 
+                    ROUND(np.distance_to_line_m::numeric, 1) || 'm - within monitoring distance'
+                ELSE 
+                    'Safe distance from power infrastructure'
+            END AS risk_explanation,
+            NOW() AS computed_at
+        FROM vegetation_with_coords v
+        LEFT JOIN nearest_powerline np ON v.tree_id = np.tree_id
+        LEFT JOIN nearest_asset na ON v.tree_id = na.tree_id;
+
+        -- Create indexes on the materialized view for fast queries
+        CREATE INDEX IF NOT EXISTS idx_veg_computed_risk ON vegetation_risk_computed (risk_level);
+        CREATE INDEX IF NOT EXISTS idx_veg_computed_score ON vegetation_risk_computed (risk_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_veg_computed_coords ON vegetation_risk_computed (longitude, latitude);
+        
+        COMMENT ON MATERIALIZED VIEW vegetation_risk_computed IS 
+            'Pre-computed vegetation risk with spatial analysis - refresh with REFRESH MATERIALIZED VIEW vegetation_risk_computed';
+    """,
+}
+
 
 def download_file(url: str, dest: Path, desc: str) -> bool:
     """Download a file with progress indicator."""
@@ -514,6 +678,63 @@ def load_layer(layer_key: str, data_dir: Path, conn_args: list) -> bool:
     return True
 
 
+def create_derived_views(conn_args: list) -> bool:
+    """
+    Create derived views required by the FastAPI backend.
+    
+    These views depend on the raw tables being loaded first:
+    - buildings_spatial: View over building_footprints with centroid coords
+    - grid_assets: Alias view for grid_assets_cache
+    - vegetation_risk_computed: Materialized view with spatial risk analysis
+    """
+    print(f"\n{'='*60}")
+    print("CREATING DERIVED VIEWS")
+    print("These views are required by the FastAPI backend")
+    print(f"{'='*60}")
+    
+    # Order matters: buildings_spatial and grid_assets first (simple views),
+    # then vegetation_risk_computed (depends on grid_assets_cache)
+    view_order = ["buildings_spatial", "grid_assets", "vegetation_risk_computed"]
+    
+    success_count = 0
+    for view_name in view_order:
+        if view_name not in DERIVED_VIEWS:
+            print(f"  WARNING: No SQL defined for {view_name}")
+            continue
+            
+        print(f"\n  Creating {view_name}...")
+        sql = DERIVED_VIEWS[view_name]
+        
+        # For materialized views, this can take a while
+        if "MATERIALIZED VIEW" in sql:
+            print(f"    (This may take several minutes for spatial joins...)")
+        
+        if run_psql(sql, conn_args, f"Create {view_name}"):
+            # Verify creation
+            if "MATERIALIZED VIEW" in sql:
+                verify_sql = f"SELECT COUNT(*) FROM {view_name};"
+            else:
+                verify_sql = f"SELECT 1 FROM {view_name} LIMIT 1;"
+            
+            cmd = ["psql"] + conn_args + ["-t", "-c", verify_sql]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                if "MATERIALIZED VIEW" in sql:
+                    count = result.stdout.strip()
+                    print(f"    SUCCESS: {view_name} created with {count} rows")
+                else:
+                    print(f"    SUCCESS: {view_name} created")
+                success_count += 1
+            else:
+                print(f"    WARNING: {view_name} created but verification failed")
+        else:
+            print(f"    ERROR: Failed to create {view_name}")
+    
+    print(f"\n  Derived views created: {success_count}/{len(view_order)}")
+    return success_count == len(view_order)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Load PostGIS spatial data into Snowflake Managed Postgres",
@@ -544,6 +765,10 @@ def main():
                        help="Skip connection verification")
     parser.add_argument("--download-only", action="store_true",
                        help="Only download data, don't load")
+    parser.add_argument("--skip-derived-views", action="store_true",
+                       help="Skip creating derived views (buildings_spatial, grid_assets, vegetation_risk_computed)")
+    parser.add_argument("--derived-views-only", action="store_true",
+                       help="Only create derived views (skip loading raw data)")
     
     args = parser.parse_args()
     
@@ -590,18 +815,46 @@ def main():
         if not verify_postgis(conn_args):
             sys.exit(1)
     
+    # Handle derived-views-only mode
+    if args.derived_views_only:
+        print("Derived-views-only mode: creating views from existing tables...")
+        if create_derived_views(conn_args):
+            print("\nDerived views created successfully!")
+            sys.exit(0)
+        else:
+            print("\nERROR: Some derived views failed to create")
+            sys.exit(1)
+    
     # Load each layer
     success_count = 0
     for layer_key in args.layers:
         if load_layer(layer_key, data_dir, conn_args):
             success_count += 1
     
-    # Summary
+    # Summary of data loading
     print(f"\n{'='*60}")
-    print(f"SUMMARY: Loaded {success_count}/{len(args.layers)} layers successfully")
+    print(f"DATA LOADING: {success_count}/{len(args.layers)} layers loaded successfully")
     print(f"{'='*60}")
     
-    if success_count < len(args.layers):
+    load_failed = success_count < len(args.layers)
+    
+    # Create derived views (unless skipped)
+    derived_views_ok = True
+    if not args.skip_derived_views:
+        derived_views_ok = create_derived_views(conn_args)
+    else:
+        print("\nSkipping derived views (--skip-derived-views flag)")
+    
+    # Final summary
+    print(f"\n{'='*60}")
+    print("FINAL SUMMARY")
+    print(f"{'='*60}")
+    print(f"  Raw data layers: {success_count}/{len(args.layers)}")
+    if not args.skip_derived_views:
+        print(f"  Derived views:   {'OK' if derived_views_ok else 'FAILED'}")
+    print(f"{'='*60}")
+    
+    if load_failed or not derived_views_ok:
         sys.exit(1)
 
 

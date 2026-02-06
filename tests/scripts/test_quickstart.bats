@@ -439,6 +439,69 @@ EOF
     [ "$status" -eq 0 ]
 }
 
+@test "script mentions derived views in step 11" {
+    run grep "derived views" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "script mentions buildings_spatial view" {
+    run grep "buildings_spatial" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "script mentions grid_assets view" {
+    run grep "grid_assets" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "script mentions vegetation_risk_computed view" {
+    run grep "vegetation_risk_computed" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+# =============================================================================
+# LOAD_POSTGIS_DATA.PY SCRIPT TESTS
+# =============================================================================
+
+@test "load_postgis_data.py exists" {
+    [ -f "$PROJECT_ROOT/backend/scripts/load_postgis_data.py" ]
+}
+
+@test "load_postgis_data.py has DERIVED_VIEWS definition" {
+    run grep "DERIVED_VIEWS" "$PROJECT_ROOT/backend/scripts/load_postgis_data.py"
+    [ "$status" -eq 0 ]
+}
+
+@test "load_postgis_data.py creates buildings_spatial view" {
+    run grep "buildings_spatial" "$PROJECT_ROOT/backend/scripts/load_postgis_data.py"
+    [ "$status" -eq 0 ]
+}
+
+@test "load_postgis_data.py creates grid_assets view" {
+    run grep "CREATE VIEW grid_assets" "$PROJECT_ROOT/backend/scripts/load_postgis_data.py"
+    [ "$status" -eq 0 ]
+}
+
+@test "load_postgis_data.py creates vegetation_risk_computed materialized view" {
+    run grep "MATERIALIZED VIEW vegetation_risk_computed" "$PROJECT_ROOT/backend/scripts/load_postgis_data.py"
+    [ "$status" -eq 0 ]
+}
+
+@test "load_postgis_data.py has create_derived_views function" {
+    run grep "def create_derived_views" "$PROJECT_ROOT/backend/scripts/load_postgis_data.py"
+    [ "$status" -eq 0 ]
+}
+
+@test "load_postgis_data.py supports --skip-derived-views flag" {
+    run grep "\-\-skip-derived-views" "$PROJECT_ROOT/backend/scripts/load_postgis_data.py"
+    [ "$status" -eq 0 ]
+}
+
+@test "load_postgis_data.py supports --derived-views-only flag" {
+    run grep "\-\-derived-views-only" "$PROJECT_ROOT/backend/scripts/load_postgis_data.py"
+    [ "$status" -eq 0 ]
+}
+
 # =============================================================================
 # CORTEX AI TESTS
 # =============================================================================
