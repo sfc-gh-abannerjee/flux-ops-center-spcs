@@ -4541,14 +4541,21 @@ class CascadeResult(BaseModel):
 @app.get("/api/cascade/grid-topology", tags=["Cascade Analysis"])
 async def get_cascade_grid_topology(
     region: Optional[str] = Query(None, description="Filter by region"),
-    node_type: Optional[str] = Query(None, description="Filter by node type (SUBSTATION, TRANSFORMER)"),
-    limit: int = Query(1000, description="Max nodes to return")
+    node_type: Optional[str] = Query(None, description="Filter by node type (SUBSTATION, TRANSFORMER, POLE, METER)"),
+    limit: int = Query(1000, description="Max nodes to return"),
+    extended: bool = Query(True, description="Use extended topology (750K nodes) vs original (91K)")
 ):
     """
     Engineering: Return grid topology for GNN cascade analysis visualization.
-    Returns nodes and edges from ML_DEMO.GRID_NODES and GRID_EDGES tables.
+    Returns nodes and edges from ML_DEMO.GRID_NODES[_EXTENDED] and GRID_EDGES[_EXTENDED] tables.
+    
+    Extended topology includes full hierarchy: Substation → Transformer → Pole → Meter (750K nodes)
     """
     start = time.time()
+    
+    # Select table based on extended flag
+    nodes_table = f"{DB}.ML_DEMO.GRID_NODES_EXTENDED" if extended else f"{DB}.ML_DEMO.GRID_NODES"
+    edges_table = f"{DB}.ML_DEMO.GRID_EDGES_EXTENDED" if extended else f"{DB}.ML_DEMO.GRID_EDGES"
     
     try:
         def _fetch_topology():
@@ -4562,16 +4569,31 @@ async def get_cascade_grid_topology(
             if node_type:
                 node_where.append(f"NODE_TYPE = '{node_type}'")
             
-            node_query = f"""
-                SELECT 
-                    NODE_ID, NODE_NAME, NODE_TYPE, LAT, LON, REGION,
-                    CAPACITY_KW, VOLTAGE_KV, CRITICALITY_SCORE,
-                    DOWNSTREAM_TRANSFORMERS, DOWNSTREAM_CAPACITY_KVA
-                FROM {DB}.ML_DEMO.GRID_NODES
-                {('WHERE ' + ' AND '.join(node_where)) if node_where else ''}
-                ORDER BY CRITICALITY_SCORE DESC
-                LIMIT {limit}
-            """
+            # Extended table has slightly different columns
+            if extended:
+                node_query = f"""
+                    SELECT 
+                        NODE_ID, NODE_NAME, NODE_TYPE, LAT, LON, NULL as REGION,
+                        CAPACITY_KW, VOLTAGE_KV, COALESCE(CRITICALITY_SCORE, HEALTH_SCORE/100) as CRITICALITY_SCORE,
+                        0 as DOWNSTREAM_TRANSFORMERS, 0 as DOWNSTREAM_CAPACITY_KVA,
+                        HIERARCHY_LEVEL, PARENT_NODE_ID
+                    FROM {nodes_table}
+                    {('WHERE ' + ' AND '.join(node_where)) if node_where else ''}
+                    ORDER BY CRITICALITY_SCORE DESC NULLS LAST
+                    LIMIT {limit}
+                """
+            else:
+                node_query = f"""
+                    SELECT 
+                        NODE_ID, NODE_NAME, NODE_TYPE, LAT, LON, REGION,
+                        CAPACITY_KW, VOLTAGE_KV, CRITICALITY_SCORE,
+                        DOWNSTREAM_TRANSFORMERS, DOWNSTREAM_CAPACITY_KVA,
+                        NULL as HIERARCHY_LEVEL, NULL as PARENT_NODE_ID
+                    FROM {nodes_table}
+                    {('WHERE ' + ' AND '.join(node_where)) if node_where else ''}
+                    ORDER BY CRITICALITY_SCORE DESC
+                    LIMIT {limit}
+                """
             cursor.execute(node_query)
             
             nodes = []
@@ -4587,7 +4609,9 @@ async def get_cascade_grid_topology(
                     'voltage_kv': float(row[7]) if row[7] else 0,
                     'criticality_score': float(row[8]) if row[8] else 0,
                     'downstream_transformers': int(row[9]) if row[9] else 0,
-                    'downstream_capacity_kva': float(row[10]) if row[10] else 0
+                    'downstream_capacity_kva': float(row[10]) if row[10] else 0,
+                    'hierarchy_level': int(row[11]) if row[11] else None,
+                    'parent_node_id': row[12]
                 })
             
             # Get edges connecting these nodes
@@ -4597,15 +4621,27 @@ async def get_cascade_grid_topology(
                 sample_ids = node_ids[:500] if len(node_ids) > 500 else node_ids
                 placeholders = ','.join([f"'{nid}'" for nid in sample_ids])
                 
-                edge_query = f"""
-                    SELECT 
-                        EDGE_ID, FROM_NODE_ID, TO_NODE_ID, EDGE_TYPE,
-                        CIRCUIT_ID, DISTANCE_KM, IMPEDANCE_PU
-                    FROM {DB}.ML_DEMO.GRID_EDGES
-                    WHERE FROM_NODE_ID IN ({placeholders})
-                       OR TO_NODE_ID IN ({placeholders})
-                    LIMIT 5000
-                """
+                # Extended table uses SOURCE_NODE_ID/TARGET_NODE_ID, original uses FROM_NODE_ID/TO_NODE_ID
+                if extended:
+                    edge_query = f"""
+                        SELECT 
+                            EDGE_ID, SOURCE_NODE_ID, TARGET_NODE_ID, EDGE_TYPE,
+                            NULL as CIRCUIT_ID, DISTANCE_KM, IMPEDANCE
+                        FROM {edges_table}
+                        WHERE SOURCE_NODE_ID IN ({placeholders})
+                           OR TARGET_NODE_ID IN ({placeholders})
+                        LIMIT 5000
+                    """
+                else:
+                    edge_query = f"""
+                        SELECT 
+                            EDGE_ID, FROM_NODE_ID, TO_NODE_ID, EDGE_TYPE,
+                            CIRCUIT_ID, DISTANCE_KM, IMPEDANCE_PU
+                        FROM {edges_table}
+                        WHERE FROM_NODE_ID IN ({placeholders})
+                           OR TO_NODE_ID IN ({placeholders})
+                        LIMIT 5000
+                    """
                 cursor.execute(edge_query)
                 
                 edges = []
@@ -4634,7 +4670,9 @@ async def get_cascade_grid_topology(
             "node_count": len(result['nodes']),
             "edge_count": len(result['edges']),
             "query_time_ms": query_time,
-            "filters": {"region": region, "node_type": node_type}
+            "filters": {"region": region, "node_type": node_type},
+            "extended_topology": extended,
+            "data_source": nodes_table
         }
     
     except Exception as e:
@@ -4645,95 +4683,148 @@ async def get_cascade_grid_topology(
 @app.get("/api/cascade/high-risk-nodes", tags=["Cascade Analysis"])
 async def get_high_risk_cascade_nodes(
     risk_threshold: float = Query(0.5, description="Minimum ML cascade risk score threshold"),
-    limit: int = Query(100, description="Max nodes to return")
+    limit: int = Query(100, description="Max nodes to return"),
+    extended: bool = Query(True, description="Use extended topology (750K nodes) vs original (91K)")
 ):
     """
     Engineering: Identify high-risk nodes for cascade failure analysis using
     pre-computed Snowflake ML graph centrality features.
     
-    Uses NODE_CENTRALITY_FEATURES_V2 which contains:
-    - CASCADE_RISK_SCORE: ML-computed composite risk from graph analysis
-    - PAGERANK: Node influence in the network (cascade spread potential)
-    - BETWEENNESS_CENTRALITY: Bottleneck detection (failure cuts paths)
-    - TOTAL_REACH: Maximum downstream impact estimation
+    Extended mode uses NODE_CENTRALITY_FEATURES_EXTENDED (750K nodes) which contains:
+    - CASCADE_RISK_SCORE: ML-computed composite risk
+    - DOWNSTREAM_CUSTOMERS: Direct customer impact count
+    - DEGREE_CENTRALITY: Network connectivity measure
+    
+    Original mode uses NODE_CENTRALITY_FEATURES_V2 with PageRank, Betweenness, etc.
     
     These are potential "Patient Zero" candidates - nodes whose failure
     could trigger cascading outages across the grid.
     """
     start = time.time()
     
+    # Select tables based on extended flag
+    nodes_table = f"{DB}.ML_DEMO.GRID_NODES_EXTENDED" if extended else f"{DB}.ML_DEMO.GRID_NODES"
+    edges_table = f"{DB}.ML_DEMO.GRID_EDGES_EXTENDED" if extended else f"{DB}.ML_DEMO.GRID_EDGES"
+    centrality_table = f"{DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_EXTENDED" if extended else f"{DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2"
+    
     try:
         def _fetch_high_risk():
             conn = get_snowflake_connection()
             cursor = conn.cursor()
             
-            # Engineering: Use ML-computed centrality features instead of heuristics
-            # Join with GRID_EDGES to ensure nodes have cascade propagation paths
-            # Note: CASCADE_RISK_SCORE_NORMALIZED is 0-1 range for proper percentage display
-            cursor.execute(f"""
-                SELECT 
-                    n.NODE_ID,
-                    n.NODE_NAME,
-                    n.NODE_TYPE,
-                    n.LAT,
-                    n.LON,
-                    n.REGION,
-                    n.CAPACITY_KW,
-                    n.CRITICALITY_SCORE,
-                    n.DOWNSTREAM_TRANSFORMERS,
-                    n.DOWNSTREAM_CAPACITY_KVA,
-                    COALESCE(e.EDGE_COUNT, 0) as EDGE_COUNT,
-                    -- ML-computed graph centrality features (normalized 0-1)
-                    COALESCE(c.CASCADE_RISK_SCORE_NORMALIZED, 0) as CASCADE_RISK_SCORE,
-                    COALESCE(c.PAGERANK, 0) as PAGERANK,
-                    COALESCE(c.BETWEENNESS_CENTRALITY, 0) as BETWEENNESS_CENTRALITY,
-                    COALESCE(c.EIGENVECTOR_CENTRALITY, 0) as EIGENVECTOR_CENTRALITY,
-                    COALESCE(c.TOTAL_REACH, 0) as TOTAL_REACH,
-                    COALESCE(c.NEIGHBORS_1HOP, 0) as NEIGHBORS_1HOP,
-                    COALESCE(c.NEIGHBORS_2HOP, 0) as NEIGHBORS_2HOP
-                FROM {DB}.ML_DEMO.GRID_NODES n
-                LEFT JOIN (
-                    SELECT FROM_NODE_ID as NODE_ID, COUNT(*) as EDGE_COUNT
-                    FROM {DB}.ML_DEMO.GRID_EDGES
-                    GROUP BY FROM_NODE_ID
-                ) e ON n.NODE_ID = e.NODE_ID
-                LEFT JOIN {DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2 c 
-                    ON n.NODE_ID = c.NODE_ID
-                WHERE c.CASCADE_RISK_SCORE_NORMALIZED >= {risk_threshold}
-                  AND e.EDGE_COUNT > 5  -- Must have meaningful propagation paths for realistic cascade
-                  AND n.NODE_TYPE = 'TRANSFORMER'  -- # Target transformers - realistic failure points
-                -- Engineering: Order by combined ML risk AND propagation potential
-                -- This ensures we select nodes that are both high-risk AND can cause cascades
-                ORDER BY (c.CASCADE_RISK_SCORE_NORMALIZED * LOG(10, GREATEST(e.EDGE_COUNT, 2))) DESC
-                LIMIT {limit}
-            """)
+            if extended:
+                # Extended query with new schema
+                cursor.execute(f"""
+                    SELECT 
+                        n.NODE_ID,
+                        n.NODE_NAME,
+                        n.NODE_TYPE,
+                        n.LAT,
+                        n.LON,
+                        NULL as REGION,
+                        n.CAPACITY_KW,
+                        COALESCE(n.CRITICALITY_SCORE, n.HEALTH_SCORE/100) as CRITICALITY_SCORE,
+                        0 as DOWNSTREAM_TRANSFORMERS,
+                        0 as DOWNSTREAM_CAPACITY_KVA,
+                        COALESCE(c.IN_DEGREE + c.OUT_DEGREE, 0) as EDGE_COUNT,
+                        COALESCE(c.CASCADE_RISK_SCORE, 0) as CASCADE_RISK_SCORE,
+                        COALESCE(c.DEGREE_CENTRALITY, 0) as DEGREE_CENTRALITY,
+                        0 as BETWEENNESS_CENTRALITY,
+                        0 as EIGENVECTOR_CENTRALITY,
+                        COALESCE(c.DOWNSTREAM_CUSTOMERS, 0) as DOWNSTREAM_CUSTOMERS,
+                        c.HIERARCHY_LEVEL,
+                        n.PARENT_NODE_ID
+                    FROM {nodes_table} n
+                    LEFT JOIN {centrality_table} c ON n.NODE_ID = c.NODE_ID
+                    WHERE c.CASCADE_RISK_SCORE >= {risk_threshold}
+                      AND n.NODE_TYPE IN ('SUBSTATION', 'TRANSFORMER', 'POLE')
+                    ORDER BY c.CASCADE_RISK_SCORE DESC
+                    LIMIT {limit}
+                """)
+            else:
+                # Original query
+                cursor.execute(f"""
+                    SELECT 
+                        n.NODE_ID,
+                        n.NODE_NAME,
+                        n.NODE_TYPE,
+                        n.LAT,
+                        n.LON,
+                        n.REGION,
+                        n.CAPACITY_KW,
+                        n.CRITICALITY_SCORE,
+                        n.DOWNSTREAM_TRANSFORMERS,
+                        n.DOWNSTREAM_CAPACITY_KVA,
+                        COALESCE(e.EDGE_COUNT, 0) as EDGE_COUNT,
+                        COALESCE(c.CASCADE_RISK_SCORE_NORMALIZED, 0) as CASCADE_RISK_SCORE,
+                        COALESCE(c.PAGERANK, 0) as PAGERANK,
+                        COALESCE(c.BETWEENNESS_CENTRALITY, 0) as BETWEENNESS_CENTRALITY,
+                        COALESCE(c.EIGENVECTOR_CENTRALITY, 0) as EIGENVECTOR_CENTRALITY,
+                        COALESCE(c.TOTAL_REACH, 0) as TOTAL_REACH,
+                        COALESCE(c.NEIGHBORS_1HOP, 0) as NEIGHBORS_1HOP,
+                        COALESCE(c.NEIGHBORS_2HOP, 0) as NEIGHBORS_2HOP
+                    FROM {nodes_table} n
+                    LEFT JOIN (
+                        SELECT FROM_NODE_ID as NODE_ID, COUNT(*) as EDGE_COUNT
+                        FROM {edges_table}
+                        GROUP BY FROM_NODE_ID
+                    ) e ON n.NODE_ID = e.NODE_ID
+                    LEFT JOIN {centrality_table} c ON n.NODE_ID = c.NODE_ID
+                    WHERE c.CASCADE_RISK_SCORE_NORMALIZED >= {risk_threshold}
+                      AND e.EDGE_COUNT > 5
+                      AND n.NODE_TYPE = 'TRANSFORMER'
+                    ORDER BY (c.CASCADE_RISK_SCORE_NORMALIZED * LOG(10, GREATEST(e.EDGE_COUNT, 2))) DESC
+                    LIMIT {limit}
+                """)
             
             nodes = []
             for row in cursor.fetchall():
-                nodes.append({
-                    'node_id': row[0],
-                    'node_name': row[1],
-                    'node_type': row[2],
-                    'lat': float(row[3]) if row[3] else None,
-                    'lon': float(row[4]) if row[4] else None,
-                    'region': row[5],
-                    'capacity_kw': float(row[6]) if row[6] else 0,
-                    'criticality_score': float(row[7]) if row[7] else 0,
-                    'downstream_transformers': int(row[8]) if row[8] else 0,
-                    'downstream_capacity_kva': float(row[9]) if row[9] else 0,
-                    'edge_count': int(row[10]) if row[10] else 0,
-                    # ML-computed risk from Snowflake graph analysis
-                    'cascade_risk': round(float(row[11]) if row[11] else 0, 3),
-                    # Graph centrality metrics for explainability
-                    'ml_features': {
-                        'pagerank': round(float(row[12]) if row[12] else 0, 6),
-                        'betweenness_centrality': round(float(row[13]) if row[13] else 0, 6),
-                        'eigenvector_centrality': round(float(row[14]) if row[14] else 0, 6),
-                        'total_reach': int(row[15]) if row[15] else 0,
-                        'neighbors_1hop': int(row[16]) if row[16] else 0,
-                        'neighbors_2hop': int(row[17]) if row[17] else 0
-                    }
-                })
+                if extended:
+                    nodes.append({
+                        'node_id': row[0],
+                        'node_name': row[1],
+                        'node_type': row[2],
+                        'lat': float(row[3]) if row[3] else None,
+                        'lon': float(row[4]) if row[4] else None,
+                        'region': row[5],
+                        'capacity_kw': float(row[6]) if row[6] else 0,
+                        'criticality_score': float(row[7]) if row[7] else 0,
+                        'downstream_transformers': int(row[8]) if row[8] else 0,
+                        'downstream_capacity_kva': float(row[9]) if row[9] else 0,
+                        'edge_count': int(row[10]) if row[10] else 0,
+                        'cascade_risk': round(float(row[11]) if row[11] else 0, 3),
+                        'ml_features': {
+                            'degree_centrality': round(float(row[12]) if row[12] else 0, 6),
+                            'betweenness_centrality': round(float(row[13]) if row[13] else 0, 6),
+                            'eigenvector_centrality': round(float(row[14]) if row[14] else 0, 6),
+                            'downstream_customers': int(row[15]) if row[15] else 0
+                        },
+                        'hierarchy_level': int(row[16]) if row[16] else None,
+                        'parent_node_id': row[17]
+                    })
+                else:
+                    nodes.append({
+                        'node_id': row[0],
+                        'node_name': row[1],
+                        'node_type': row[2],
+                        'lat': float(row[3]) if row[3] else None,
+                        'lon': float(row[4]) if row[4] else None,
+                        'region': row[5],
+                        'capacity_kw': float(row[6]) if row[6] else 0,
+                        'criticality_score': float(row[7]) if row[7] else 0,
+                        'downstream_transformers': int(row[8]) if row[8] else 0,
+                        'downstream_capacity_kva': float(row[9]) if row[9] else 0,
+                        'edge_count': int(row[10]) if row[10] else 0,
+                        'cascade_risk': round(float(row[11]) if row[11] else 0, 3),
+                        'ml_features': {
+                            'pagerank': round(float(row[12]) if row[12] else 0, 6),
+                            'betweenness_centrality': round(float(row[13]) if row[13] else 0, 6),
+                            'eigenvector_centrality': round(float(row[14]) if row[14] else 0, 6),
+                            'total_reach': int(row[15]) if row[15] else 0,
+                            'neighbors_1hop': int(row[16]) if row[16] else 0,
+                            'neighbors_2hop': int(row[17]) if row[17] else 0
+                        }
+                    })
             
             cursor.close()
             conn.close()
@@ -4747,8 +4838,10 @@ async def get_high_risk_cascade_nodes(
             "count": len(nodes),
             "risk_threshold": risk_threshold,
             "query_time_ms": query_time,
-            f"ml_source": "{DB}.CASCADE_ANALYSIS.NODE_CENTRALITY_FEATURES_V2",
-            "analysis_note": "CASCADE_RISK_SCORE computed via Snowflake ML graph centrality analysis (PageRank, Betweenness, Eigenvector)"
+            "ml_source": centrality_table,
+            "extended_topology": extended,
+            "analysis_note": "CASCADE_RISK_SCORE computed via Snowflake ML graph centrality analysis" + 
+                (" (750K node extended hierarchy)" if extended else " (PageRank, Betweenness, Eigenvector)")
         }
     
     except Exception as e:
