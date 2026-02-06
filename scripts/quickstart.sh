@@ -2,15 +2,27 @@
 # =============================================================================
 # Flux Operations Center - Quick Deploy Script
 # =============================================================================
-# This script automates the deployment of Flux Ops Center to Snowflake SPCS.
+# This script automates the FULL deployment of Flux Ops Center to Snowflake SPCS,
+# including building, pushing, and deploying the service and Postgres instance.
 #
 # Usage:
 #   ./scripts/quickstart.sh
 #
 # Prerequisites:
 #   - Docker installed and running
-#   - Snowflake CLI (snow) installed, OR manual registry login
-#   - Environment variables set (see below)
+#   - Node.js and npm installed
+#   - Snowflake CLI (snow) installed and configured with a connection
+#
+# Environment Variables (optional - will prompt if not set):
+#   SNOWFLAKE_ACCOUNT      - Snowflake account (org-account format)
+#   SNOWFLAKE_USER         - Snowflake username
+#   SNOWFLAKE_DATABASE     - Target database
+#   SNOWFLAKE_SCHEMA       - Target schema
+#   SNOWFLAKE_WAREHOUSE    - Warehouse to use
+#   COMPUTE_POOL           - SPCS compute pool name
+#   SNOWFLAKE_CONNECTION   - Snowflake CLI connection name
+#   AUTO_DEPLOY=false      - Set to skip SQL execution (generate only)
+#   SETUP_POSTGRES=false   - Set to skip Postgres setup
 # =============================================================================
 
 set -e  # Exit on error
@@ -36,12 +48,18 @@ IMAGE_REPO="${IMAGE_REPO:-FLUX_OPS_CENTER_REPO}"
 SERVICE_NAME="${SERVICE_NAME:-FLUX_OPS_CENTER_SERVICE}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
+# Snowflake CLI connection (for executing SQL)
+SNOWFLAKE_CONNECTION="${SNOWFLAKE_CONNECTION:-}"  # Will prompt if not set
+
 # Snowflake Postgres configuration (dual-backend architecture)
 POSTGRES_INSTANCE="${POSTGRES_INSTANCE:-FLUX_OPS_POSTGRES}"
 POSTGRES_COMPUTE_FAMILY="${POSTGRES_COMPUTE_FAMILY:-HIGHMEM_XL}"
 POSTGRES_STORAGE_GB="${POSTGRES_STORAGE_GB:-100}"
 POSTGRES_VERSION="${POSTGRES_VERSION:-17}"
 SETUP_POSTGRES="${SETUP_POSTGRES:-true}"  # Set to false to skip Postgres setup
+
+# Deployment options
+AUTO_DEPLOY="${AUTO_DEPLOY:-true}"  # Set to false to only generate SQL without executing
 
 # -----------------------------------------------------------------------------
 # HELPER FUNCTIONS
@@ -89,10 +107,13 @@ print_header "Flux Operations Center - Quick Deploy"
 
 echo ""
 echo "This script will:"
-echo "  1. Validate configuration"
-echo "  2. Build Docker image (multi-container: frontend + backend)"
-echo "  3. Push to Snowflake Image Registry"
-echo "  4. Generate deployment SQL"
+echo "  1. Validate configuration and prerequisites"
+echo "  2. Build frontend (npm ci && npm run build)"
+echo "  3. Build Docker image"
+echo "  4. Push to Snowflake Image Registry"
+echo "  5. Deploy SPCS service to Snowflake"
+echo "  6. Create Snowflake Postgres instance (if enabled)"
+echo "  7. Wait for services to become ready"
 echo ""
 
 # Check for Node.js (required for frontend build)
@@ -109,6 +130,15 @@ if ! command -v npm &> /dev/null; then
     exit 1
 fi
 print_success "npm found ($(npm --version))"
+
+# Check for Snowflake CLI (required for SQL execution)
+if ! command -v snow &> /dev/null; then
+    print_error "Snowflake CLI (snow) is not installed."
+    print_warning "Install via: pip install snowflake-cli-labs"
+    print_warning "Or see: https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/installation/installation"
+    exit 1
+fi
+print_success "Snowflake CLI found ($(snow --version 2>&1 | head -1))"
 
 # Check for Docker
 if ! command -v docker &> /dev/null; then
@@ -186,6 +216,30 @@ if [ "$SETUP_POSTGRES" = "true" ]; then
     echo -n "Postgres version (16/17/18) [17]: "
     read input
     POSTGRES_VERSION="${input:-17}"
+fi
+
+# Prompt for Snowflake CLI connection
+echo ""
+print_step "Snowflake CLI Connection"
+echo "  The script will use Snowflake CLI to deploy resources directly."
+echo ""
+
+# List available connections
+AVAILABLE_CONNECTIONS=$(snow connection list 2>/dev/null | grep -E "^\w" | awk '{print $1}' | head -10)
+if [ -n "$AVAILABLE_CONNECTIONS" ]; then
+    echo "  Available connections:"
+    echo "$AVAILABLE_CONNECTIONS" | while read conn; do echo "    - $conn"; done
+    echo ""
+fi
+
+if [ -z "$SNOWFLAKE_CONNECTION" ]; then
+    echo -n "Snowflake CLI connection name: "
+    read SNOWFLAKE_CONNECTION
+fi
+
+# Validate connection exists
+if ! snow connection test -c "$SNOWFLAKE_CONNECTION" &> /dev/null; then
+    print_warning "Connection '$SNOWFLAKE_CONNECTION' test failed - will try anyway"
 fi
 
 # Validate all required variables
@@ -523,45 +577,147 @@ fi
 print_success "Deployment SQL generated: $SQL_FILE"
 
 # -----------------------------------------------------------------------------
-# NEXT STEPS
+# STEP 6: DEPLOY TO SNOWFLAKE
+# -----------------------------------------------------------------------------
+
+if [ "$AUTO_DEPLOY" = "true" ]; then
+    print_header "Step 6: Deploy to Snowflake"
+    
+    print_step "Creating image repository and SPCS service..."
+    
+    # Execute the main deployment SQL
+    if ! snow sql -c "$SNOWFLAKE_CONNECTION" -f "$SQL_FILE" 2>&1; then
+        print_error "Failed to execute deployment SQL"
+        print_warning "You can run it manually: snow sql -c $SNOWFLAKE_CONNECTION -f $SQL_FILE"
+        exit 1
+    fi
+    print_success "SPCS service deployment initiated"
+    
+    # Execute Postgres setup if enabled
+    if [ "$SETUP_POSTGRES" = "true" ]; then
+        print_step "Setting up Snowflake Postgres..."
+        echo ""
+        print_warning "IMPORTANT: Save the Postgres credentials shown below!"
+        print_warning "They cannot be retrieved later."
+        echo ""
+        
+        if ! snow sql -c "$SNOWFLAKE_CONNECTION" -f "$POSTGRES_SQL_FILE" 2>&1; then
+            print_error "Failed to execute Postgres setup SQL"
+            print_warning "You can run it manually: snow sql -c $SNOWFLAKE_CONNECTION -f $POSTGRES_SQL_FILE"
+            # Don't exit - SPCS service may still be deploying
+        else
+            print_success "Postgres instance creation initiated"
+        fi
+    fi
+    
+    # -----------------------------------------------------------------------------
+    # STEP 7: WAIT FOR SERVICES
+    # -----------------------------------------------------------------------------
+    
+    print_header "Step 7: Waiting for Services"
+    
+    print_step "Checking SPCS service status..."
+    echo "  (This may take 2-5 minutes for the service to become READY)"
+    echo ""
+    
+    # Poll for service status
+    MAX_ATTEMPTS=30
+    ATTEMPT=0
+    SERVICE_READY=false
+    
+    while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+        ATTEMPT=$((ATTEMPT + 1))
+        
+        # Get service status
+        STATUS=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q "SELECT SYSTEM\$GET_SERVICE_STATUS('${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}')" 2>/dev/null | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+        
+        if [ "$STATUS" = "READY" ]; then
+            SERVICE_READY=true
+            print_success "SPCS service is READY!"
+            break
+        elif [ "$STATUS" = "FAILED" ]; then
+            print_error "SPCS service FAILED to start"
+            snow sql -c "$SNOWFLAKE_CONNECTION" -q "SELECT SYSTEM\$GET_SERVICE_STATUS('${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}')" 2>/dev/null
+            break
+        else
+            echo -ne "  Attempt $ATTEMPT/$MAX_ATTEMPTS: Status=$STATUS\r"
+            sleep 10
+        fi
+    done
+    echo ""
+    
+    if [ "$SERVICE_READY" = true ]; then
+        # Get the service URL
+        print_step "Getting service endpoints..."
+        snow sql -c "$SNOWFLAKE_CONNECTION" -q "SHOW ENDPOINTS IN SERVICE ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}" 2>/dev/null
+    fi
+    
+    # Check Postgres status if enabled
+    if [ "$SETUP_POSTGRES" = "true" ]; then
+        print_step "Checking Postgres instance status..."
+        snow sql -c "$SNOWFLAKE_CONNECTION" -q "SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}'" 2>/dev/null
+        echo ""
+        print_warning "Note: Postgres credentials were displayed during creation."
+        print_warning "If you missed them, reset with: ALTER POSTGRES INSTANCE ${POSTGRES_INSTANCE} RESET CREDENTIALS;"
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# COMPLETION
 # -----------------------------------------------------------------------------
 
 print_header "Deployment Complete!"
 
 echo ""
-echo "Next steps:"
-echo ""
-echo "  1. Run the generated SQL in Snowflake Worksheets:"
-echo "     $SQL_FILE"
-echo ""
-if [ "$SETUP_POSTGRES" = "true" ]; then
-echo "  2. Set up Snowflake Postgres (dual-backend architecture):"
-echo "     $POSTGRES_SQL_FILE"
-echo "     IMPORTANT: Save the credentials shown after CREATE POSTGRES INSTANCE!"
-echo ""
-echo "  3. Wait for services to reach READY state:"
-echo "     SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');"
-echo "     SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}';"
-echo ""
-echo "  4. Load PostGIS spatial data (REQUIRED for map visualization):"
-echo "     python backend/scripts/load_postgis_data.py --service <pg_service_name>"
-echo "     See: https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs/releases/tag/v1.0.0-data"
-echo ""
-echo "  5. Update service with Postgres host (from SHOW POSTGRES INSTANCES):"
-echo "     ALTER SERVICE ${SERVICE_NAME} SET"
-echo "       SPECIFICATION_FILE = ... -- Update VITE_POSTGRES_HOST"
-echo ""
-echo "  6. Get the application URL:"
+
+if [ "$AUTO_DEPLOY" = "true" ]; then
+    # Auto-deploy was run - show simplified next steps
+    echo "Deployment executed automatically. Remaining steps:"
+    echo ""
+    if [ "$SETUP_POSTGRES" = "true" ]; then
+        echo "  1. Save your Postgres credentials (shown above during creation)"
+        echo ""
+        echo "  2. Load PostGIS spatial data (REQUIRED for map visualization):"
+        echo "     python backend/scripts/load_postgis_data.py --host <POSTGRES_HOST>"
+        echo "     See: https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs/releases/tag/v1.0.0-data"
+        echo ""
+        echo "  3. Update service with Postgres host:"
+        echo "     ALTER SERVICE ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME} SET"
+        echo "       SPECIFICATION_FILE = ... -- Update VITE_POSTGRES_HOST"
+        echo ""
+        echo "  4. Open the 'app' endpoint URL in your browser"
+    else
+        echo "  1. Open the 'app' endpoint URL in your browser (shown above)"
+    fi
 else
-echo "  2. Wait for service to reach READY state:"
-echo "     SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');"
-echo ""
-echo "  3. Get the application URL:"
+    # Manual deployment - show full steps
+    echo "SQL files generated. Next steps:"
+    echo ""
+    echo "  1. Run the deployment SQL in Snowflake:"
+    echo "     snow sql -c <connection> -f $SQL_FILE"
+    echo ""
+    if [ "$SETUP_POSTGRES" = "true" ]; then
+        echo "  2. Set up Snowflake Postgres (dual-backend architecture):"
+        echo "     snow sql -c <connection> -f $POSTGRES_SQL_FILE"
+        echo "     IMPORTANT: Save the credentials shown after CREATE POSTGRES INSTANCE!"
+        echo ""
+        echo "  3. Wait for services to reach READY state:"
+        echo "     SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');"
+        echo "     SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}';"
+        echo ""
+        echo "  4. Load PostGIS spatial data (REQUIRED for map visualization):"
+        echo "     python backend/scripts/load_postgis_data.py --host <POSTGRES_HOST>"
+        echo ""
+        echo "  5. Get the application URL:"
+        echo "     SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME};"
+    else
+        echo "  2. Wait for service to reach READY state:"
+        echo "     SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');"
+        echo ""
+        echo "  3. Get the application URL:"
+        echo "     SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME};"
+    fi
 fi
-echo "     SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME};"
-echo ""
-echo "  $([ "$SETUP_POSTGRES" = "true" ] && echo "7" || echo "4"). Open the 'app' endpoint URL in your browser"
-echo ""
-echo "  $([ "$SETUP_POSTGRES" = "true" ] && echo "8" || echo "5"). (Optional) Connect to Flux Data Forge for streaming AMI data"
+
 echo ""
 print_success "Happy demo-ing!"
