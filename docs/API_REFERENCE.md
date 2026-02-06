@@ -9,21 +9,14 @@ Flux Operations Center exposes a REST API for grid operations, cascade analysis,
 ## API Architecture
 
 ```mermaid
-flowchart TB
-    subgraph Server["FastAPI Server (port 3001)"]
-        direction TB
-        H["/health, /api/metrics<br/>Health & Metrics"]
-        I["/api/initial-load<br/>Initial Load (cached)"]
-        A["/api/assets, /api/topology<br/>Grid Assets & Topology"]
-        C["/api/cascade/*<br/>Cascade Failure Analysis"]
-        S["/api/spatial/*<br/>Geospatial Queries"]
-        AG["/api/agent/*<br/>Cortex AI Agent"]
+flowchart LR
+    subgraph Server["FastAPI Server :3001"]
+        H["/health"]
+        API["/api/*<br/>assets, topology,<br/>cascade, spatial, agent"]
     end
     
-    subgraph Data["Data Layer"]
-        SF["Snowflake<br/>(Analytics)"]
-        PG["Snowflake Postgres<br/>(Transactional/PostGIS)"]
-    end
+    SF[("Snowflake<br/>Analytics")]
+    PG[("Postgres<br/>PostGIS")]
     
     Server --> SF
     Server --> PG

@@ -638,55 +638,36 @@ If you don't create an agent, the chat panel will be visible but queries will fa
 ### Cross-Repository Data Relationships
 
 ```mermaid
-flowchart TB
-    subgraph Platform["FLUX UTILITY PLATFORM"]
-        direction TB
-        
-        subgraph FUS["flux-utility-solutions (Deploy First)"]
-            FUS1["Creates: FLUX_DB database"]
-            FUS2["Creates: PRODUCTION schema (core tables)"]
-            FUS3["Creates: APPLICATIONS schema (views for Ops Center)"]
-            FUS4["Creates: ML_DEMO schema (transformer prediction)"]
-            FUS5["Creates: CASCADE_ANALYSIS schema (GNN tables - empty)"]
-            FUS6["Creates: Cortex Agent (grid_intelligence_agent)"]
-            FUS7["Creates: Semantic Model for natural language queries"]
-        end
-        
-        subgraph FDF["flux-data-forge (Optional)"]
-            FDF1["Generates: Synthetic AMI streaming data"]
-            FDF2["Populates: Real-time meter readings in PRODUCTION schema"]
-        end
-        
-        subgraph FOC["flux-ops-center-spcs (This Repo)"]
-            FOC1["Reads: All schemas created by flux-utility-solutions"]
-            FOC2["Requires: Snowflake Postgres with PostGIS data"]
-            FOC3["Provides: Visualization layer (no data creation)"]
-        end
+flowchart LR
+    subgraph FUS["flux-utility-solutions<br/>(Deploy First)"]
+        FUS_DB[("FLUX_DB")]
+        FUS_SCHEMAS["PRODUCTION<br/>APPLICATIONS<br/>ML_DEMO<br/>CASCADE_ANALYSIS"]
+        FUS_AI["Cortex Agent<br/>Semantic Model"]
+    end
+    
+    subgraph FDF["flux-data-forge<br/>(Optional)"]
+        FDF_GEN["AMI Data<br/>Generator"]
+    end
+    
+    subgraph FOC["flux-ops-center<br/>(This Repo)"]
+        FOC_VIZ["Grid Maps<br/>GNN Analysis<br/>Cascade Sim"]
     end
     
     FUS --> FDF
     FUS --> FOC
-    FDF -.-> FOC
+    FDF -.->|streaming data| FOC
 ```
 
 ```mermaid
-flowchart TB
-    subgraph Standalone["STANDALONE DEPLOYMENT"]
-        direction TB
-        
-        subgraph QS["00_standalone_quickstart.sql"]
-            QS1["Creates: FLUX_DB database (configurable, independent)"]
-            QS2["Creates: PRODUCTION schema with sample data"]
-            QS3["Creates: APPLICATIONS schema with views"]
-            QS4["Creates: ML_DEMO schema (empty, ready for training)"]
-            QS5["Creates: CASCADE_ANALYSIS schema (empty tables only)"]
-            QS6["Creates: RAW schema (HOUSTON_BUILDINGS_FOOTPRINTS table)"]
-            QS7["Does NOT create: Cortex Agent"]
-            QS8["Does NOT create: Semantic Model"]
-        end
-        
-        Note["Note: Standalone is self-contained but has reduced AI features"]
+flowchart LR
+    subgraph Standalone["STANDALONE: 00_standalone_quickstart.sql"]
+        DB[("FLUX_DB")]
+        SCHEMAS["PRODUCTION ✓<br/>APPLICATIONS ✓<br/>ML_DEMO ✓<br/>CASCADE_ANALYSIS ✓<br/>RAW ✓"]
+        NO["Cortex Agent ✗<br/>Semantic Model ✗"]
     end
+    
+    DB --> SCHEMAS
+    SCHEMAS --> NO
 ```
 
 ### Contingency: Missing Dependencies
