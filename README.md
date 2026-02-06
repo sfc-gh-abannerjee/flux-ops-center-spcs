@@ -37,7 +37,7 @@ python backend/scripts/load_postgis_data.py --service your_pg_service
 |----------|----------|
 | **Cortex AI** | [Agents](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents), [LLM Functions](https://docs.snowflake.com/en/user-guide/snowflake-cortex/llm-functions) |
 | **Machine Learning** | [Snowpark ML](https://docs.snowflake.com/en/developer-guide/snowflake-ml/overview), [Model Registry](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/overview) |
-| **Applications** | [SPCS](https://docs.snowflake.com/en/developer-guide/snowpark-container-services/overview), [Snowflake Postgres](https://docs.snowflake.com/en/release-notes/2024/other/2024-12-17-snowflake-postgres-preview) |
+| **Applications** | [SPCS](https://docs.snowflake.com/en/developer-guide/snowpark-container-services/overview), [Snowflake Postgres](https://docs.snowflake.com/en/user-guide/snowflake-postgres/about) |
 | **Data** | [Dynamic Tables](https://docs.snowflake.com/en/user-guide/dynamic-tables-about), [Stages](https://docs.snowflake.com/en/user-guide/data-load-overview) |
 
 ---
