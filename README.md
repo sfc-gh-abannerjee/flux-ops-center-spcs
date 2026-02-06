@@ -111,22 +111,32 @@ Part of a suite of Snowflake solutions:
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    SPCS Service                         │
-│  ┌─────────────┐    ┌──────────────┐    ┌───────────┐  │
-│  │   React     │    │   FastAPI    │    │  Nginx    │  │
-│  │  Frontend   │◄──►│   Backend    │◄──►│  Proxy    │  │
-│  └─────────────┘    └──────┬───────┘    └───────────┘  │
-└────────────────────────────┼────────────────────────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              ▼              ▼              ▼
-        ┌──────────┐  ┌───────────┐  ┌───────────┐
-        │Snowflake │  │ Snowflake │  │  Cortex   │
-        │ Tables   │  │ Postgres  │  │  Agent    │
-        │          │  │ (PostGIS) │  │           │
-        └──────────┘  └───────────┘  └───────────┘
+```mermaid
+flowchart TB
+    subgraph SPCS["SPCS Container Service"]
+        direction LR
+        NGINX["Nginx<br/>:8080"]
+        REACT["React Frontend<br/>(DeckGL Maps)"]
+        FASTAPI["FastAPI Backend<br/>:3001"]
+        
+        NGINX -->|"Static Assets"| REACT
+        NGINX -->|"/api/*"| FASTAPI
+    end
+    
+    subgraph SNOWFLAKE["Snowflake Platform"]
+        direction TB
+        TABLES[("Snowflake Tables<br/>Grid Assets, Events")]
+        POSTGRES[("Snowflake Postgres<br/>PostGIS Geospatial")]
+        CORTEX["Cortex Agent<br/>Grid Intelligence"]
+        GNN["ML Model Registry<br/>GNN Cascade Predictor"]
+    end
+    
+    FASTAPI -->|"snowflake-connector"| TABLES
+    FASTAPI -->|"asyncpg"| POSTGRES
+    FASTAPI -->|"REST API"| CORTEX
+    FASTAPI -->|"Model Inference"| GNN
+    
+    USER((User)) -->|"HTTPS"| NGINX
 ```
 
 ---
