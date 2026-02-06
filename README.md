@@ -338,30 +338,65 @@ snow sql -c $CONN -f scripts/sql/04_validation.sql \
 
 ### Using Pre-Built Docker Images
 
-**Skip the build step entirely.** Pre-built images are published to GitHub Container Registry on every release.
+**Skip the build step entirely.** Pre-built images are published to GitHub Container Registry on every push to main.
+
+<br/>
+
+#### Multi-Architecture Support
+
+Images are built natively for both architectures (no emulation):
+
+| Architecture | Use Case | Runner |
+|--------------|----------|--------|
+| `linux/amd64` | **Snowflake SPCS**, Linux servers, Intel Macs | Native x86_64 |
+| `linux/arm64` | **Apple Silicon** (M1/M2/M3), AWS Graviton | Native ARM64 |
+
+Docker automatically pulls the correct architecture for your platform.
+
+<br/>
+
+#### Pull and Deploy to SPCS
 
 ```bash
-# Pull the latest pre-built image
-docker pull ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:latest
+# Pull the image (auto-selects your architecture)
+docker pull ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
 
-# Or pull a specific version
-docker pull ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:v1.0.0
+# For SPCS: explicitly pull amd64 (required for Snowflake)
+docker pull --platform linux/amd64 ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
 
 # Tag for your Snowflake image repository
-docker tag ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:latest \
+docker tag ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main \
     <your-account>.registry.snowflakecomputing.com/FLUX_DB/PUBLIC/FLUX_OPS_CENTER_IMAGES/flux-ops-center:latest
 
 # Push to Snowflake
 docker push <your-account>.registry.snowflakecomputing.com/FLUX_DB/PUBLIC/FLUX_OPS_CENTER_IMAGES/flux-ops-center:latest
 ```
 
-**Available tags:**
-- `latest` - Most recent build from main branch
-- `v1.x.x` - Semantic versioned releases
-- `main` - Latest commit on main branch
-- `sha-xxxxxxx` - Specific commit builds
+<br/>
 
-**Multi-architecture support:** Images are built for both `linux/amd64` and `linux/arm64`.
+#### Run Locally on Apple Silicon
+
+```bash
+# Pull arm64 image (auto-selected on M1/M2/M3)
+docker pull ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
+
+# Run locally
+docker run -p 8080:8080 \
+    -e SNOWFLAKE_ACCOUNT=your_account \
+    -e SNOWFLAKE_USER=your_user \
+    -e SNOWFLAKE_PASSWORD=your_password \
+    ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
+```
+
+<br/>
+
+#### Available Tags
+
+| Tag | Description |
+|-----|-------------|
+| `main` | Latest build from main branch |
+| `sha-xxxxxxx` | Specific commit builds |
+| `v1.x.x` | Semantic versioned releases (when tagged) |
 
 ### Terraform Deployment
 
