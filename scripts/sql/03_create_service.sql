@@ -10,8 +10,9 @@
 --   3. Docker image pushed to repository
 --   4. Compute pool created (02_compute_pool.sql)
 --   5. Postgres instance created (05_postgres_setup.sql)
---   6. PostGIS data loaded (backend/scripts/load_postgis_data.py)
---   7. Cortex Agent exists (see CORTEX AGENT CONFIGURATION below)
+--   6. External access integrations created (05a_external_access.sql, 05b_map_external_access.sql)
+--   7. PostGIS data loaded (backend/scripts/load_postgis_data.py)
+--   8. Cortex Agent exists (see CORTEX AGENT CONFIGURATION below)
 --
 -- Variables (Jinja2 syntax for Snow CLI):
 --   <% database %>       - Target database name
@@ -98,6 +99,7 @@ spec:
       port: 8080
       public: true
 $$
+    EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_POSTGRES_INTEGRATION, FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI)
     QUERY_WAREHOUSE = IDENTIFIER('<% warehouse %>')
     COMMENT = 'Flux Operations Center - Grid Visualization & GNN Risk Prediction';
 
