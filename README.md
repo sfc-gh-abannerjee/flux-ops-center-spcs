@@ -13,6 +13,19 @@
 
 ---
 
+## Why Flux Ops Center?
+
+This repository demonstrates interactive grid operations capabilities:
+
+| What You Get | Description |
+|--------------|-------------|
+| **Interactive grid maps** | 66K+ assets visualized with DeckGL and PostGIS geospatial queries |
+| **Cascade failure simulation** | GNN-based risk prediction showing how failures propagate through the grid |
+| **Grid Intelligence Agent** | Natural language queries about grid status via Cortex |
+| **Multi-arch Docker images** | Pre-built images for both local development (ARM64) and SPCS deployment (AMD64) |
+
+---
+
 ## Quick Start
 
 ```bash
