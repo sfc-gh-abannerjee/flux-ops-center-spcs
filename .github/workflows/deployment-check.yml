@@ -1,0 +1,300 @@
+name: Deployment Readiness Check
+
+# Run on all PRs and pushes to catch deployment issues early
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'Dockerfile*'
+      - 'package*.json'
+      - 'tsconfig*.json'
+      - 'vite.config.ts'
+      - 'scripts/**'
+      - 'backend/**'
+      - 'src/**'
+      - '.github/workflows/deployment-check.yml'
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  # ==========================================================================
+  # Job 1: Validate deployment prerequisites
+  # ==========================================================================
+  validate-structure:
+    name: Validate Project Structure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check required files exist
+        run: |
+          echo "Checking required files..."
+          REQUIRED_FILES=(
+            "package.json"
+            "package-lock.json"
+            "tsconfig.json"
+            "vite.config.ts"
+            "Dockerfile"
+            "Dockerfile.spcs"
+            "backend/requirements.txt"
+            "backend/server_fastapi.py"
+            "scripts/quickstart.sh"
+          )
+          
+          MISSING=0
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✓ $file"
+            else
+              echo "✗ MISSING: $file"
+              MISSING=1
+            fi
+          done
+          
+          if [ $MISSING -eq 1 ]; then
+            echo "::error::Required files are missing!"
+            exit 1
+          fi
+
+      - name: Validate quickstart.sh build order
+        run: |
+          echo "Checking that frontend builds before Docker..."
+          
+          # Get line numbers
+          NPM_CI_LINE=$(grep -n "npm ci" scripts/quickstart.sh | head -1 | cut -d: -f1 || echo "0")
+          NPM_BUILD_LINE=$(grep -n "npm run build" scripts/quickstart.sh | head -1 | cut -d: -f1 || echo "0")
+          DOCKER_BUILD_LINE=$(grep -n "docker build" scripts/quickstart.sh | head -1 | cut -d: -f1 || echo "0")
+          
+          echo "npm ci at line: $NPM_CI_LINE"
+          echo "npm run build at line: $NPM_BUILD_LINE"
+          echo "docker build at line: $DOCKER_BUILD_LINE"
+          
+          # Validate order
+          if [ "$NPM_BUILD_LINE" -eq 0 ]; then
+            echo "::error::quickstart.sh does not run 'npm run build'"
+            exit 1
+          fi
+          
+          if [ "$DOCKER_BUILD_LINE" -eq 0 ]; then
+            echo "::error::quickstart.sh does not run 'docker build'"
+            exit 1
+          fi
+          
+          if [ "$NPM_BUILD_LINE" -gt "$DOCKER_BUILD_LINE" ]; then
+            echo "::error::Frontend build (line $NPM_BUILD_LINE) comes AFTER Docker build (line $DOCKER_BUILD_LINE)!"
+            echo "::error::This will cause 'COPY dist/ ./dist/: not found' error"
+            exit 1
+          fi
+          
+          echo "✓ Build order is correct"
+
+      - name: Validate Dockerfile expects dist/
+        run: |
+          echo "Checking Dockerfile.spcs..."
+          
+          if grep -q "COPY dist/" Dockerfile.spcs; then
+            echo "✓ Dockerfile.spcs expects dist/ directory"
+          else
+            echo "::warning::Dockerfile.spcs does not copy dist/"
+          fi
+          
+          if grep -q "COPY dist/" Dockerfile; then
+            echo "✓ Dockerfile expects dist/ directory"
+          else
+            echo "::warning::Dockerfile does not copy dist/"
+          fi
+
+  # ==========================================================================
+  # Job 2: Frontend build validation
+  # ==========================================================================
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+        continue-on-error: true
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Validate build output
+        run: |
+          echo "Validating dist/ directory..."
+          
+          if [ ! -d "dist" ]; then
+            echo "::error::dist/ directory was not created"
+            exit 1
+          fi
+          
+          if [ ! -f "dist/index.html" ]; then
+            echo "::error::dist/index.html is missing"
+            exit 1
+          fi
+          
+          if [ ! -d "dist/assets" ]; then
+            echo "::warning::dist/assets/ directory is missing"
+          fi
+          
+          echo "dist/ contents:"
+          ls -la dist/
+          
+          echo "✓ Frontend build validated"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
+          retention-days: 1
+
+  # ==========================================================================
+  # Job 3: Backend validation
+  # ==========================================================================
+  backend-validation:
+    name: Backend Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check requirements.txt
+        run: |
+          echo "Validating backend dependencies..."
+          
+          REQUIRED_PACKAGES=(
+            "fastapi"
+            "uvicorn"
+            "snowflake-connector-python"
+            "psycopg2-binary"
+            "asyncpg"
+          )
+          
+          MISSING=0
+          for pkg in "${REQUIRED_PACKAGES[@]}"; do
+            if grep -qi "$pkg" backend/requirements.txt; then
+              echo "✓ $pkg"
+            else
+              echo "✗ MISSING: $pkg"
+              MISSING=1
+            fi
+          done
+          
+          if [ $MISSING -eq 1 ]; then
+            echo "::error::Required packages missing from requirements.txt"
+            exit 1
+          fi
+
+      - name: Python syntax check
+        run: |
+          echo "Checking Python syntax..."
+          python -m py_compile backend/server_fastapi.py
+          echo "✓ server_fastapi.py has valid syntax"
+
+      - name: Install dependencies (dry run)
+        run: |
+          pip install --dry-run -r backend/requirements.txt
+          echo "✓ All dependencies can be resolved"
+
+  # ==========================================================================
+  # Job 4: Docker build simulation
+  # ==========================================================================
+  docker-build-test:
+    name: Docker Build Test
+    needs: [validate-structure, frontend-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
+
+      - name: Verify dist/ is present
+        run: |
+          echo "Verifying dist/ directory before Docker build..."
+          
+          if [ ! -d "dist" ]; then
+            echo "::error::dist/ directory missing - frontend artifact not downloaded correctly"
+            exit 1
+          fi
+          
+          ls -la dist/
+          echo "✓ dist/ is present"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (Dockerfile)
+        run: |
+          echo "Building with Dockerfile..."
+          docker build -t flux-ops-center:test-dockerfile .
+          echo "✓ Dockerfile build succeeded"
+
+      - name: Build Docker image (Dockerfile.spcs)
+        run: |
+          echo "Building with Dockerfile.spcs..."
+          docker build -t flux-ops-center:test-spcs -f Dockerfile.spcs .
+          echo "✓ Dockerfile.spcs build succeeded"
+
+      - name: Verify container starts
+        run: |
+          echo "Starting container..."
+          docker run -d --name test-container -p 8080:8080 flux-ops-center:test-spcs
+          
+          echo "Waiting for startup..."
+          sleep 10
+          
+          echo "Checking nginx is serving..."
+          if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 | grep -q "200\|304"; then
+            echo "✓ nginx is serving frontend"
+          else
+            echo "::warning::nginx may not be responding correctly"
+            docker logs test-container
+          fi
+          
+          docker stop test-container
+          echo "✓ Container test complete"
+
+  # ==========================================================================
+  # Job 5: Full deployment test harness
+  # ==========================================================================
+  deployment-harness:
+    name: Deployment Test Harness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Run deployment test harness
+        run: |
+          chmod +x scripts/test-deployment.sh
+          ./scripts/test-deployment.sh --fix

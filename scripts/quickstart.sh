@@ -231,18 +231,42 @@ fi
 print_success "Logged in to Snowflake registry"
 
 # -----------------------------------------------------------------------------
-# STEP 2: BUILD DOCKER IMAGE
+# STEP 2: BUILD FRONTEND
 # -----------------------------------------------------------------------------
 
-print_header "Step 2: Build Docker Image"
+print_header "Step 2: Build Frontend"
 
 # Find script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-print_step "Building Docker image from $PROJECT_ROOT..."
-
 cd "$PROJECT_ROOT"
+
+print_step "Installing frontend dependencies..."
+if ! npm ci; then
+    print_error "npm ci failed"
+    exit 1
+fi
+
+print_step "Building frontend (npm run build)..."
+if ! npm run build; then
+    print_error "Frontend build failed"
+    exit 1
+fi
+
+if [ ! -d "dist" ]; then
+    print_error "dist/ directory not found after build"
+    exit 1
+fi
+print_success "Frontend built successfully (dist/ created)"
+
+# -----------------------------------------------------------------------------
+# STEP 3: BUILD DOCKER IMAGE
+# -----------------------------------------------------------------------------
+
+print_header "Step 3: Build Docker Image"
+
+print_step "Building Docker image from $PROJECT_ROOT..."
 
 # Use the SPCS-specific Dockerfile if it exists
 if [ -f "Dockerfile.spcs" ]; then
@@ -260,10 +284,10 @@ fi
 print_success "Docker image built successfully"
 
 # -----------------------------------------------------------------------------
-# STEP 3: TAG AND PUSH
+# STEP 4: TAG AND PUSH
 # -----------------------------------------------------------------------------
 
-print_header "Step 3: Push to Snowflake Registry"
+print_header "Step 4: Push to Snowflake Registry"
 
 print_step "Tagging image..."
 docker tag "flux_ops_center:${IMAGE_TAG}" "$FULL_IMAGE"
@@ -278,10 +302,10 @@ fi
 print_success "Image pushed successfully"
 
 # -----------------------------------------------------------------------------
-# STEP 4: GENERATE DEPLOYMENT SQL
+# STEP 5: GENERATE DEPLOYMENT SQL
 # -----------------------------------------------------------------------------
 
-print_header "Step 4: Deployment SQL"
+print_header "Step 5: Deployment SQL"
 
 SQL_FILE="$PROJECT_ROOT/deploy_generated.sql"
 
