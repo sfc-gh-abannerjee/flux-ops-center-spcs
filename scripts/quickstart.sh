@@ -1,12 +1,19 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # =============================================================================
 # Flux Operations Center - Quick Deploy Script
 # =============================================================================
 # This script automates the FULL deployment of Flux Ops Center to Snowflake SPCS,
 # including building, pushing, and deploying the service and Postgres instance.
 #
+# Features:
+#   - Interactive step selection (run all or pick specific steps)
+#   - Automatic rollback on failure
+#   - Progress tracking and clear status output
+#
 # Usage:
-#   ./scripts/quickstart.sh
+#   ./scripts/quickstart.sh              # Interactive mode
+#   ./scripts/quickstart.sh --all        # Run all steps non-interactively
+#   ./scripts/quickstart.sh --skip-build # Skip frontend/docker build steps
 #
 # Prerequisites:
 #   - Docker installed and running
@@ -21,22 +28,40 @@
 #   SNOWFLAKE_WAREHOUSE    - Warehouse to use
 #   COMPUTE_POOL           - SPCS compute pool name
 #   SNOWFLAKE_CONNECTION   - Snowflake CLI connection name
-#   AUTO_DEPLOY=false      - Set to skip SQL execution (generate only)
 #   SETUP_POSTGRES=false   - Set to skip Postgres setup
 # =============================================================================
 
-set -e  # Exit on error
+# Don't use set -e - we handle errors ourselves for rollback
+# set -e
 
-# Colors for output
+# =============================================================================
+# COLORS AND FORMATTING
+# =============================================================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m' # No Color
 
-# -----------------------------------------------------------------------------
-# CONFIGURATION - Set these or export as environment variables
-# -----------------------------------------------------------------------------
+# Box drawing characters
+BOX_TL="╔"
+BOX_TR="╗"
+BOX_BL="╚"
+BOX_BR="╝"
+BOX_H="═"
+BOX_V="║"
+CHECK="✓"
+CROSS="✗"
+ARROW="➜"
+BULLET="•"
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 SNOWFLAKE_ACCOUNT="${SNOWFLAKE_ACCOUNT:-}"
 SNOWFLAKE_USER="${SNOWFLAKE_USER:-}"
 SNOWFLAKE_DATABASE="${SNOWFLAKE_DATABASE:-}"
@@ -47,45 +72,123 @@ COMPUTE_POOL="${COMPUTE_POOL:-}"
 IMAGE_REPO="${IMAGE_REPO:-FLUX_OPS_CENTER_REPO}"
 SERVICE_NAME="${SERVICE_NAME:-FLUX_OPS_CENTER_SERVICE}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
-
-# Snowflake CLI connection (for executing SQL)
-SNOWFLAKE_CONNECTION="${SNOWFLAKE_CONNECTION:-}"  # Will prompt if not set
-
-# Snowflake Postgres configuration (dual-backend architecture)
+SNOWFLAKE_CONNECTION="${SNOWFLAKE_CONNECTION:-}"
 POSTGRES_INSTANCE="${POSTGRES_INSTANCE:-FLUX_OPS_POSTGRES}"
 POSTGRES_COMPUTE_FAMILY="${POSTGRES_COMPUTE_FAMILY:-HIGHMEM_XL}"
 POSTGRES_STORAGE_GB="${POSTGRES_STORAGE_GB:-100}"
 POSTGRES_VERSION="${POSTGRES_VERSION:-17}"
-SETUP_POSTGRES="${SETUP_POSTGRES:-true}"  # Set to false to skip Postgres setup
+SETUP_POSTGRES="${SETUP_POSTGRES:-true}"
 
-# Deployment options
-AUTO_DEPLOY="${AUTO_DEPLOY:-true}"  # Set to false to only generate SQL without executing
+# =============================================================================
+# STEP TRACKING AND ROLLBACK STATE
+# =============================================================================
+# Use simple variables instead of associative arrays for compatibility
+STEP_1_RUN=false; STEP_2_RUN=false; STEP_3_RUN=false; STEP_4_RUN=false; STEP_5_RUN=false
+STEP_6_RUN=false; STEP_7_RUN=false; STEP_8_RUN=false; STEP_9_RUN=false
+STEP_1_DONE=false; STEP_2_DONE=false; STEP_3_DONE=false; STEP_4_DONE=false; STEP_5_DONE=false
+STEP_6_DONE=false; STEP_7_DONE=false; STEP_8_DONE=false; STEP_9_DONE=false
+ROLLBACK_SERVICE=false
+ROLLBACK_POSTGRES=false
+ROLLBACK_DOCKER=false
+ROLLBACK_SQL=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+SQL_FILE=""
+POSTGRES_SQL_FILE=""
+FULL_IMAGE=""
+INTERACTIVE_MODE=true
+SKIP_BUILD=false
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # HELPER FUNCTIONS
-# -----------------------------------------------------------------------------
+# =============================================================================
+
+print_banner() {
+    echo ""
+    echo -e "${CYAN}${BOX_TL}$(printf '%0.s═' {1..77})${BOX_TR}${NC}"
+    echo -e "${CYAN}${BOX_V}${NC}${BOLD}                    FLUX OPERATIONS CENTER - QUICK DEPLOY                    ${NC}${CYAN}${BOX_V}${NC}"
+    echo -e "${CYAN}${BOX_V}${NC}${DIM}              Real-time Grid Visualization & GNN Risk Prediction              ${NC}${CYAN}${BOX_V}${NC}"
+    echo -e "${CYAN}${BOX_BL}$(printf '%0.s═' {1..77})${BOX_BR}${NC}"
+    echo ""
+}
 
 print_header() {
+    local step_num=$1
+    local title=$2
     echo ""
-    echo -e "${BLUE}=============================================================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}=============================================================================${NC}"
+    echo -e "${BLUE}┌─────────────────────────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${BLUE}│${NC} ${BOLD}STEP ${step_num}:${NC} ${title}"
+    echo -e "${BLUE}└─────────────────────────────────────────────────────────────────────────────┘${NC}"
+}
+
+print_subheader() {
+    echo ""
+    echo -e "${CYAN}  ─── $1 ───${NC}"
 }
 
 print_step() {
-    echo -e "${GREEN}> $1${NC}"
+    echo -e "  ${GREEN}${ARROW}${NC} $1"
+}
+
+print_substep() {
+    echo -e "    ${DIM}${BULLET}${NC} $1"
 }
 
 print_warning() {
-    echo -e "${YELLOW}! $1${NC}"
+    echo -e "  ${YELLOW}⚠${NC}  $1"
 }
 
 print_error() {
-    echo -e "${RED}x $1${NC}"
+    echo -e "  ${RED}${CROSS}${NC} $1"
 }
 
 print_success() {
-    echo -e "${GREEN}+ $1${NC}"
+    echo -e "  ${GREEN}${CHECK}${NC} $1"
+}
+
+print_info() {
+    echo -e "  ${BLUE}ℹ${NC}  $1"
+}
+
+print_progress() {
+    local current=$1
+    local total=$2
+    local desc=$3
+    local pct=$((current * 100 / total))
+    local filled=$((pct / 5))
+    local empty=$((20 - filled))
+    printf "  ${DIM}[${NC}${GREEN}%s${NC}${DIM}%s${NC}${DIM}]${NC} %3d%% %s\r" \
+        "$(printf '%0.s█' $(seq 1 $filled 2>/dev/null) )" \
+        "$(printf '%0.s░' $(seq 1 $empty 2>/dev/null) )" \
+        "$pct" "$desc"
+}
+
+print_box() {
+    local title=$1
+    local content=$2
+    echo ""
+    echo -e "  ${MAGENTA}┌─ ${title} ─────────────────────────────────────────────────────────┐${NC}"
+    echo "$content" | while IFS= read -r line; do
+        printf "  ${MAGENTA}│${NC}  %-70s ${MAGENTA}│${NC}\n" "$line"
+    done
+    echo -e "  ${MAGENTA}└──────────────────────────────────────────────────────────────────────────┘${NC}"
+}
+
+confirm() {
+    local prompt=$1
+    local default=${2:-n}
+    
+    if [ "$default" = "y" ]; then
+        prompt="$prompt [Y/n]: "
+    else
+        prompt="$prompt [y/N]: "
+    fi
+    
+    echo -ne "  ${YELLOW}?${NC} $prompt"
+    read -r response
+    response=${response:-$default}
+    
+    [[ "$response" =~ ^[Yy]$ ]]
 }
 
 check_required_var() {
@@ -99,328 +202,465 @@ check_required_var() {
     return 0
 }
 
-# -----------------------------------------------------------------------------
-# PRE-FLIGHT CHECKS
-# -----------------------------------------------------------------------------
+# =============================================================================
+# ROLLBACK FUNCTIONS
+# =============================================================================
 
-print_header "Flux Operations Center - Quick Deploy"
-
-echo ""
-echo "This script will:"
-echo "  1. Validate configuration and prerequisites"
-echo "  2. Build frontend (npm ci && npm run build)"
-echo "  3. Build Docker image"
-echo "  4. Push to Snowflake Image Registry"
-echo "  5. Deploy SPCS service to Snowflake"
-echo "  6. Create Snowflake Postgres instance (if enabled)"
-echo "  7. Wait for services to become ready"
-echo ""
-
-# Check for Node.js (required for frontend build)
-if ! command -v node &> /dev/null; then
-    print_error "Node.js is not installed. Please install Node.js first."
-    print_warning "Install via: brew install node (macOS) or nvm install node"
-    exit 1
-fi
-print_success "Node.js found ($(node --version))"
-
-# Check for npm (required for frontend build)
-if ! command -v npm &> /dev/null; then
-    print_error "npm is not installed. Please install npm first."
-    exit 1
-fi
-print_success "npm found ($(npm --version))"
-
-# Check for Snowflake CLI (required for SQL execution)
-if ! command -v snow &> /dev/null; then
-    print_error "Snowflake CLI (snow) is not installed."
-    print_warning "Install via: pip install snowflake-cli-labs"
-    print_warning "Or see: https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/installation/installation"
-    exit 1
-fi
-print_success "Snowflake CLI found ($(snow --version 2>&1 | head -1))"
-
-# Check for Docker
-if ! command -v docker &> /dev/null; then
-    print_error "Docker is not installed. Please install Docker first."
-    exit 1
-fi
-print_success "Docker found"
-
-# Check Docker is running
-if ! docker info &> /dev/null; then
-    print_error "Docker is not running. Please start Docker first."
-    exit 1
-fi
-print_success "Docker is running"
-
-# -----------------------------------------------------------------------------
-# INTERACTIVE CONFIGURATION
-# -----------------------------------------------------------------------------
-
-print_header "Configuration"
-
-# Prompt for missing variables
-if [ -z "$SNOWFLAKE_ACCOUNT" ]; then
-    echo -n "Snowflake Account (org-account format): "
-    read SNOWFLAKE_ACCOUNT
-fi
-
-if [ -z "$SNOWFLAKE_USER" ]; then
-    echo -n "Snowflake Username: "
-    read SNOWFLAKE_USER
-fi
-
-if [ -z "$SNOWFLAKE_DATABASE" ]; then
-    echo -n "Database name: "
-    read SNOWFLAKE_DATABASE
-fi
-
-if [ -z "$SNOWFLAKE_SCHEMA" ]; then
-    echo -n "Schema name: "
-    read SNOWFLAKE_SCHEMA
-fi
-
-if [ -z "$SNOWFLAKE_WAREHOUSE" ]; then
-    echo -n "Warehouse name: "
-    read SNOWFLAKE_WAREHOUSE
-fi
-
-if [ -z "$COMPUTE_POOL" ]; then
-    echo -n "Compute Pool name: "
-    read COMPUTE_POOL
-fi
-
-# Postgres configuration
-if [ "$SETUP_POSTGRES" = "true" ]; then
-    echo ""
-    print_step "Snowflake Postgres Configuration (Dual-Backend Architecture)"
-    echo "  Flux Ops Center uses Snowflake Postgres for real-time operational queries."
-    echo "  Press Enter to accept defaults, or enter custom values."
-    echo ""
+execute_rollback() {
+    local has_rollback=false
     
-    if [ -z "$POSTGRES_INSTANCE" ] || [ "$POSTGRES_INSTANCE" = "FLUX_OPS_POSTGRES" ]; then
-        echo -n "Postgres instance name [FLUX_OPS_POSTGRES]: "
-        read input
-        POSTGRES_INSTANCE="${input:-FLUX_OPS_POSTGRES}"
+    if [ "$ROLLBACK_SERVICE" = true ] || [ "$ROLLBACK_POSTGRES" = true ] || \
+       [ "$ROLLBACK_DOCKER" = true ] || [ "$ROLLBACK_SQL" = true ]; then
+        has_rollback=true
     fi
     
-    echo -n "Postgres compute family (HIGHMEM_XL/HIGHMEM_L/STANDARD_M) [HIGHMEM_XL]: "
-    read input
-    POSTGRES_COMPUTE_FAMILY="${input:-HIGHMEM_XL}"
+    if [ "$has_rollback" = false ]; then
+        return
+    fi
     
-    echo -n "Postgres storage GB (10-65535) [100]: "
-    read input
-    POSTGRES_STORAGE_GB="${input:-100}"
-    
-    echo -n "Postgres version (16/17/18) [17]: "
-    read input
-    POSTGRES_VERSION="${input:-17}"
-fi
-
-# Prompt for Snowflake CLI connection
-echo ""
-print_step "Snowflake CLI Connection"
-echo "  The script will use Snowflake CLI to deploy resources directly."
-echo ""
-
-# List available connections
-AVAILABLE_CONNECTIONS=$(snow connection list 2>/dev/null | grep -E "^\w" | awk '{print $1}' | head -10)
-if [ -n "$AVAILABLE_CONNECTIONS" ]; then
-    echo "  Available connections:"
-    echo "$AVAILABLE_CONNECTIONS" | while read conn; do echo "    - $conn"; done
     echo ""
-fi
+    echo -e "${RED}┌─────────────────────────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${RED}│${NC} ${BOLD}ROLLBACK IN PROGRESS${NC} - Reverting changes due to error"
+    echo -e "${RED}└─────────────────────────────────────────────────────────────────────────────┘${NC}"
+    echo ""
+    
+    # Rollback in reverse order
+    if [ "$ROLLBACK_SERVICE" = true ]; then
+        print_step "Rolling back: SPCS service..."
+        if [ -n "$SNOWFLAKE_CONNECTION" ]; then
+            snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+                "DROP SERVICE IF EXISTS ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}" 2>/dev/null || true
+            print_success "Dropped SPCS service"
+        fi
+    fi
+    
+    if [ "$ROLLBACK_POSTGRES" = true ]; then
+        print_step "Rolling back: Postgres instance..."
+        if [ -n "$SNOWFLAKE_CONNECTION" ]; then
+            snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+                "DROP POSTGRES INSTANCE IF EXISTS ${POSTGRES_INSTANCE}" 2>/dev/null || true
+            print_success "Dropped Postgres instance"
+        fi
+    fi
+    
+    if [ "$ROLLBACK_DOCKER" = true ]; then
+        print_step "Rolling back: Docker images..."
+        docker rmi "flux_ops_center:${IMAGE_TAG}" 2>/dev/null || true
+        [ -n "$FULL_IMAGE" ] && docker rmi "$FULL_IMAGE" 2>/dev/null || true
+        print_success "Removed Docker images"
+    fi
+    
+    if [ "$ROLLBACK_SQL" = true ]; then
+        print_step "Rolling back: Generated SQL files..."
+        [ -f "$SQL_FILE" ] && rm -f "$SQL_FILE"
+        [ -f "$POSTGRES_SQL_FILE" ] && rm -f "$POSTGRES_SQL_FILE"
+        print_success "Cleaned up generated SQL files"
+    fi
+    
+    echo ""
+    print_info "Rollback completed. Please check the errors above and try again."
+}
 
-if [ -z "$SNOWFLAKE_CONNECTION" ]; then
-    echo -n "Snowflake CLI connection name: "
-    read SNOWFLAKE_CONNECTION
-fi
+# Trap for cleanup on script exit
+cleanup_on_error() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        execute_rollback
+    fi
+    exit $exit_code
+}
 
-# Validate connection exists
-if ! snow connection test -c "$SNOWFLAKE_CONNECTION" &> /dev/null; then
-    print_warning "Connection '$SNOWFLAKE_CONNECTION' test failed - will try anyway"
-fi
+trap cleanup_on_error EXIT
 
-# Validate all required variables
-print_step "Validating configuration..."
-MISSING=0
-check_required_var "SNOWFLAKE_ACCOUNT" || MISSING=1
-check_required_var "SNOWFLAKE_USER" || MISSING=1
-check_required_var "SNOWFLAKE_DATABASE" || MISSING=1
-check_required_var "SNOWFLAKE_SCHEMA" || MISSING=1
-check_required_var "SNOWFLAKE_WAREHOUSE" || MISSING=1
-check_required_var "COMPUTE_POOL" || MISSING=1
+# =============================================================================
+# STEP DEFINITIONS
+# =============================================================================
 
-if [ $MISSING -eq 1 ]; then
-    print_error "Missing required configuration. Exiting."
-    exit 1
-fi
+STEP_NAMES=(
+    "1:Prerequisites & Configuration"
+    "2:Login to Snowflake Registry"
+    "3:Build Frontend"
+    "4:Build Docker Image"
+    "5:Push to Registry"
+    "6:Generate Deployment SQL"
+    "7:Deploy SPCS Service"
+    "8:Create Postgres Instance"
+    "9:Wait for Services"
+)
 
-# Validate Snowflake account format (should be org-account or account identifier)
-# The registry URL requires a specific format
-if [[ "$SNOWFLAKE_ACCOUNT" == *" "* ]]; then
-    print_error "SNOWFLAKE_ACCOUNT contains spaces. Use org-account format (e.g., myorg-myaccount)"
-    exit 1
-fi
+show_step_menu() {
+    echo ""
+    echo -e "${BOLD}Select steps to run:${NC}"
+    echo ""
+    echo -e "  ${CYAN}[A]${NC} Run ALL steps (full deployment)"
+    echo -e "  ${CYAN}[D]${NC} Deploy only (steps 6-9, skip build)"
+    echo -e "  ${CYAN}[B]${NC} Build only (steps 1-5, skip deploy)"
+    echo -e "  ${CYAN}[C]${NC} Custom selection"
+    echo -e "  ${CYAN}[Q]${NC} Quit"
+    echo ""
+    echo -ne "  ${YELLOW}?${NC} Your choice: "
+    read -r choice
+    
+    case "${choice^^}" in
+        A)
+            STEP_1_RUN=true; STEP_2_RUN=true; STEP_3_RUN=true; STEP_4_RUN=true; STEP_5_RUN=true
+            STEP_6_RUN=true; STEP_7_RUN=true; STEP_8_RUN=true; STEP_9_RUN=true
+            ;;
+        D)
+            STEP_1_RUN=true  # Always need config
+            STEP_6_RUN=true; STEP_7_RUN=true; STEP_8_RUN=true; STEP_9_RUN=true
+            ;;
+        B)
+            STEP_1_RUN=true; STEP_2_RUN=true; STEP_3_RUN=true; STEP_4_RUN=true; STEP_5_RUN=true
+            STEP_6_RUN=true  # Generate SQL
+            ;;
+        C)
+            custom_step_selection
+            ;;
+        Q)
+            echo ""
+            print_info "Deployment cancelled."
+            exit 0
+            ;;
+        *)
+            print_error "Invalid choice. Please try again."
+            show_step_menu
+            ;;
+    esac
+}
 
-# Validate Postgres version if enabled
-if [ "$SETUP_POSTGRES" = "true" ]; then
-    if [[ ! "$POSTGRES_VERSION" =~ ^(16|17|18)$ ]]; then
-        print_error "Invalid POSTGRES_VERSION: $POSTGRES_VERSION. Must be 16, 17, or 18."
+custom_step_selection() {
+    echo ""
+    echo -e "${BOLD}Select individual steps (enter numbers separated by spaces):${NC}"
+    echo ""
+    
+    for step in "${STEP_NAMES[@]}"; do
+        local num="${step%%:*}"
+        local name="${step#*:}"
+        echo -e "  ${CYAN}[$num]${NC} $name"
+    done
+    
+    echo ""
+    echo -ne "  ${YELLOW}?${NC} Enter step numbers (e.g., 1 3 4 5 7): "
+    read -r selections
+    
+    # Always include step 1 (prerequisites)
+    STEP_1_RUN=true
+    
+    for num in $selections; do
+        case "$num" in
+            1) STEP_1_RUN=true ;;
+            2) STEP_2_RUN=true ;;
+            3) STEP_3_RUN=true ;;
+            4) STEP_4_RUN=true ;;
+            5) STEP_5_RUN=true ;;
+            6) STEP_6_RUN=true ;;
+            7) STEP_7_RUN=true ;;
+            8) STEP_8_RUN=true ;;
+            9) STEP_9_RUN=true ;;
+        esac
+    done
+    
+    # Show what will be run
+    echo ""
+    echo -e "${BOLD}Steps to run:${NC}"
+    local step_runs=("$STEP_1_RUN" "$STEP_2_RUN" "$STEP_3_RUN" "$STEP_4_RUN" "$STEP_5_RUN" "$STEP_6_RUN" "$STEP_7_RUN" "$STEP_8_RUN" "$STEP_9_RUN")
+    local i=0
+    for step in "${STEP_NAMES[@]}"; do
+        local num="${step%%:*}"
+        local name="${step#*:}"
+        if [ "${step_runs[$i]}" = true ]; then
+            echo -e "  ${GREEN}${CHECK}${NC} Step $num: $name"
+        else
+            echo -e "  ${DIM}${CROSS} Step $num: $name${NC}"
+        fi
+        ((i++))
+    done
+    
+    if ! confirm "Proceed with these steps?" "y"; then
+        show_step_menu
+    fi
+}
+
+# =============================================================================
+# STEP 1: PREREQUISITES & CONFIGURATION
+# =============================================================================
+
+step_1_prerequisites() {
+    print_header "1" "Prerequisites & Configuration"
+    
+    print_subheader "Checking Required Tools"
+    
+    local missing_tools=false
+    
+    # Check Node.js
+    if command -v node &> /dev/null; then
+        print_success "Node.js $(node --version)"
+    else
+        print_error "Node.js is NOT installed"
+        print_substep "Install via: brew install node (macOS) or nvm install node"
+        missing_tools=true
+    fi
+    
+    # Check npm
+    if command -v npm &> /dev/null; then
+        print_success "npm $(npm --version)"
+    else
+        print_error "npm is NOT installed"
+        missing_tools=true
+    fi
+    
+    # Check Snowflake CLI
+    if command -v snow &> /dev/null; then
+        print_success "Snowflake CLI $(snow --version 2>&1 | head -1)"
+    else
+        print_error "Snowflake CLI (snow) is NOT installed"
+        print_substep "Install via: pip install snowflake-cli-labs"
+        missing_tools=true
+    fi
+    
+    # Check Docker
+    if command -v docker &> /dev/null; then
+        print_success "Docker installed"
+        if docker info &> /dev/null; then
+            print_success "Docker daemon is running"
+        else
+            print_error "Docker daemon is NOT running"
+            print_substep "Start Docker Desktop or run: sudo systemctl start docker"
+            missing_tools=true
+        fi
+    else
+        print_error "Docker is NOT installed"
+        missing_tools=true
+    fi
+    
+    if [ "$missing_tools" = true ]; then
+        print_error "Missing required tools. Please install them and try again."
         exit 1
     fi
     
-    # Validate storage size is a number
-    if ! [[ "$POSTGRES_STORAGE_GB" =~ ^[0-9]+$ ]]; then
-        print_error "Invalid POSTGRES_STORAGE_GB: must be a number (10-65535)"
+    print_subheader "Snowflake Configuration"
+    
+    # Prompt for missing variables
+    [ -z "$SNOWFLAKE_ACCOUNT" ] && { echo -ne "  ${YELLOW}?${NC} Snowflake Account (org-account): "; read SNOWFLAKE_ACCOUNT; }
+    [ -z "$SNOWFLAKE_USER" ] && { echo -ne "  ${YELLOW}?${NC} Snowflake Username: "; read SNOWFLAKE_USER; }
+    [ -z "$SNOWFLAKE_DATABASE" ] && { echo -ne "  ${YELLOW}?${NC} Database name: "; read SNOWFLAKE_DATABASE; }
+    [ -z "$SNOWFLAKE_SCHEMA" ] && { echo -ne "  ${YELLOW}?${NC} Schema name: "; read SNOWFLAKE_SCHEMA; }
+    [ -z "$SNOWFLAKE_WAREHOUSE" ] && { echo -ne "  ${YELLOW}?${NC} Warehouse name: "; read SNOWFLAKE_WAREHOUSE; }
+    [ -z "$COMPUTE_POOL" ] && { echo -ne "  ${YELLOW}?${NC} Compute Pool name: "; read COMPUTE_POOL; }
+    
+    # Snowflake CLI connection
+    print_subheader "Snowflake CLI Connection"
+    
+    if [ -z "$SNOWFLAKE_CONNECTION" ]; then
+        local connections=$(snow connection list 2>/dev/null | grep -E "^\w" | awk '{print $1}' | head -10)
+        if [ -n "$connections" ]; then
+            echo -e "  ${DIM}Available connections:${NC}"
+            echo "$connections" | while read conn; do echo -e "    ${DIM}${BULLET} $conn${NC}"; done
+        fi
+        echo -ne "  ${YELLOW}?${NC} Connection name: "
+        read SNOWFLAKE_CONNECTION
+    fi
+    
+    # Validate connection
+    if snow connection test -c "$SNOWFLAKE_CONNECTION" &> /dev/null; then
+        print_success "Connection '$SNOWFLAKE_CONNECTION' verified"
+    else
+        print_warning "Connection test failed - will try anyway"
+    fi
+    
+    # Postgres configuration
+    if [ "$SETUP_POSTGRES" = "true" ] && [ "${STEP_8_RUN}" = true ]; then
+        print_subheader "Postgres Configuration"
+        
+        echo -ne "  ${YELLOW}?${NC} Postgres instance name [${POSTGRES_INSTANCE}]: "
+        read input; POSTGRES_INSTANCE="${input:-$POSTGRES_INSTANCE}"
+        
+        echo -ne "  ${YELLOW}?${NC} Compute family (HIGHMEM_XL/HIGHMEM_L/STANDARD_M) [${POSTGRES_COMPUTE_FAMILY}]: "
+        read input; POSTGRES_COMPUTE_FAMILY="${input:-$POSTGRES_COMPUTE_FAMILY}"
+        
+        echo -ne "  ${YELLOW}?${NC} Storage GB (10-65535) [${POSTGRES_STORAGE_GB}]: "
+        read input; POSTGRES_STORAGE_GB="${input:-$POSTGRES_STORAGE_GB}"
+    fi
+    
+    # Validate required variables
+    print_subheader "Validating Configuration"
+    
+    local missing=false
+    for var in SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_DATABASE SNOWFLAKE_SCHEMA SNOWFLAKE_WAREHOUSE COMPUTE_POOL; do
+        if [ -z "${!var}" ]; then
+            print_error "Missing: $var"
+            missing=true
+        fi
+    done
+    
+    if [ "$missing" = true ]; then
+        print_error "Missing required configuration. Exiting."
         exit 1
     fi
     
-    if [ "$POSTGRES_STORAGE_GB" -lt 10 ] || [ "$POSTGRES_STORAGE_GB" -gt 65535 ]; then
-        print_error "POSTGRES_STORAGE_GB must be between 10 and 65535"
+    # Validate formats
+    if [[ "$SNOWFLAKE_ACCOUNT" == *" "* ]]; then
+        print_error "SNOWFLAKE_ACCOUNT contains spaces. Use org-account format."
         exit 1
     fi
-fi
+    
+    # Derive registry URL (lowercase for Docker)
+    REGISTRY_URL="${SNOWFLAKE_ACCOUNT}.registry.snowflakecomputing.com"
+    REGISTRY_URL_LOWER=$(echo "$REGISTRY_URL" | tr '[:upper:]' '[:lower:]')
+    DB_LOWER=$(echo "$SNOWFLAKE_DATABASE" | tr '[:upper:]' '[:lower:]')
+    SCHEMA_LOWER=$(echo "$SNOWFLAKE_SCHEMA" | tr '[:upper:]' '[:lower:]')
+    REPO_LOWER=$(echo "$IMAGE_REPO" | tr '[:upper:]' '[:lower:]')
+    FULL_IMAGE="${REGISTRY_URL_LOWER}/${DB_LOWER}/${SCHEMA_LOWER}/${REPO_LOWER}/flux_ops_center:${IMAGE_TAG}"
+    
+    # SQL file paths
+    SQL_FILE="$PROJECT_ROOT/deploy_generated.sql"
+    POSTGRES_SQL_FILE="$PROJECT_ROOT/postgres_setup_generated.sql"
+    
+    # Show configuration summary
+    local config_summary="Account:      $SNOWFLAKE_ACCOUNT
+Database:     $SNOWFLAKE_DATABASE
+Schema:       $SNOWFLAKE_SCHEMA
+Warehouse:    $SNOWFLAKE_WAREHOUSE
+Compute Pool: $COMPUTE_POOL
+Connection:   $SNOWFLAKE_CONNECTION
+Image:        $FULL_IMAGE"
+    
+    if [ "$SETUP_POSTGRES" = "true" ]; then
+        config_summary="$config_summary
+Postgres:     $POSTGRES_INSTANCE ($POSTGRES_COMPUTE_FAMILY)"
+    fi
+    
+    print_box "Configuration Summary" "$config_summary"
+    
+    if ! confirm "Proceed with this configuration?" "y"; then
+        print_info "Deployment cancelled."
+        exit 0
+    fi
+    
+    STEP_1_DONE=true
+    print_success "Prerequisites check completed"
+}
 
-# Derive registry URL
-# IMPORTANT: Docker requires all lowercase for image repository names
-REGISTRY_URL="${SNOWFLAKE_ACCOUNT}.registry.snowflakecomputing.com"
-REGISTRY_URL_LOWER=$(echo "$REGISTRY_URL" | tr '[:upper:]' '[:lower:]')
-DB_LOWER=$(echo "$SNOWFLAKE_DATABASE" | tr '[:upper:]' '[:lower:]')
-SCHEMA_LOWER=$(echo "$SNOWFLAKE_SCHEMA" | tr '[:upper:]' '[:lower:]')
-REPO_LOWER=$(echo "$IMAGE_REPO" | tr '[:upper:]' '[:lower:]')
-FULL_IMAGE="${REGISTRY_URL_LOWER}/${DB_LOWER}/${SCHEMA_LOWER}/${REPO_LOWER}/flux_ops_center:${IMAGE_TAG}"
+# =============================================================================
+# STEP 2: LOGIN TO REGISTRY
+# =============================================================================
 
-echo ""
-print_success "Configuration validated"
-echo ""
-echo "  Account:      $SNOWFLAKE_ACCOUNT"
-echo "  Database:     $SNOWFLAKE_DATABASE"
-echo "  Schema:       $SNOWFLAKE_SCHEMA"
-echo "  Warehouse:    $SNOWFLAKE_WAREHOUSE"
-echo "  Compute Pool: $COMPUTE_POOL"
-echo "  Image:        $FULL_IMAGE"
-if [ "$SETUP_POSTGRES" = "true" ]; then
-echo "  Postgres:     $POSTGRES_INSTANCE ($POSTGRES_COMPUTE_FAMILY, ${POSTGRES_STORAGE_GB}GB, v$POSTGRES_VERSION)"
-fi
-echo ""
+step_2_registry_login() {
+    print_header "2" "Login to Snowflake Registry"
+    
+    print_step "Logging in to $REGISTRY_URL_LOWER..."
+    print_info "Enter your Snowflake password when prompted."
+    echo ""
+    
+    if ! docker login "$REGISTRY_URL_LOWER" -u "$SNOWFLAKE_USER"; then
+        print_error "Failed to login to Snowflake registry"
+        print_warning "Check your password and ensure the image repository exists"
+        exit 1
+    fi
+    
+    STEP_2_DONE=true
+    print_success "Logged in to Snowflake registry"
+}
 
-# Confirm
-echo -n "Proceed with deployment? (y/N): "
-read CONFIRM
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "Deployment cancelled."
-    exit 0
-fi
+# =============================================================================
+# STEP 3: BUILD FRONTEND
+# =============================================================================
 
-# -----------------------------------------------------------------------------
-# STEP 1: LOGIN TO REGISTRY
-# -----------------------------------------------------------------------------
+step_3_build_frontend() {
+    print_header "3" "Build Frontend"
+    
+    cd "$PROJECT_ROOT"
+    
+    print_step "Installing dependencies (npm ci)..."
+    if ! npm ci 2>&1 | while read line; do print_substep "$line"; done; then
+        print_error "npm ci failed"
+        exit 1
+    fi
+    print_success "Dependencies installed"
+    
+    print_step "Building frontend (npm run build)..."
+    if ! npm run build 2>&1 | tail -5 | while read line; do print_substep "$line"; done; then
+        print_error "Frontend build failed"
+        exit 1
+    fi
+    
+    if [ ! -d "dist" ]; then
+        print_error "dist/ directory not found after build"
+        exit 1
+    fi
+    
+    STEP_3_DONE=true
+    print_success "Frontend built successfully (dist/ created)"
+}
 
-print_header "Step 1: Login to Snowflake Registry"
+# =============================================================================
+# STEP 4: BUILD DOCKER IMAGE
+# =============================================================================
 
-print_step "Logging in to $REGISTRY_URL_LOWER..."
-echo "Enter your Snowflake password when prompted."
-
-if ! docker login "$REGISTRY_URL_LOWER" -u "$SNOWFLAKE_USER"; then
-    print_error "Failed to login to Snowflake registry"
-    print_warning "Make sure your password is correct and the image repository exists"
-    exit 1
-fi
-print_success "Logged in to Snowflake registry"
-
-# -----------------------------------------------------------------------------
-# STEP 2: BUILD FRONTEND
-# -----------------------------------------------------------------------------
-
-print_header "Step 2: Build Frontend"
-
-# Find script directory and project root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-
-cd "$PROJECT_ROOT"
-
-print_step "Installing frontend dependencies..."
-if ! npm ci; then
-    print_error "npm ci failed"
-    exit 1
-fi
-
-print_step "Building frontend (npm run build)..."
-if ! npm run build; then
-    print_error "Frontend build failed"
-    exit 1
-fi
-
-if [ ! -d "dist" ]; then
-    print_error "dist/ directory not found after build"
-    exit 1
-fi
-print_success "Frontend built successfully (dist/ created)"
-
-# -----------------------------------------------------------------------------
-# STEP 3: BUILD DOCKER IMAGE
-# -----------------------------------------------------------------------------
-
-print_header "Step 3: Build Docker Image"
-
-print_step "Building Docker image from $PROJECT_ROOT..."
-
-# Use the SPCS-specific Dockerfile if it exists
-if [ -f "Dockerfile.spcs" ]; then
-    print_step "Using Dockerfile.spcs for SPCS deployment..."
-    if ! docker build -t "flux_ops_center:${IMAGE_TAG}" -f Dockerfile.spcs .; then
+step_4_build_docker() {
+    print_header "4" "Build Docker Image"
+    
+    cd "$PROJECT_ROOT"
+    
+    local dockerfile="Dockerfile"
+    if [ -f "Dockerfile.spcs" ]; then
+        dockerfile="Dockerfile.spcs"
+        print_info "Using Dockerfile.spcs for SPCS deployment"
+    fi
+    
+    print_step "Building Docker image..."
+    
+    if ! docker build -t "flux_ops_center:${IMAGE_TAG}" -f "$dockerfile" . 2>&1 | \
+        grep -E "^(Step|Successfully|COPY|RUN|FROM)" | while read line; do print_substep "$line"; done; then
         print_error "Docker build failed"
         exit 1
     fi
-else
-    if ! docker build -t "flux_ops_center:${IMAGE_TAG}" .; then
-        print_error "Docker build failed"
+    
+    ROLLBACK_DOCKER=true
+    
+    STEP_4_DONE=true
+    print_success "Docker image built: flux_ops_center:${IMAGE_TAG}"
+}
+
+# =============================================================================
+# STEP 5: PUSH TO REGISTRY
+# =============================================================================
+
+step_5_push_image() {
+    print_header "5" "Push to Snowflake Registry"
+    
+    print_step "Tagging image..."
+    docker tag "flux_ops_center:${IMAGE_TAG}" "$FULL_IMAGE"
+    print_success "Tagged as: $FULL_IMAGE"
+    
+    print_step "Pushing image to Snowflake..."
+    if ! docker push "$FULL_IMAGE" 2>&1 | grep -E "^[a-f0-9]+:|latest:|Pushed|Digest" | while read line; do print_substep "$line"; done; then
+        print_error "Failed to push image"
+        print_warning "Ensure the image repository exists:"
+        print_substep "CREATE IMAGE REPOSITORY IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${IMAGE_REPO};"
         exit 1
     fi
-fi
-print_success "Docker image built successfully"
+    
+    STEP_5_DONE=true
+    print_success "Image pushed successfully"
+}
 
-# -----------------------------------------------------------------------------
-# STEP 4: TAG AND PUSH
-# -----------------------------------------------------------------------------
+# =============================================================================
+# STEP 6: GENERATE DEPLOYMENT SQL
+# =============================================================================
 
-print_header "Step 4: Push to Snowflake Registry"
-
-print_step "Tagging image..."
-docker tag "flux_ops_center:${IMAGE_TAG}" "$FULL_IMAGE"
-
-print_step "Pushing image to Snowflake..."
-if ! docker push "$FULL_IMAGE"; then
-    print_error "Failed to push image"
-    print_warning "Make sure the image repository exists in Snowflake:"
-    echo "  CREATE IMAGE REPOSITORY IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${IMAGE_REPO};"
-    exit 1
-fi
-print_success "Image pushed successfully"
-
-# -----------------------------------------------------------------------------
-# STEP 5: GENERATE DEPLOYMENT SQL
-# -----------------------------------------------------------------------------
-
-print_header "Step 5: Deployment SQL"
-
-SQL_FILE="$PROJECT_ROOT/deploy_generated.sql"
-
-cat > "$SQL_FILE" << EOF
+step_6_generate_sql() {
+    print_header "6" "Generate Deployment SQL"
+    
+    print_step "Generating SPCS service SQL..."
+    
+    cat > "$SQL_FILE" << EOF
 -- =============================================================================
 -- Flux Operations Center - Auto-Generated Deployment SQL
 -- Generated: $(date)
 -- =============================================================================
--- This SQL deploys Flux Ops Center as an SPCS service with:
---   - React frontend (MapLibre GL grid visualization)
---   - FastAPI backend (GNN risk prediction, cascade analysis)
---   - Dual-backend: Snowflake analytics + Postgres real-time spatial
--- =============================================================================
 
--- Use your database and schema
 USE DATABASE ${SNOWFLAKE_DATABASE};
 USE SCHEMA ${SNOWFLAKE_SCHEMA};
 USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE};
@@ -438,19 +678,10 @@ spec:
     - name: flux-ops-center
       image: /${SNOWFLAKE_DATABASE}/${SNOWFLAKE_SCHEMA}/${IMAGE_REPO}/flux_ops_center:${IMAGE_TAG}
       env:
-        # Snowflake configuration
         SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE}
         SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA}
         SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
         SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
-        APPLICATIONS_SCHEMA: APPLICATIONS
-        ML_SCHEMA: ML_DEMO
-        CASCADE_SCHEMA: CASCADE_ANALYSIS
-        # Postgres configuration (dual-backend architecture)
-        # NOTE: Update VITE_POSTGRES_HOST after running postgres_setup_generated.sql
-        VITE_POSTGRES_HOST: \${POSTGRES_HOST:-UPDATE_AFTER_POSTGRES_SETUP}
-        VITE_POSTGRES_PORT: "5432"
-        VITE_POSTGRES_DATABASE: postgres
       resources:
         requests:
           cpu: 2
@@ -466,66 +697,48 @@ spec:
       port: 8000
       public: true
 \$\$
-    COMMENT = 'Flux Operations Center - Real-time Grid Visualization & GNN Risk Prediction';
+    COMMENT = 'Flux Operations Center - Real-time Grid Visualization';
 
--- Check service status
 SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');
-
--- Get service URL
 SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME};
 EOF
-
-# Generate Postgres setup SQL if enabled
-if [ "$SETUP_POSTGRES" = "true" ]; then
-    POSTGRES_SQL_FILE="$PROJECT_ROOT/postgres_setup_generated.sql"
     
-    cat > "$POSTGRES_SQL_FILE" << EOF
+    print_success "Generated: $SQL_FILE"
+    ROLLBACK_SQL=true
+    
+    # Generate Postgres SQL if needed
+    if [ "$SETUP_POSTGRES" = "true" ]; then
+        print_step "Generating Postgres setup SQL..."
+        
+        cat > "$POSTGRES_SQL_FILE" << EOF
 -- =============================================================================
--- Flux Operations Center - Snowflake Postgres Setup (Auto-Generated)
+-- Flux Operations Center - Snowflake Postgres Setup
 -- Generated: $(date)
--- =============================================================================
--- This SQL sets up Snowflake Postgres for the dual-backend architecture:
---   - Snowflake: Analytics, ML, large-scale data processing
---   - Postgres: Real-time operational queries, PostGIS geospatial
---
--- IMPORTANT: Save the credentials displayed after running CREATE POSTGRES INSTANCE!
---            They cannot be retrieved later.
 -- =============================================================================
 
 USE ROLE ACCOUNTADMIN;
 
--- =============================================================================
--- 1. NETWORK POLICY SETUP
--- =============================================================================
-
--- Create network rule for Postgres ingress (MODE = POSTGRES_INGRESS is required)
--- NOTE: 0.0.0.0/0 allows all IPs - restrict to specific CIDR ranges in production!
+-- Network rules for Postgres
 CREATE NETWORK RULE IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${POSTGRES_INSTANCE}_INGRESS_RULE
     TYPE = IPV4
     VALUE_LIST = ('0.0.0.0/0')
     MODE = POSTGRES_INGRESS
-    COMMENT = 'Ingress rule for ${POSTGRES_INSTANCE} - restrict in production';
+    COMMENT = 'Ingress rule for ${POSTGRES_INSTANCE}';
 
--- Create egress rule for Postgres FDW connections
 CREATE NETWORK RULE IF NOT EXISTS ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${POSTGRES_INSTANCE}_EGRESS_RULE
     TYPE = IPV4
     VALUE_LIST = ('0.0.0.0/0')
     MODE = POSTGRES_EGRESS
-    COMMENT = 'Egress rule for ${POSTGRES_INSTANCE} FDW - restrict in production';
+    COMMENT = 'Egress rule for ${POSTGRES_INSTANCE}';
 
--- Create network policy combining both rules
 CREATE NETWORK POLICY IF NOT EXISTS ${POSTGRES_INSTANCE}_NETWORK_POLICY
     ALLOWED_NETWORK_RULE_LIST = (
         ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${POSTGRES_INSTANCE}_INGRESS_RULE,
         ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${POSTGRES_INSTANCE}_EGRESS_RULE
-    )
-    COMMENT = 'Network policy for ${POSTGRES_INSTANCE}';
+    );
 
--- =============================================================================
--- 2. CREATE POSTGRES INSTANCE
--- =============================================================================
--- SAVE THE CREDENTIALS DISPLAYED BELOW - THEY CANNOT BE RETRIEVED LATER!
-
+-- Create Postgres instance
+-- IMPORTANT: Save the credentials shown below!
 CREATE POSTGRES INSTANCE IF NOT EXISTS ${POSTGRES_INSTANCE}
     COMPUTE_FAMILY = '${POSTGRES_COMPUTE_FAMILY}'
     STORAGE_SIZE_GB = ${POSTGRES_STORAGE_GB}
@@ -533,191 +746,246 @@ CREATE POSTGRES INSTANCE IF NOT EXISTS ${POSTGRES_INSTANCE}
     POSTGRES_VERSION = ${POSTGRES_VERSION}
     NETWORK_POLICY = '${POSTGRES_INSTANCE}_NETWORK_POLICY'
     HIGH_AVAILABILITY = FALSE
-    COMMENT = 'Flux Ops Center operational database - PostGIS for geospatial queries';
+    COMMENT = 'Flux Ops Center operational database';
 
--- Show instance details (including host for connection)
 SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}';
-
--- =============================================================================
--- 3. POSTGRES SYNC SCHEMA
--- =============================================================================
-
-USE DATABASE ${SNOWFLAKE_DATABASE};
-
-CREATE SCHEMA IF NOT EXISTS POSTGRES_SYNC
-    COMMENT = 'Procedures for syncing Snowflake data to Postgres';
-
-USE SCHEMA POSTGRES_SYNC;
-
--- Sync log table
-CREATE TABLE IF NOT EXISTS SYNC_LOG (
-    SYNC_ID VARCHAR(50) DEFAULT UUID_STRING() PRIMARY KEY,
-    SYNC_OPERATION VARCHAR(100) NOT NULL,
-    TABLE_NAME VARCHAR(100) NOT NULL,
-    RECORDS_SYNCED INTEGER,
-    STATUS VARCHAR(20) NOT NULL,
-    ERROR_MESSAGE VARCHAR(2000),
-    DURATION_SECONDS NUMBER(10,2),
-    SYNC_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-);
-
--- =============================================================================
--- NEXT STEPS
--- =============================================================================
--- 1. SAVE the Postgres credentials from CREATE POSTGRES INSTANCE output
--- 2. Update .env with POSTGRES_HOST from SHOW POSTGRES INSTANCES
--- 3. Configure FastAPI to connect to both backends
--- 4. Run: SELECT * FROM POSTGRES_SYNC.SYNC_LOG; to monitor sync operations
--- =============================================================================
 EOF
+        
+        print_success "Generated: $POSTGRES_SQL_FILE"
+    fi
+    
+    STEP_6_DONE=true
+}
 
-    print_success "Postgres setup SQL generated: $POSTGRES_SQL_FILE"
-fi
+# =============================================================================
+# STEP 7: DEPLOY SPCS SERVICE
+# =============================================================================
 
-print_success "Deployment SQL generated: $SQL_FILE"
-
-# -----------------------------------------------------------------------------
-# STEP 6: DEPLOY TO SNOWFLAKE
-# -----------------------------------------------------------------------------
-
-if [ "$AUTO_DEPLOY" = "true" ]; then
-    print_header "Step 6: Deploy to Snowflake"
+step_7_deploy_service() {
+    print_header "7" "Deploy SPCS Service"
     
     print_step "Creating image repository and SPCS service..."
     
-    # Execute the main deployment SQL
-    if ! snow sql -c "$SNOWFLAKE_CONNECTION" -f "$SQL_FILE" 2>&1; then
-        print_error "Failed to execute deployment SQL"
-        print_warning "You can run it manually: snow sql -c $SNOWFLAKE_CONNECTION -f $SQL_FILE"
+    if ! snow sql -c "$SNOWFLAKE_CONNECTION" -f "$SQL_FILE" 2>&1 | while read line; do print_substep "$line"; done; then
+        print_error "Failed to deploy SPCS service"
         exit 1
     fi
-    print_success "SPCS service deployment initiated"
     
-    # Execute Postgres setup if enabled
-    if [ "$SETUP_POSTGRES" = "true" ]; then
-        print_step "Setting up Snowflake Postgres..."
-        echo ""
-        print_warning "IMPORTANT: Save the Postgres credentials shown below!"
-        print_warning "They cannot be retrieved later."
-        echo ""
-        
-        if ! snow sql -c "$SNOWFLAKE_CONNECTION" -f "$POSTGRES_SQL_FILE" 2>&1; then
-            print_error "Failed to execute Postgres setup SQL"
-            print_warning "You can run it manually: snow sql -c $SNOWFLAKE_CONNECTION -f $POSTGRES_SQL_FILE"
-            # Don't exit - SPCS service may still be deploying
-        else
-            print_success "Postgres instance creation initiated"
-        fi
+    ROLLBACK_SERVICE=true
+    
+    STEP_7_DONE=true
+    print_success "SPCS service deployment initiated"
+}
+
+# =============================================================================
+# STEP 8: CREATE POSTGRES INSTANCE
+# =============================================================================
+
+step_8_create_postgres() {
+    if [ "$SETUP_POSTGRES" != "true" ]; then
+        print_info "Skipping Postgres setup (SETUP_POSTGRES=false)"
+        return
     fi
     
-    # -----------------------------------------------------------------------------
-    # STEP 7: WAIT FOR SERVICES
-    # -----------------------------------------------------------------------------
+    print_header "8" "Create Postgres Instance"
     
-    print_header "Step 7: Waiting for Services"
-    
-    print_step "Checking SPCS service status..."
-    echo "  (This may take 2-5 minutes for the service to become READY)"
+    echo ""
+    echo -e "  ${RED}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${RED}║${NC} ${BOLD}IMPORTANT: Save the Postgres credentials shown below!${NC}                   ${RED}║${NC}"
+    echo -e "  ${RED}║${NC} ${DIM}They cannot be retrieved later.${NC}                                         ${RED}║${NC}"
+    echo -e "  ${RED}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     
-    # Poll for service status
-    MAX_ATTEMPTS=30
-    ATTEMPT=0
-    SERVICE_READY=false
+    print_step "Creating Postgres instance and network rules..."
     
-    while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-        ATTEMPT=$((ATTEMPT + 1))
+    if ! snow sql -c "$SNOWFLAKE_CONNECTION" -f "$POSTGRES_SQL_FILE" 2>&1 | while read line; do
+        # Highlight credential lines
+        if [[ "$line" == *"password"* ]] || [[ "$line" == *"PASSWORD"* ]]; then
+            echo -e "    ${RED}${BOLD}>>> $line${NC}"
+        else
+            print_substep "$line"
+        fi
+    done; then
+        print_error "Failed to create Postgres instance"
+        print_warning "You can run manually: snow sql -c $SNOWFLAKE_CONNECTION -f $POSTGRES_SQL_FILE"
+        # Don't exit - SPCS might still work without Postgres
+    else
+        ROLLBACK_POSTGRES=true
+        print_success "Postgres instance creation initiated"
+    fi
+    
+    STEP_8_DONE=true
+}
+
+# =============================================================================
+# STEP 9: WAIT FOR SERVICES
+# =============================================================================
+
+step_9_wait_for_services() {
+    print_header "9" "Wait for Services"
+    
+    print_step "Waiting for SPCS service to become ready..."
+    print_info "This may take 2-5 minutes..."
+    echo ""
+    
+    local max_attempts=30
+    local attempt=0
+    local service_ready=false
+    
+    while [ $attempt -lt $max_attempts ]; do
+        attempt=$((attempt + 1))
         
-        # Get service status
-        STATUS=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q "SELECT SYSTEM\$GET_SERVICE_STATUS('${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}')" 2>/dev/null | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+        local status=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+            "SELECT SYSTEM\$GET_SERVICE_STATUS('${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}')" 2>/dev/null | \
+            grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
         
-        if [ "$STATUS" = "READY" ]; then
-            SERVICE_READY=true
+        print_progress $attempt $max_attempts "Status: ${status:-checking...}"
+        
+        if [ "$status" = "READY" ]; then
+            service_ready=true
+            echo ""
             print_success "SPCS service is READY!"
             break
-        elif [ "$STATUS" = "FAILED" ]; then
+        elif [ "$status" = "FAILED" ]; then
+            echo ""
             print_error "SPCS service FAILED to start"
-            snow sql -c "$SNOWFLAKE_CONNECTION" -q "SELECT SYSTEM\$GET_SERVICE_STATUS('${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}')" 2>/dev/null
-            break
-        else
-            echo -ne "  Attempt $ATTEMPT/$MAX_ATTEMPTS: Status=$STATUS\r"
-            sleep 10
+            snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+                "SELECT SYSTEM\$GET_SERVICE_STATUS('${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}')" 2>/dev/null
+            exit 1
         fi
+        
+        sleep 10
     done
+    
     echo ""
     
-    if [ "$SERVICE_READY" = true ]; then
-        # Get the service URL
+    if [ "$service_ready" = true ]; then
         print_step "Getting service endpoints..."
-        snow sql -c "$SNOWFLAKE_CONNECTION" -q "SHOW ENDPOINTS IN SERVICE ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}" 2>/dev/null
+        echo ""
+        snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+            "SHOW ENDPOINTS IN SERVICE ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME}" 2>/dev/null
+    else
+        print_warning "Service not ready after ${max_attempts} attempts"
+        print_info "Check status with: SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}')"
     fi
     
-    # Check Postgres status if enabled
-    if [ "$SETUP_POSTGRES" = "true" ]; then
-        print_step "Checking Postgres instance status..."
-        snow sql -c "$SNOWFLAKE_CONNECTION" -q "SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}'" 2>/dev/null
+    # Check Postgres if enabled
+    if [ "$SETUP_POSTGRES" = "true" ] && [ "${STEP_8_DONE}" = true ]; then
+        print_subheader "Postgres Instance Status"
+        snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+            "SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}'" 2>/dev/null
         echo ""
-        print_warning "Note: Postgres credentials were displayed during creation."
-        print_warning "If you missed them, reset with: ALTER POSTGRES INSTANCE ${POSTGRES_INSTANCE} RESET CREDENTIALS;"
+        print_warning "Remember to save your Postgres credentials!"
+        print_info "If missed, reset with: ALTER POSTGRES INSTANCE ${POSTGRES_INSTANCE} RESET CREDENTIALS;"
     fi
-fi
+    
+    STEP_9_DONE=true
+}
 
-# -----------------------------------------------------------------------------
-# COMPLETION
-# -----------------------------------------------------------------------------
+# =============================================================================
+# COMPLETION SUMMARY
+# =============================================================================
 
-print_header "Deployment Complete!"
-
-echo ""
-
-if [ "$AUTO_DEPLOY" = "true" ]; then
-    # Auto-deploy was run - show simplified next steps
-    echo "Deployment executed automatically. Remaining steps:"
+show_completion_summary() {
     echo ""
+    echo -e "${GREEN}╔═════════════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║${NC}                      ${BOLD}DEPLOYMENT COMPLETE!${NC}                                  ${GREEN}║${NC}"
+    echo -e "${GREEN}╚═════════════════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    
+    echo -e "${BOLD}Steps Completed:${NC}"
+    local step_runs=("$STEP_1_RUN" "$STEP_2_RUN" "$STEP_3_RUN" "$STEP_4_RUN" "$STEP_5_RUN" "$STEP_6_RUN" "$STEP_7_RUN" "$STEP_8_RUN" "$STEP_9_RUN")
+    local step_dones=("$STEP_1_DONE" "$STEP_2_DONE" "$STEP_3_DONE" "$STEP_4_DONE" "$STEP_5_DONE" "$STEP_6_DONE" "$STEP_7_DONE" "$STEP_8_DONE" "$STEP_9_DONE")
+    local i=0
+    for step in "${STEP_NAMES[@]}"; do
+        local num="${step%%:*}"
+        local name="${step#*:}"
+        if [ "${step_dones[$i]}" = true ]; then
+            echo -e "  ${GREEN}${CHECK}${NC} Step $num: $name"
+        elif [ "${step_runs[$i]}" = true ]; then
+            echo -e "  ${YELLOW}○${NC} Step $num: $name ${DIM}(skipped/failed)${NC}"
+        else
+            echo -e "  ${DIM}─ Step $num: $name (not selected)${NC}"
+        fi
+        ((i++))
+    done
+    
+    echo ""
+    echo -e "${BOLD}Next Steps:${NC}"
+    echo -e "  ${CYAN}1.${NC} Open the 'app' endpoint URL in your browser"
+    
     if [ "$SETUP_POSTGRES" = "true" ]; then
-        echo "  1. Save your Postgres credentials (shown above during creation)"
-        echo ""
-        echo "  2. Load PostGIS spatial data (REQUIRED for map visualization):"
-        echo "     python backend/scripts/load_postgis_data.py --host <POSTGRES_HOST>"
-        echo "     See: https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs/releases/tag/v1.0.0-data"
-        echo ""
-        echo "  3. Update service with Postgres host:"
-        echo "     ALTER SERVICE ${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.${SERVICE_NAME} SET"
-        echo "       SPECIFICATION_FILE = ... -- Update VITE_POSTGRES_HOST"
-        echo ""
-        echo "  4. Open the 'app' endpoint URL in your browser"
-    else
-        echo "  1. Open the 'app' endpoint URL in your browser (shown above)"
+        echo -e "  ${CYAN}2.${NC} Load PostGIS data: python backend/scripts/load_postgis_data.py --host <POSTGRES_HOST>"
+        echo -e "  ${CYAN}3.${NC} Update SPCS service with Postgres host if needed"
     fi
-else
-    # Manual deployment - show full steps
-    echo "SQL files generated. Next steps:"
+    
     echo ""
-    echo "  1. Run the deployment SQL in Snowflake:"
-    echo "     snow sql -c <connection> -f $SQL_FILE"
+    echo -e "${BOLD}Useful Commands:${NC}"
+    echo -e "  ${DIM}# Check service status${NC}"
+    echo -e "  snow sql -c $SNOWFLAKE_CONNECTION -q \"SELECT SYSTEM\\\$GET_SERVICE_STATUS('${SERVICE_NAME}')\""
     echo ""
-    if [ "$SETUP_POSTGRES" = "true" ]; then
-        echo "  2. Set up Snowflake Postgres (dual-backend architecture):"
-        echo "     snow sql -c <connection> -f $POSTGRES_SQL_FILE"
-        echo "     IMPORTANT: Save the credentials shown after CREATE POSTGRES INSTANCE!"
-        echo ""
-        echo "  3. Wait for services to reach READY state:"
-        echo "     SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');"
-        echo "     SHOW POSTGRES INSTANCES LIKE '${POSTGRES_INSTANCE}';"
-        echo ""
-        echo "  4. Load PostGIS spatial data (REQUIRED for map visualization):"
-        echo "     python backend/scripts/load_postgis_data.py --host <POSTGRES_HOST>"
-        echo ""
-        echo "  5. Get the application URL:"
-        echo "     SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME};"
-    else
-        echo "  2. Wait for service to reach READY state:"
-        echo "     SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');"
-        echo ""
-        echo "  3. Get the application URL:"
-        echo "     SHOW ENDPOINTS IN SERVICE ${SERVICE_NAME};"
-    fi
-fi
+    echo -e "  ${DIM}# View service logs${NC}"
+    echo -e "  snow sql -c $SNOWFLAKE_CONNECTION -q \"CALL SYSTEM\\\$GET_SERVICE_LOGS('${SERVICE_NAME}', 0, 'flux-ops-center')\""
+    echo ""
+    
+    print_success "Happy demo-ing!"
+}
 
-echo ""
-print_success "Happy demo-ing!"
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+main() {
+    # Parse command line arguments
+    for arg in "$@"; do
+        case $arg in
+            --all)
+                INTERACTIVE_MODE=false
+                STEP_1_RUN=true; STEP_2_RUN=true; STEP_3_RUN=true; STEP_4_RUN=true; STEP_5_RUN=true
+                STEP_6_RUN=true; STEP_7_RUN=true; STEP_8_RUN=true; STEP_9_RUN=true
+                ;;
+            --skip-build)
+                SKIP_BUILD=true
+                ;;
+            --help|-h)
+                echo "Usage: $0 [OPTIONS]"
+                echo ""
+                echo "Options:"
+                echo "  --all         Run all steps non-interactively"
+                echo "  --skip-build  Skip frontend and Docker build steps"
+                echo "  --help        Show this help message"
+                exit 0
+                ;;
+        esac
+    done
+    
+    print_banner
+    
+    # Show step menu if interactive
+    if [ "$INTERACTIVE_MODE" = true ]; then
+        show_step_menu
+    fi
+    
+    # Apply --skip-build if set
+    if [ "$SKIP_BUILD" = true ]; then
+        STEP_3_RUN=false
+        STEP_4_RUN=false
+        STEP_5_RUN=false
+    fi
+    
+    # Execute selected steps
+    [ "${STEP_1_RUN}" = true ] && step_1_prerequisites
+    [ "${STEP_2_RUN}" = true ] && step_2_registry_login
+    [ "${STEP_3_RUN}" = true ] && step_3_build_frontend
+    [ "${STEP_4_RUN}" = true ] && step_4_build_docker
+    [ "${STEP_5_RUN}" = true ] && step_5_push_image
+    [ "${STEP_6_RUN}" = true ] && step_6_generate_sql
+    [ "${STEP_7_RUN}" = true ] && step_7_deploy_service
+    [ "${STEP_8_RUN}" = true ] && step_8_create_postgres
+    [ "${STEP_9_RUN}" = true ] && step_9_wait_for_services
+    
+    show_completion_summary
+}
+
+# Run main
+main "$@"
