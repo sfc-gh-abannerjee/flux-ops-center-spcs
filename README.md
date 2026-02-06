@@ -31,6 +31,17 @@ python backend/scripts/load_postgis_data.py --service your_pg_service
 
 ---
 
+## Snowflake Features
+
+| Category | Features |
+|----------|----------|
+| **Cortex AI** | [Agents](https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents), [LLM Functions](https://docs.snowflake.com/en/user-guide/snowflake-cortex/llm-functions) |
+| **Machine Learning** | [Snowpark ML](https://docs.snowflake.com/en/developer-guide/snowflake-ml/overview), [Model Registry](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/overview) |
+| **Applications** | [SPCS](https://docs.snowflake.com/en/developer-guide/snowpark-container-services/overview), [Snowflake Postgres](https://docs.snowflake.com/en/release-notes/2024/other/2024-12-17-snowflake-postgres-preview) |
+| **Data** | [Dynamic Tables](https://docs.snowflake.com/en/user-guide/dynamic-tables-about), [Stages](https://docs.snowflake.com/en/user-guide/data-load-overview) |
+
+---
+
 ## Documentation
 
 | Guide | Description |
@@ -40,53 +51,6 @@ python backend/scripts/load_postgis_data.py --service your_pg_service
 | **[Local Development](docs/LOCAL_DEVELOPMENT_GUIDE.md)** | Development setup |
 | **[API Reference](docs/API_REFERENCE.md)** | REST API documentation |
 | **[Cascade Analysis](docs/CASCADE_ANALYSIS.md)** | GNN risk prediction |
-
----
-
-## Deployment Options
-
-| Method | Best For | Guide |
-|--------|----------|-------|
-| **Quick Start** | Demos, first-time users | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
-| **CLI Scripts** | Step-by-step control | [docs/deployment/CLI_SCRIPTS.md](docs/deployment/CLI_SCRIPTS.md) |
-| **Terraform** | Enterprise IaC | [docs/deployment/TERRAFORM.md](docs/deployment/TERRAFORM.md) |
-| **Notebooks** | Workshops, data science | [docs/deployment/NOTEBOOKS.md](docs/deployment/NOTEBOOKS.md) |
-| **Git Integration** | CI/CD pipelines | [docs/deployment/GIT_INTEGRATION.md](docs/deployment/GIT_INTEGRATION.md) |
-
----
-
-## Docker Images
-
-Pre-built multi-architecture images available on GitHub Container Registry:
-
-```bash
-# Auto-selects your architecture (amd64 or arm64)
-docker pull ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
-
-# For Snowflake SPCS (requires amd64)
-docker pull --platform linux/amd64 ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
-```
-
-| Architecture | Use Case |
-|--------------|----------|
-| `linux/amd64` | Snowflake SPCS, Intel/AMD servers |
-| `linux/arm64` | Apple Silicon (M1/M2/M3/M4), AWS Graviton |
-
-**[Full Docker Guide →](docs/DOCKER_IMAGES.md)**
-
----
-
-## Flux Utility Platform
-
-Part of a suite of Snowflake solutions:
-
-| Repository | Purpose |
-|------------|---------|
-| [**flux-utility-solutions**](https://github.com/sfc-gh-abannerjee/flux-utility-solutions) | Core platform, Cortex AI, semantic models |
-| [flux-data-forge](https://github.com/sfc-gh-abannerjee/flux-data-forge) | Synthetic AMI data generation |
-| **flux-ops-center** (this repo) | Grid visualization, cascade analysis |
-
-**Standalone deployment** creates everything locally. **Integrated deployment** shares data across all apps.
 
 ---
 
@@ -141,6 +105,53 @@ flowchart TB
 
 ---
 
+## Flux Platform Ecosystem
+
+Part of a suite of Snowflake solutions:
+
+| Repository | Purpose |
+|------------|---------|
+| [**flux-utility-solutions**](https://github.com/sfc-gh-abannerjee/flux-utility-solutions) | Core platform, Cortex AI, semantic models |
+| [flux-data-forge](https://github.com/sfc-gh-abannerjee/flux-data-forge) | Synthetic AMI data generation |
+| **flux-ops-center** (this repo) | Grid visualization, cascade analysis |
+
+**Standalone deployment** creates everything locally. **Integrated deployment** shares data across all apps.
+
+---
+
+## Deployment Options
+
+| Method | Best For | Guide |
+|--------|----------|-------|
+| **Quick Start** | Demos, first-time users | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
+| **CLI Scripts** | Step-by-step control | [docs/deployment/CLI_SCRIPTS.md](docs/deployment/CLI_SCRIPTS.md) |
+| **Terraform** | Enterprise IaC | [docs/deployment/TERRAFORM.md](docs/deployment/TERRAFORM.md) |
+| **Notebooks** | Workshops, data science | [docs/deployment/NOTEBOOKS.md](docs/deployment/NOTEBOOKS.md) |
+| **Git Integration** | CI/CD pipelines | [docs/deployment/GIT_INTEGRATION.md](docs/deployment/GIT_INTEGRATION.md) |
+
+---
+
+## Docker Images
+
+Pre-built multi-architecture images available on GitHub Container Registry:
+
+```bash
+# Auto-selects your architecture (amd64 or arm64)
+docker pull ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
+
+# For Snowflake SPCS (requires amd64)
+docker pull --platform linux/amd64 ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
+```
+
+| Architecture | Use Case |
+|--------------|----------|
+| `linux/amd64` | Snowflake SPCS, Intel/AMD servers |
+| `linux/arm64` | Apple Silicon (M1/M2/M3/M4), AWS Graviton |
+
+**[Full Docker Guide →](docs/DOCKER_IMAGES.md)**
+
+---
+
 ## Prerequisites
 
 - Snowflake account with ACCOUNTADMIN role
@@ -172,8 +183,6 @@ flux-ops-center-spcs/
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
----
 
 ## License
 
