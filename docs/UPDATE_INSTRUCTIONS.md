@@ -5,7 +5,7 @@ This document provides instructions for users who deployed Flux Ops Center befor
 ## Summary of Fixes
 
 1. **DDL Schema Updates** - Added missing columns that the backend queries expect
-2. **CSP Fix** - Updated Content Security Policy to allow map tile loading from `*.basemaps.cartocdn.com`
+2. **External Access Integrations** - Added EAIs for CARTO map tiles and Google Fonts
 
 ---
 
@@ -43,20 +43,69 @@ DESCRIBE TABLE FLUX_DB.ANALYTICS.GNN_PREDICTIONS;
 
 ---
 
-## CSP Fix (If Map Tiles Not Loading)
+## Map Tiles Fix (External Access Integrations)
 
-If map tiles are not loading in your deployment, you have two options:
+If map tiles are not loading (blank background), you need to create External Access Integrations that allow the SPCS service to reach CARTO's CDN.
 
-### Option A: Rebuild from Latest Repo
-Pull the latest code from the repository and rebuild your Docker image. The CSP fix is included.
+### Option A: Run the EAI Setup Script
 
-### Option B: Manual Fix
-If you cannot rebuild, update the CSP in your nginx configuration to include:
+```bash
+snow sql -c your_connection -f scripts/sql/05b_map_external_access.sql \
+    -D "database=FLUX_DB" \
+    -D "schema=APPLICATIONS"
 ```
-*.basemaps.cartocdn.com
+
+Then update your service to use the integrations:
+
+```sql
+ALTER SERVICE FLUX_DB.APPLICATIONS.FLUX_OPS_CENTER
+    SET EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI);
 ```
 
-In the `img-src` and `connect-src` directives.
+### Option B: Manual SQL
+
+```sql
+USE ROLE ACCOUNTADMIN;
+USE DATABASE FLUX_DB;
+USE SCHEMA APPLICATIONS;
+
+-- Create network rule for CARTO tiles
+CREATE OR REPLACE NETWORK RULE FLUX_CARTO_NETWORK_RULE
+    TYPE = HOST_PORT
+    VALUE_LIST = (
+        'basemaps.cartocdn.com:443',
+        'tiles.basemaps.cartocdn.com:443',
+        'tiles-a.basemaps.cartocdn.com:443',
+        'tiles-b.basemaps.cartocdn.com:443',
+        'tiles-c.basemaps.cartocdn.com:443',
+        'tiles-d.basemaps.cartocdn.com:443',
+        'a.basemaps.cartocdn.com:443',
+        'b.basemaps.cartocdn.com:443',
+        'c.basemaps.cartocdn.com:443',
+        'd.basemaps.cartocdn.com:443',
+        'unpkg.com:443'
+    )
+    MODE = EGRESS;
+
+-- Create network rule for Google Fonts
+CREATE OR REPLACE NETWORK RULE FLUX_GOOGLE_FONTS_NETWORK_RULE
+    TYPE = HOST_PORT
+    VALUE_LIST = ('fonts.googleapis.com:443', 'fonts.gstatic.com:443')
+    MODE = EGRESS;
+
+-- Create integrations
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION FLUX_CARTO_INTEGRATION
+    ALLOWED_NETWORK_RULES = (FLUX_CARTO_NETWORK_RULE)
+    ENABLED = TRUE;
+
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION GOOGLE_FONTS_EAI
+    ALLOWED_NETWORK_RULES = (FLUX_GOOGLE_FONTS_NETWORK_RULE)
+    ENABLED = TRUE;
+
+-- Update service
+ALTER SERVICE FLUX_DB.APPLICATIONS.FLUX_OPS_CENTER
+    SET EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI);
+```
 
 ---
 

@@ -175,6 +175,25 @@ PostGIS data not loaded. Run:
 python backend/scripts/load_postgis_data.py --service your_pg_service
 ```
 
+### Map tiles not loading (blank background)
+
+External Access Integrations missing. The SPCS service needs network egress to CARTO CDN:
+
+```sql
+-- Check if EAIs exist
+SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'FLUX_%';
+SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'GOOGLE_%';
+
+-- If missing, run the EAI setup (included in 00_standalone_quickstart.sql)
+-- Or run separately:
+snow sql -c my_connection -f scripts/sql/05b_map_external_access.sql \
+    -D "database=FLUX_DB" -D "schema=APPLICATIONS"
+
+-- Then update the service to use them:
+ALTER SERVICE FLUX_DB.PUBLIC.FLUX_OPS_CENTER_SERVICE
+    SET EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI);
+```
+
 ### "Image not found" error
 
 Image not pushed to Snowflake registry. Check:

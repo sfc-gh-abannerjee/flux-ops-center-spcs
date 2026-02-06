@@ -864,6 +864,61 @@ CREATE NETWORK POLICY IF NOT EXISTS IDENTIFIER($postgres_network_policy)
     ALLOWED_NETWORK_RULE_LIST = (IDENTIFIER($postgres_ingress_rule))
     COMMENT = 'Network policy for Flux Ops Center Postgres instance';
 
+-- ============================================================================
+-- SECTION 7B: EXTERNAL ACCESS FOR MAP TILES & FONTS
+-- ============================================================================
+-- These integrations allow the SPCS service to load map tiles from CARTO CDN
+-- and fonts from Google. Without these, the basemap will not render.
+
+USE DATABASE IDENTIFIER($database_name);
+USE SCHEMA APPLICATIONS;
+
+-- CARTO basemap network rule (map tiles from multiple CDN subdomains)
+CREATE OR REPLACE NETWORK RULE FLUX_CARTO_NETWORK_RULE
+    TYPE = HOST_PORT
+    VALUE_LIST = (
+        'basemaps.cartocdn.com:443',
+        'tiles.basemaps.cartocdn.com:443',
+        'tiles-a.basemaps.cartocdn.com:443',
+        'tiles-b.basemaps.cartocdn.com:443',
+        'tiles-c.basemaps.cartocdn.com:443',
+        'tiles-d.basemaps.cartocdn.com:443',
+        'a.basemaps.cartocdn.com:443',
+        'b.basemaps.cartocdn.com:443',
+        'c.basemaps.cartocdn.com:443',
+        'd.basemaps.cartocdn.com:443',
+        'unpkg.com:443'
+    )
+    MODE = EGRESS
+    COMMENT = 'Allows map tile loading from CARTO CDN for Flux Ops Center';
+
+-- Google Fonts network rule (UI typography)
+CREATE OR REPLACE NETWORK RULE FLUX_GOOGLE_FONTS_NETWORK_RULE
+    TYPE = HOST_PORT
+    VALUE_LIST = (
+        'fonts.googleapis.com:443',
+        'fonts.gstatic.com:443'
+    )
+    MODE = EGRESS
+    COMMENT = 'Allows Google Fonts loading for Flux Ops Center UI';
+
+-- Create External Access Integrations
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION FLUX_CARTO_INTEGRATION
+    ALLOWED_NETWORK_RULES = (FLUX_CARTO_NETWORK_RULE)
+    ENABLED = TRUE
+    COMMENT = 'External access for CARTO basemap tiles';
+
+CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION GOOGLE_FONTS_EAI
+    ALLOWED_NETWORK_RULES = (FLUX_GOOGLE_FONTS_NETWORK_RULE)
+    ENABLED = TRUE
+    COMMENT = 'External access for Google Fonts';
+
+-- Grant usage to SYSADMIN
+GRANT USAGE ON INTEGRATION FLUX_CARTO_INTEGRATION TO ROLE SYSADMIN;
+GRANT USAGE ON INTEGRATION GOOGLE_FONTS_EAI TO ROLE SYSADMIN;
+
+USE ROLE ACCOUNTADMIN;
+
 -- Check if Postgres instance already exists before creating
 -- Note: This uses a SHOW command pattern since IF NOT EXISTS is not supported
 SET existing_pg_count = (
