@@ -1053,6 +1053,7 @@ spec:
       port: 8000
       public: true
 \$\$
+    EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI)
     COMMENT = 'Flux Operations Center - Real-time Grid Visualization';
 
 SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');
@@ -1263,13 +1264,78 @@ EOF
 # =============================================================================
 
 step_10_external_access() {
+    print_header "10" "Configure External Access Integration"
+    
+    print_step "Creating CARTO basemap integration (required for map tiles)..."
+    
+    # Create CARTO network rule and integration (always needed for map)
+    snow sql -c "$SNOWFLAKE_CONNECTION" -q "
+        USE ROLE ACCOUNTADMIN;
+        USE DATABASE ${SNOWFLAKE_DATABASE};
+        USE SCHEMA ${SNOWFLAKE_SCHEMA};
+        
+        CREATE NETWORK RULE IF NOT EXISTS FLUX_CARTO_NETWORK_RULE
+            TYPE = HOST_PORT
+            VALUE_LIST = (
+                'basemaps.cartocdn.com:443',
+                'tiles.basemaps.cartocdn.com:443',
+                'tiles-a.basemaps.cartocdn.com:443',
+                'tiles-b.basemaps.cartocdn.com:443',
+                'tiles-c.basemaps.cartocdn.com:443',
+                'tiles-d.basemaps.cartocdn.com:443',
+                'a.basemaps.cartocdn.com:443',
+                'b.basemaps.cartocdn.com:443',
+                'c.basemaps.cartocdn.com:443',
+                'd.basemaps.cartocdn.com:443',
+                'unpkg.com:443'
+            )
+            MODE = EGRESS
+            COMMENT = 'Allows map tile loading from CARTO CDN';
+        
+        CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLUX_CARTO_INTEGRATION
+            ALLOWED_NETWORK_RULES = (${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.FLUX_CARTO_NETWORK_RULE)
+            ENABLED = TRUE
+            COMMENT = 'External access for CARTO basemap tiles';
+        
+        GRANT USAGE ON INTEGRATION FLUX_CARTO_INTEGRATION TO ROLE SYSADMIN;
+    " 2>/dev/null
+    
+    print_success "CARTO integration created"
+    
+    print_step "Creating Google Fonts integration..."
+    
+    # Create Google Fonts network rule and integration
+    snow sql -c "$SNOWFLAKE_CONNECTION" -q "
+        USE ROLE ACCOUNTADMIN;
+        USE DATABASE ${SNOWFLAKE_DATABASE};
+        USE SCHEMA ${SNOWFLAKE_SCHEMA};
+        
+        CREATE NETWORK RULE IF NOT EXISTS FLUX_GOOGLE_FONTS_NETWORK_RULE
+            TYPE = HOST_PORT
+            VALUE_LIST = (
+                'fonts.googleapis.com:443',
+                'fonts.gstatic.com:443'
+            )
+            MODE = EGRESS
+            COMMENT = 'Allows Google Fonts loading';
+        
+        CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS GOOGLE_FONTS_EAI
+            ALLOWED_NETWORK_RULES = (${SNOWFLAKE_DATABASE}.${SNOWFLAKE_SCHEMA}.FLUX_GOOGLE_FONTS_NETWORK_RULE)
+            ENABLED = TRUE
+            COMMENT = 'External access for Google Fonts';
+        
+        GRANT USAGE ON INTEGRATION GOOGLE_FONTS_EAI TO ROLE SYSADMIN;
+    " 2>/dev/null
+    
+    print_success "Google Fonts integration created"
+    
+    # Postgres integration (only if Postgres is being set up)
     if [ "$SETUP_POSTGRES" != "true" ]; then
-        print_info "Skipping external access (no Postgres)"
+        print_info "Skipping Postgres external access (SETUP_POSTGRES=false)"
         STEP_10_DONE=true
+        print_success "External access configuration completed (CARTO + Fonts)"
         return
     fi
-    
-    print_header "10" "Configure External Access Integration"
     
     # Check if we have Postgres host
     if [ -z "$POSTGRES_HOST" ]; then
@@ -1279,7 +1345,7 @@ step_10_external_access() {
             grep -oE "[a-z0-9-]+\.postgres\.snowflake\.app" | head -1)
         
         if [ -z "$POSTGRES_HOST" ]; then
-            print_warning "Could not get Postgres host - skipping external access setup"
+            print_warning "Could not get Postgres host - skipping Postgres external access"
             print_info "You can set this up later with scripts/sql/05a_external_access.sql"
             STEP_10_DONE=true
             return
@@ -1300,13 +1366,13 @@ step_10_external_access() {
     fi
     
     if [ -z "$POSTGRES_PASSWORD" ]; then
-        print_warning "No password provided - skipping external access setup"
+        print_warning "No password provided - skipping Postgres external access setup"
         print_info "You can set this up later with scripts/sql/05a_external_access.sql"
         STEP_10_DONE=true
         return
     fi
     
-    print_step "Creating external access integration..."
+    print_step "Creating Postgres external access integration..."
     
     # Create network rule
     snow sql -c "$SNOWFLAKE_CONNECTION" -q "
@@ -1350,7 +1416,7 @@ step_10_external_access() {
     
     ROLLBACK_EXTERNAL_ACCESS=true
     
-    print_success "External access integration created"
+    print_success "Postgres external access integration created"
     print_substep "Network Rule: FLUX_POSTGRES_EGRESS_RULE"
     print_substep "Secret: POSTGRES_CREDENTIALS"
     print_substep "Integration: FLUX_POSTGRES_INTEGRATION"

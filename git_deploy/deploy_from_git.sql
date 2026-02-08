@@ -56,7 +56,53 @@ FROM INFORMATION_SCHEMA.SCHEMATA
 WHERE SCHEMA_NAME IN ('PRODUCTION', 'APPLICATIONS', 'ML_DEMO', 'CASCADE_ANALYSIS');
 
 -- =============================================================================
--- 2. IMAGE REPOSITORY
+-- 2. EXTERNAL ACCESS INTEGRATIONS (Required for basemap tiles & fonts)
+-- =============================================================================
+-- These integrations allow the SPCS service frontend to load map tiles from CARTO
+-- and fonts from Google. Without these, browser CSP will block the requests.
+
+-- 2a. CARTO Network Rule (basemap tiles)
+CREATE NETWORK RULE IF NOT EXISTS <% database %>.<% schema %>.FLUX_CARTO_NETWORK_RULE
+    TYPE = HOST_PORT
+    VALUE_LIST = (
+        'basemaps.cartocdn.com:443',
+        'tiles.basemaps.cartocdn.com:443',
+        'tiles-a.basemaps.cartocdn.com:443',
+        'tiles-b.basemaps.cartocdn.com:443',
+        'tiles-c.basemaps.cartocdn.com:443',
+        'tiles-d.basemaps.cartocdn.com:443',
+        'a.basemaps.cartocdn.com:443',
+        'b.basemaps.cartocdn.com:443',
+        'c.basemaps.cartocdn.com:443',
+        'd.basemaps.cartocdn.com:443',
+        'unpkg.com:443'
+    )
+    MODE = EGRESS
+    COMMENT = 'Allows map tile loading from CARTO CDN';
+
+-- 2b. Google Fonts Network Rule (UI typography)
+CREATE NETWORK RULE IF NOT EXISTS <% database %>.<% schema %>.FLUX_GOOGLE_FONTS_NETWORK_RULE
+    TYPE = HOST_PORT
+    VALUE_LIST = (
+        'fonts.googleapis.com:443',
+        'fonts.gstatic.com:443'
+    )
+    MODE = EGRESS
+    COMMENT = 'Allows Google Fonts loading';
+
+-- 2c. Create External Access Integrations
+CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLUX_CARTO_INTEGRATION
+    ALLOWED_NETWORK_RULES = (<% database %>.<% schema %>.FLUX_CARTO_NETWORK_RULE)
+    ENABLED = TRUE
+    COMMENT = 'External access for CARTO basemap tiles';
+
+CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS GOOGLE_FONTS_EAI
+    ALLOWED_NETWORK_RULES = (<% database %>.<% schema %>.FLUX_GOOGLE_FONTS_NETWORK_RULE)
+    ENABLED = TRUE
+    COMMENT = 'External access for Google Fonts';
+
+-- =============================================================================
+-- 3. IMAGE REPOSITORY
 -- =============================================================================
 
 CREATE IMAGE REPOSITORY IF NOT EXISTS IDENTIFIER('<% image_repo %>')
@@ -120,6 +166,7 @@ spec:
       public: true
 $$
     QUERY_WAREHOUSE = IDENTIFIER('<% warehouse %>')
+    EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI)
     COMMENT = 'Flux Operations Center - Grid Visualization & GNN Risk Prediction';
 
 -- Grant access

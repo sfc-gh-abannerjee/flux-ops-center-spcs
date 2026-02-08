@@ -700,3 +700,97 @@ EOF
     run grep "\-\-with-cortex" "$SCRIPT_PATH"
     [ "$status" -eq 0 ]
 }
+
+# =============================================================================
+# CARTO BASEMAP INTEGRATION TESTS (Critical for map visualization)
+# =============================================================================
+# These tests verify that CARTO integration is properly configured in all
+# deployment paths. Without these integrations, basemap tiles won't load.
+
+@test "quickstart creates FLUX_CARTO_NETWORK_RULE" {
+    run grep "FLUX_CARTO_NETWORK_RULE" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "quickstart creates FLUX_CARTO_INTEGRATION" {
+    run grep "FLUX_CARTO_INTEGRATION" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "quickstart includes basemaps.cartocdn.com in network rule" {
+    run grep "basemaps.cartocdn.com" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "quickstart includes tiles subdomains in network rule" {
+    run grep "tiles-a.basemaps.cartocdn.com\|tiles-b.basemaps.cartocdn.com" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "quickstart creates GOOGLE_FONTS_EAI integration" {
+    run grep "GOOGLE_FONTS_EAI" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "quickstart includes fonts.googleapis.com in network rule" {
+    run grep "fonts.googleapis.com" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "quickstart service SQL includes EXTERNAL_ACCESS_INTEGRATIONS" {
+    run grep "EXTERNAL_ACCESS_INTEGRATIONS.*FLUX_CARTO_INTEGRATION" "$SCRIPT_PATH"
+    [ "$status" -eq 0 ]
+}
+
+@test "git_deploy/deploy_from_git.sql includes FLUX_CARTO_INTEGRATION" {
+    local git_deploy="$PROJECT_ROOT/git_deploy/deploy_from_git.sql"
+    [ -f "$git_deploy" ]
+    run grep "FLUX_CARTO_INTEGRATION" "$git_deploy"
+    [ "$status" -eq 0 ]
+}
+
+@test "git_deploy/deploy_from_git.sql includes EXTERNAL_ACCESS_INTEGRATIONS" {
+    local git_deploy="$PROJECT_ROOT/git_deploy/deploy_from_git.sql"
+    run grep "EXTERNAL_ACCESS_INTEGRATIONS" "$git_deploy"
+    [ "$status" -eq 0 ]
+}
+
+@test "terraform outputs.tf includes FLUX_CARTO_INTEGRATION" {
+    local tf_outputs="$PROJECT_ROOT/terraform/outputs.tf"
+    [ -f "$tf_outputs" ]
+    run grep "FLUX_CARTO_INTEGRATION" "$tf_outputs"
+    [ "$status" -eq 0 ]
+}
+
+@test "terraform outputs.tf includes EXTERNAL_ACCESS_INTEGRATIONS in service SQL" {
+    local tf_outputs="$PROJECT_ROOT/terraform/outputs.tf"
+    run grep "EXTERNAL_ACCESS_INTEGRATIONS" "$tf_outputs"
+    [ "$status" -eq 0 ]
+}
+
+@test "notebook includes FLUX_CARTO_INTEGRATION" {
+    local notebook="$PROJECT_ROOT/notebooks/setup/01_deploy_spcs_infrastructure.ipynb"
+    [ -f "$notebook" ]
+    run grep "FLUX_CARTO_INTEGRATION" "$notebook"
+    [ "$status" -eq 0 ]
+}
+
+@test "notebook includes EXTERNAL_ACCESS_INTEGRATIONS in service creation" {
+    local notebook="$PROJECT_ROOT/notebooks/setup/01_deploy_spcs_infrastructure.ipynb"
+    run grep "EXTERNAL_ACCESS_INTEGRATIONS" "$notebook"
+    [ "$status" -eq 0 ]
+}
+
+@test "05b_map_external_access.sql exists and creates CARTO integration" {
+    local map_access="$PROJECT_ROOT/scripts/sql/05b_map_external_access.sql"
+    [ -f "$map_access" ]
+    run grep "FLUX_CARTO_INTEGRATION" "$map_access"
+    [ "$status" -eq 0 ]
+}
+
+@test "03_create_service.sql includes all external access integrations" {
+    local create_service="$PROJECT_ROOT/scripts/sql/03_create_service.sql"
+    [ -f "$create_service" ]
+    run grep "FLUX_CARTO_INTEGRATION" "$create_service"
+    [ "$status" -eq 0 ]
+}

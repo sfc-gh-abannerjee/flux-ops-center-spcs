@@ -36,6 +36,7 @@ output "spcs_setup_sql" {
     -- Run these commands after terraform apply completes
     -- =======================================================================
 
+    USE ROLE ACCOUNTADMIN;
     USE DATABASE ${local.database_name};
     USE SCHEMA ${local.schema_name};
 
@@ -52,11 +53,56 @@ output "spcs_setup_sql" {
       AUTO_SUSPEND_SECS = ${var.compute_pool_auto_suspend_secs}
       COMMENT = 'Compute pool for Flux Operations Center SPCS';
 
-    -- 3. Get Repository URL (for docker push)
+    -- 3. Create External Access Integrations (required for basemap tiles and fonts)
+    
+    -- CARTO Network Rule (basemap tiles)
+    CREATE NETWORK RULE IF NOT EXISTS FLUX_CARTO_NETWORK_RULE
+      TYPE = HOST_PORT
+      VALUE_LIST = (
+        'basemaps.cartocdn.com:443',
+        'tiles.basemaps.cartocdn.com:443',
+        'tiles-a.basemaps.cartocdn.com:443',
+        'tiles-b.basemaps.cartocdn.com:443',
+        'tiles-c.basemaps.cartocdn.com:443',
+        'tiles-d.basemaps.cartocdn.com:443',
+        'a.basemaps.cartocdn.com:443',
+        'b.basemaps.cartocdn.com:443',
+        'c.basemaps.cartocdn.com:443',
+        'd.basemaps.cartocdn.com:443',
+        'unpkg.com:443'
+      )
+      MODE = EGRESS
+      COMMENT = 'Allows map tile loading from CARTO CDN';
+    
+    CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS FLUX_CARTO_INTEGRATION
+      ALLOWED_NETWORK_RULES = (${local.database_name}.${local.schema_name}.FLUX_CARTO_NETWORK_RULE)
+      ENABLED = TRUE
+      COMMENT = 'External access for CARTO basemap tiles';
+    
+    GRANT USAGE ON INTEGRATION FLUX_CARTO_INTEGRATION TO ROLE SYSADMIN;
+    
+    -- Google Fonts Network Rule (UI typography)
+    CREATE NETWORK RULE IF NOT EXISTS FLUX_GOOGLE_FONTS_NETWORK_RULE
+      TYPE = HOST_PORT
+      VALUE_LIST = (
+        'fonts.googleapis.com:443',
+        'fonts.gstatic.com:443'
+      )
+      MODE = EGRESS
+      COMMENT = 'Allows Google Fonts loading';
+    
+    CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS GOOGLE_FONTS_EAI
+      ALLOWED_NETWORK_RULES = (${local.database_name}.${local.schema_name}.FLUX_GOOGLE_FONTS_NETWORK_RULE)
+      ENABLED = TRUE
+      COMMENT = 'External access for Google Fonts';
+    
+    GRANT USAGE ON INTEGRATION GOOGLE_FONTS_EAI TO ROLE SYSADMIN;
+
+    -- 4. Get Repository URL (for docker push)
     SHOW IMAGE REPOSITORIES LIKE '${var.image_repository_name}';
     -- Copy the repository_url from output for docker commands
 
-    -- 4. After pushing image AND setting up Postgres, create the service:
+    -- 5. After pushing image AND setting up Postgres, create the service:
     -- NOTE: Replace <POSTGRES_HOST> with host from SHOW POSTGRES INSTANCES
     /*
     CREATE SERVICE IF NOT EXISTS FLUX_OPS_CENTER_SERVICE
@@ -88,6 +134,7 @@ output "spcs_setup_sql" {
           port: 8080
           public: true
     $$
+      EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI)
       COMMENT = 'Flux Operations Center - Real-time Grid Visualization';
     */
   EOT
