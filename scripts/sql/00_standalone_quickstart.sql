@@ -1053,10 +1053,12 @@ GRANT USAGE ON INTEGRATION GOOGLE_FONTS_EAI TO ROLE SYSADMIN;
 USE ROLE ACCOUNTADMIN;
 
 -- Check if Postgres instance already exists before creating
--- Note: This uses a SHOW command pattern since IF NOT EXISTS is not supported
+-- Note: This uses the flow operator (=>>) for robust SQL sequencing
+SHOW POSTGRES INSTANCES LIKE 'FLUX_OPS_POSTGRES'
+=>>
 SET existing_pg_count = (
     SELECT COUNT(*) 
-    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+    FROM TABLE(RESULT_SCAN(*))
     WHERE "name" = $postgres_instance_name
 );
 
