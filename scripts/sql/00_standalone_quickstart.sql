@@ -125,17 +125,25 @@ CREATE TABLE IF NOT EXISTS CIRCUIT_METADATA (
 );
 
 -- Meters
+-- NOTE: METER_LATITUDE/METER_LONGITUDE are aliases for LATITUDE/LONGITUDE
+-- to support both naming conventions used by different scripts (09_extend_cascade_hierarchy.sql)
 CREATE TABLE IF NOT EXISTS METER_INFRASTRUCTURE (
     METER_ID VARCHAR(50) PRIMARY KEY,
     METER_NUMBER VARCHAR(50),
     TRANSFORMER_ID VARCHAR(50),
     CIRCUIT_ID VARCHAR(50),
+    POLE_ID VARCHAR(50),
     LATITUDE FLOAT,
     LONGITUDE FLOAT,
+    METER_LATITUDE FLOAT,  -- Alias column for 09_extend_cascade_hierarchy.sql compatibility
+    METER_LONGITUDE FLOAT, -- Alias column for 09_extend_cascade_hierarchy.sql compatibility
     METER_TYPE VARCHAR(50),
     INSTALL_DATE DATE,
     STATUS VARCHAR(20) DEFAULT 'ACTIVE',
-    CUSTOMER_CLASS VARCHAR(50)
+    CUSTOMER_CLASS VARCHAR(50),
+    HEALTH_SCORE NUMBER(5,2) DEFAULT 90,
+    COUNTY_NAME VARCHAR(100),
+    CITY VARCHAR(100)
 );
 
 -- Grid Poles Infrastructure
@@ -225,8 +233,10 @@ CREATE TABLE IF NOT EXISTS OUTAGE_RESTORATION_TRACKER (
 );
 
 -- Work Orders
+-- NOTE: Includes additional columns required by 06_postgres_sync.sql for Postgres sync
 CREATE TABLE IF NOT EXISTS WORK_ORDERS (
     WORK_ORDER_ID VARCHAR(50) PRIMARY KEY,
+    WORK_ORDER_TYPE VARCHAR(50),  -- Required by 06_postgres_sync.sql
     ASSET_TYPE VARCHAR(50),
     ASSET_ID VARCHAR(50),
     WORK_TYPE VARCHAR(50),
@@ -234,12 +244,37 @@ CREATE TABLE IF NOT EXISTS WORK_ORDERS (
     STATUS VARCHAR(20) DEFAULT 'OPEN',
     DESCRIPTION TEXT,
     ASSIGNED_CREW VARCHAR(50),
+    CIRCUIT_ID VARCHAR(50),
+    SUBSTATION_ID VARCHAR(50),
+    TRANSFORMER_ID VARCHAR(50),
     SCHEDULED_DATE DATE,
+    SCHEDULED_START TIMESTAMP_NTZ,  -- Required by 06_postgres_sync.sql
+    SCHEDULED_END TIMESTAMP_NTZ,    -- Required by 06_postgres_sync.sql
+    ACTUAL_START TIMESTAMP_NTZ,     -- Required by 06_postgres_sync.sql
+    ACTUAL_END TIMESTAMP_NTZ,       -- Required by 06_postgres_sync.sql
     COMPLETED_DATE DATE,
     ESTIMATED_HOURS FLOAT,
     ACTUAL_HOURS FLOAT,
+    LATITUDE FLOAT,                 -- Required by 06_postgres_sync.sql
+    LONGITUDE FLOAT,                -- Required by 06_postgres_sync.sql
     CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- Technical Manuals PDF Chunks (Required by 07_create_cortex_search.sql for Cortex Search)
+-- This table stores chunked technical documentation for RAG-based search in Grid Intelligence Agent
+CREATE TABLE IF NOT EXISTS TECHNICAL_MANUALS_PDF_CHUNKS (
+    CHUNK_ID VARCHAR(100) PRIMARY KEY,
+    DOCUMENT_ID VARCHAR(100) NOT NULL,
+    DOCUMENT_TYPE VARCHAR(100),
+    DOCUMENT_TITLE VARCHAR(500),
+    SOURCE_SYSTEM VARCHAR(100) DEFAULT 'FLUX_OPS_CENTER',
+    LANGUAGE VARCHAR(20) DEFAULT 'en',
+    CHUNK_INDEX INT,
+    CHUNK_TEXT TEXT NOT NULL,
+    TOKEN_COUNT INT,
+    EMBEDDING VECTOR(FLOAT, 1024),
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
 
 -- ============================================================================
@@ -537,6 +572,22 @@ SELECT
 FROM T_TRANSFORMER_TEMPORAL_TRAINING t
 JOIN PRODUCTION.TRANSFORMER_METADATA tm ON t.TRANSFORMER_ID = tm.TRANSFORMER_ID
 WHERE t.PREDICTION_DATE = (SELECT MAX(PREDICTION_DATE) FROM T_TRANSFORMER_TEMPORAL_TRAINING);
+
+-- Compliance Documents (Required by 07_create_cortex_search.sql for Cortex Search)
+-- This table stores NERC/ERCOT regulatory compliance documents for RAG-based search
+CREATE TABLE IF NOT EXISTS COMPLIANCE_DOCS (
+    DOC_ID VARCHAR(100) PRIMARY KEY,
+    DOC_TYPE VARCHAR(100) NOT NULL,
+    TITLE VARCHAR(500) NOT NULL,
+    CONTENT TEXT NOT NULL,
+    CATEGORY VARCHAR(100),
+    KEYWORDS VARCHAR(1000),
+    APPLICABILITY VARCHAR(500),
+    EFFECTIVE_DATE DATE,
+    REVISION VARCHAR(50),
+    REGULATORY_BODY VARCHAR(100) DEFAULT 'NERC',
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
 
 -- ============================================================================
 -- SECTION 5: CASCADE_ANALYSIS TABLES

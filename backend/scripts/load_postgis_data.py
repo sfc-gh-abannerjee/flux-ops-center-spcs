@@ -492,6 +492,61 @@ DERIVED_VIEWS = {
         COMMENT ON MATERIALIZED VIEW vegetation_risk_computed IS 
             'Pre-computed vegetation risk with spatial analysis - refresh with REFRESH MATERIALIZED VIEW vegetation_risk_computed';
     """,
+    
+    # 4. power_lines_spatial - Alias view for grid_power_lines (backend expects this name)
+    #    Referenced by: /api/spatial/power-lines, /api/spatial/nearest-power-line, 
+    #    /api/spatial/compute-vegetation-risk, /api/spatial/vegetation-near-lines
+    "power_lines_spatial": """
+        DROP VIEW IF EXISTS power_lines_spatial CASCADE;
+        CREATE VIEW power_lines_spatial AS 
+        SELECT 
+            line_id,
+            line_name,
+            voltage_class,
+            line_type,
+            length_km,
+            status,
+            circuit_id,
+            substation_id,
+            geom
+        FROM grid_power_lines
+        WHERE geom IS NOT NULL;
+        
+        COMMENT ON VIEW power_lines_spatial IS 'Alias for grid_power_lines - provides power line geometries for spatial queries';
+    """,
+    
+    # 5. circuit_service_areas - Circuit boundary polygons for service area analysis
+    #    Referenced by: /api/spatial/outage-impact, /api/spatial/circuit-contains
+    "circuit_service_areas": """
+        DROP VIEW IF EXISTS circuit_service_areas CASCADE;
+        CREATE VIEW circuit_service_areas AS 
+        WITH circuit_asset_bounds AS (
+            -- Get bounding box of all assets per circuit
+            SELECT 
+                circuit_id,
+                ST_ConvexHull(ST_Collect(geom)) AS service_boundary,
+                COUNT(*) AS asset_count,
+                COUNT(DISTINCT CASE WHEN asset_type = 'meter' THEN asset_id END) AS meter_count,
+                COUNT(DISTINCT CASE WHEN asset_type = 'transformer' THEN asset_id END) AS transformer_count
+            FROM grid_assets_cache
+            WHERE circuit_id IS NOT NULL AND geom IS NOT NULL
+            GROUP BY circuit_id
+            HAVING COUNT(*) >= 3  -- Need at least 3 points for convex hull
+        )
+        SELECT 
+            cab.circuit_id,
+            cab.circuit_id AS area_id,
+            cab.service_boundary AS geom,
+            ST_Area(cab.service_boundary::geography) / 1000000 AS area_sq_km,
+            cab.asset_count,
+            cab.meter_count,
+            cab.transformer_count,
+            ST_X(ST_Centroid(cab.service_boundary)) AS center_longitude,
+            ST_Y(ST_Centroid(cab.service_boundary)) AS center_latitude
+        FROM circuit_asset_bounds cab;
+        
+        COMMENT ON VIEW circuit_service_areas IS 'Circuit service area boundaries derived from asset locations';
+    """,
 }
 
 

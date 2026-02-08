@@ -403,6 +403,8 @@ jobs:
           echo "  - test_terraform.bats (Terraform deployment)"
           echo "  - test_notebooks.bats (Notebook deployment)"
           echo "  - test_cli_scripts.bats (CLI scripts deployment)"
+          echo "  - test_sql_dependencies.bats (Cross-file SQL dependency validation)"
+          echo "  - test_api_dependencies.bats (Frontend→Backend→Database dependency chains)"
           chmod +x scripts/quickstart.sh
           bats --formatter tap tests/scripts/
 
