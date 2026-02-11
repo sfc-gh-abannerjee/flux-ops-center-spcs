@@ -33,7 +33,7 @@ WHERE REPOSITORY_NAME = '<% image_repo %>';
 
 -- Check compute pool status (using flow operator for robust sequencing)
 DESCRIBE COMPUTE POOL IDENTIFIER('<% compute_pool %>')
-=>>
+->>
 SELECT 
     'Compute Pool' AS COMPONENT,
     "name" AS POOL_NAME,
@@ -41,7 +41,7 @@ SELECT
     "instance_family" AS INSTANCE_FAMILY,
     "min_nodes" AS MIN_NODES,
     "max_nodes" AS MAX_NODES
-FROM TABLE(RESULT_SCAN(*));
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
 
 -- =============================================================================
 -- 2. VALIDATE SERVICE
