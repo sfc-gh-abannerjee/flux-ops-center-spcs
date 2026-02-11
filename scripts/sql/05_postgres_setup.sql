@@ -91,8 +91,11 @@ CREATE POSTGRES INSTANCE IF NOT EXISTS <% postgres_instance %>
     HIGH_AVAILABILITY = FALSE
     COMMENT = 'Flux Ops Center operational database - PostGIS enabled for geospatial queries';
 
--- Display instance details
-SHOW POSTGRES INSTANCES LIKE '<% postgres_instance %>';
+-- Display instance details using flow operator for robust sequencing
+SHOW POSTGRES INSTANCES LIKE '<% postgres_instance %>'
+->>
+SELECT "name", "host", "state", "postgres_version" 
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
 
 -- =============================================================================
 -- 3. SYNC SCHEMA AND PROCEDURES
@@ -127,6 +130,21 @@ CREATE TABLE IF NOT EXISTS SYNC_LOG (
     DURATION_SECONDS NUMBER(10,2),
     SYNC_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
+
+-- Store the Postgres host from the SHOW command result using flow operator
+SHOW POSTGRES INSTANCES LIKE '<% postgres_instance %>'
+->>
+INSERT INTO POSTGRES_CONNECTION_CONFIG (CONFIG_KEY, CONFIG_VALUE, UPDATED_AT)
+SELECT 'POSTGRES_HOST', "host", CURRENT_TIMESTAMP()
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE "name" = '<% postgres_instance %>'
+ON CONFLICT (CONFIG_KEY) DO UPDATE SET CONFIG_VALUE = EXCLUDED.CONFIG_VALUE, UPDATED_AT = CURRENT_TIMESTAMP();
+
+-- Helper view to get the Postgres host from config table (not RESULT_SCAN which is volatile)
+CREATE OR REPLACE VIEW V_POSTGRES_HOST AS
+SELECT CONFIG_VALUE AS POSTGRES_HOST
+FROM POSTGRES_CONNECTION_CONFIG
+WHERE CONFIG_KEY = 'POSTGRES_HOST';
 
 -- =============================================================================
 -- 4. SYNC PROCEDURES
