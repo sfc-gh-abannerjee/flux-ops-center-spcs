@@ -13,7 +13,7 @@
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.14.19",
-    "@mui/material": "^5.14.20",
+    "@mui/material": "^7.3.7",
     "deck.gl": "^9.2.6",
     "mapbox-gl": "^3.17.0",
     "maplibre-gl": "^3.6.2",
