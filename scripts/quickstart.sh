@@ -748,8 +748,16 @@ step_1_prerequisites() {
         exit 1
     fi
     
-    # Derive registry URL (lowercase for Docker)
-    REGISTRY_URL="${SNOWFLAKE_ACCOUNT}.registry.snowflakecomputing.com"
+    # Get registry URL from Snowflake CLI (handles account name normalization correctly)
+    # Snowflake normalizes account identifiers: underscores become hyphens in registry URLs
+    print_step "Getting registry URL from Snowflake..."
+    REGISTRY_URL=$(snow spcs image-registry url --connection "$SNOWFLAKE_CONNECTION" 2>/dev/null | tr -d '[:space:]')
+    if [ -z "$REGISTRY_URL" ]; then
+        # Fallback to manual construction if CLI fails (e.g., no image repo exists yet)
+        print_warning "Could not get registry URL from Snowflake CLI, using manual construction"
+        print_info "Note: If your account has underscores, they become hyphens in registry URLs"
+        REGISTRY_URL="${SNOWFLAKE_ACCOUNT}.registry.snowflakecomputing.com"
+    fi
     REGISTRY_URL_LOWER=$(echo "$REGISTRY_URL" | tr '[:upper:]' '[:lower:]')
     DB_LOWER=$(echo "$SNOWFLAKE_DATABASE" | tr '[:upper:]' '[:lower:]')
     SCHEMA_LOWER=$(echo "$SNOWFLAKE_SCHEMA" | tr '[:upper:]' '[:lower:]')
@@ -954,13 +962,16 @@ step_3_create_compute_pool() {
 step_4_registry_login() {
     print_header "4" "Login to Snowflake Registry"
     
-    print_step "Logging in to $REGISTRY_URL_LOWER..."
-    print_info "Enter your Snowflake password when prompted."
+    print_step "Logging in to Snowflake image registry..."
+    print_info "Using snow CLI for authentication (connection: $SNOWFLAKE_CONNECTION)"
     echo ""
     
-    if ! docker login "$REGISTRY_URL_LOWER" -u "$SNOWFLAKE_USER"; then
+    # Use snow CLI for registry login - handles auth properly and works with all auth methods
+    if ! snow spcs image-registry login --connection "$SNOWFLAKE_CONNECTION"; then
         print_error "Failed to login to Snowflake registry"
-        print_warning "Check your password and ensure the image repository exists"
+        print_warning "Ensure your role has READ privilege on an image repository"
+        print_info "To push images, your role also needs WRITE privilege:"
+        echo -e "  GRANT WRITE ON IMAGE REPOSITORY $SNOWFLAKE_DATABASE.$SNOWFLAKE_SCHEMA.$IMAGE_REPO TO ROLE <your_role>;"
         exit 1
     fi
     
