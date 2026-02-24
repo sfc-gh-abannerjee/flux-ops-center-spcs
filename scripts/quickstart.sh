@@ -613,61 +613,117 @@ step_1_prerequisites() {
     
     print_subheader "Snowflake Configuration"
     
-    # Prompt for missing variables
-    [ -z "$SNOWFLAKE_ACCOUNT" ] && { echo -ne "  ${YELLOW}?${NC} Snowflake Account (org-account): "; read SNOWFLAKE_ACCOUNT; }
-    [ -z "$SNOWFLAKE_USER" ] && { echo -ne "  ${YELLOW}?${NC} Snowflake Username: "; read SNOWFLAKE_USER; }
-    
-    # Database with default
-    echo -ne "  ${YELLOW}?${NC} Database name [${SNOWFLAKE_DATABASE}]: "
-    read input; SNOWFLAKE_DATABASE="${input:-$SNOWFLAKE_DATABASE}"
-    
-    # Schema with default
-    echo -ne "  ${YELLOW}?${NC} Schema name [${SNOWFLAKE_SCHEMA}]: "
-    read input; SNOWFLAKE_SCHEMA="${input:-$SNOWFLAKE_SCHEMA}"
-    
-    # Warehouse with default
-    echo -ne "  ${YELLOW}?${NC} Warehouse name [${SNOWFLAKE_WAREHOUSE}]: "
-    read input; SNOWFLAKE_WAREHOUSE="${input:-$SNOWFLAKE_WAREHOUSE}"
-    
-    [ -z "$COMPUTE_POOL" ] && { echo -ne "  ${YELLOW}?${NC} Compute Pool name: "; read COMPUTE_POOL; }
-    
-    # Snowflake CLI connection
-    print_subheader "Snowflake CLI Connection"
-    
-    if [ -z "$SNOWFLAKE_CONNECTION" ]; then
-        local connections=$(snow connection list 2>/dev/null | grep -E "^\w" | awk '{print $1}' | head -10)
-        if [ -n "$connections" ]; then
-            echo -e "  ${DIM}Available connections:${NC}"
-            echo "$connections" | while read conn; do echo -e "    ${DIM}${BULLET} $conn${NC}"; done
+    # In non-interactive mode (--all), require env vars; in interactive mode, prompt
+    if [ "$INTERACTIVE_MODE" = true ]; then
+        # Interactive: prompt for missing variables
+        [ -z "$SNOWFLAKE_ACCOUNT" ] && { echo -ne "  ${YELLOW}?${NC} Snowflake Account (org-account): "; read SNOWFLAKE_ACCOUNT; }
+        [ -z "$SNOWFLAKE_USER" ] && { echo -ne "  ${YELLOW}?${NC} Snowflake Username: "; read SNOWFLAKE_USER; }
+        
+        # Database with default
+        echo -ne "  ${YELLOW}?${NC} Database name [${SNOWFLAKE_DATABASE}]: "
+        read input; SNOWFLAKE_DATABASE="${input:-$SNOWFLAKE_DATABASE}"
+        
+        # Schema with default
+        echo -ne "  ${YELLOW}?${NC} Schema name [${SNOWFLAKE_SCHEMA}]: "
+        read input; SNOWFLAKE_SCHEMA="${input:-$SNOWFLAKE_SCHEMA}"
+        
+        # Warehouse with default
+        echo -ne "  ${YELLOW}?${NC} Warehouse name [${SNOWFLAKE_WAREHOUSE}]: "
+        read input; SNOWFLAKE_WAREHOUSE="${input:-$SNOWFLAKE_WAREHOUSE}"
+        
+        [ -z "$COMPUTE_POOL" ] && { echo -ne "  ${YELLOW}?${NC} Compute Pool name: "; read COMPUTE_POOL; }
+        
+        # Snowflake CLI connection
+        print_subheader "Snowflake CLI Connection"
+        
+        if [ -z "$SNOWFLAKE_CONNECTION" ]; then
+            local connections=$(snow connection list 2>/dev/null | grep -E "^\w" | awk '{print $1}' | head -10)
+            if [ -n "$connections" ]; then
+                echo -e "  ${DIM}Available connections:${NC}"
+                echo "$connections" | while read conn; do echo -e "    ${DIM}${BULLET} $conn${NC}"; done
+            fi
+            echo -ne "  ${YELLOW}?${NC} Connection name: "
+            read SNOWFLAKE_CONNECTION
         fi
-        echo -ne "  ${YELLOW}?${NC} Connection name: "
-        read SNOWFLAKE_CONNECTION
-    fi
-    
-    # Validate connection
-    if snow connection test -c "$SNOWFLAKE_CONNECTION" &> /dev/null; then
-        print_success "Connection '$SNOWFLAKE_CONNECTION' verified"
+        
+        # Validate connection
+        if snow connection test -c "$SNOWFLAKE_CONNECTION" &> /dev/null; then
+            print_success "Connection '$SNOWFLAKE_CONNECTION' verified"
+        else
+            print_warning "Connection test failed - will try anyway"
+        fi
+        
+        # Postgres configuration
+        if [ "$SETUP_POSTGRES" = "true" ]; then
+            print_subheader "Postgres Configuration"
+            
+            echo -ne "  ${YELLOW}?${NC} Postgres instance name [${POSTGRES_INSTANCE}]: "
+            read input; POSTGRES_INSTANCE="${input:-$POSTGRES_INSTANCE}"
+            
+            echo -ne "  ${YELLOW}?${NC} Compute family (STANDARD_M/HIGHMEM_L/HIGHMEM_XL) [${POSTGRES_COMPUTE_FAMILY}]: "
+            read input; POSTGRES_COMPUTE_FAMILY="${input:-$POSTGRES_COMPUTE_FAMILY}"
+            
+            echo -ne "  ${YELLOW}?${NC} Storage GB (10-65535) [${POSTGRES_STORAGE_GB}]: "
+            read input; POSTGRES_STORAGE_GB="${input:-$POSTGRES_STORAGE_GB}"
+        fi
+        
+        # Cortex configuration
+        if confirm "Setup Cortex AI (search services for chat)?" "n"; then
+            SETUP_CORTEX=true
+        fi
     else
-        print_warning "Connection test failed - will try anyway"
-    fi
-    
-    # Postgres configuration
-    if [ "$SETUP_POSTGRES" = "true" ]; then
-        print_subheader "Postgres Configuration"
+        # Non-interactive (--all): validate required environment variables
+        print_info "Non-interactive mode: using environment variables"
         
-        echo -ne "  ${YELLOW}?${NC} Postgres instance name [${POSTGRES_INSTANCE}]: "
-        read input; POSTGRES_INSTANCE="${input:-$POSTGRES_INSTANCE}"
+        local missing_vars=false
+        if [ -z "$SNOWFLAKE_ACCOUNT" ]; then
+            print_error "SNOWFLAKE_ACCOUNT environment variable is required with --all"
+            missing_vars=true
+        fi
+        if [ -z "$SNOWFLAKE_USER" ]; then
+            print_error "SNOWFLAKE_USER environment variable is required with --all"
+            missing_vars=true
+        fi
+        if [ -z "$COMPUTE_POOL" ]; then
+            print_error "COMPUTE_POOL environment variable is required with --all"
+            missing_vars=true
+        fi
+        if [ -z "$SNOWFLAKE_CONNECTION" ]; then
+            print_error "SNOWFLAKE_CONNECTION environment variable is required with --all"
+            missing_vars=true
+        fi
         
-        echo -ne "  ${YELLOW}?${NC} Compute family (STANDARD_M/HIGHMEM_L/HIGHMEM_XL) [${POSTGRES_COMPUTE_FAMILY}]: "
-        read input; POSTGRES_COMPUTE_FAMILY="${input:-$POSTGRES_COMPUTE_FAMILY}"
+        if [ "$missing_vars" = true ]; then
+            echo ""
+            print_error "Missing required environment variables for --all mode."
+            print_info "Set these before running:"
+            echo -e "  export SNOWFLAKE_ACCOUNT=org-account"
+            echo -e "  export SNOWFLAKE_USER=your_username"
+            echo -e "  export COMPUTE_POOL=your_compute_pool"
+            echo -e "  export SNOWFLAKE_CONNECTION=your_connection_name"
+            exit 1
+        fi
         
-        echo -ne "  ${YELLOW}?${NC} Storage GB (10-65535) [${POSTGRES_STORAGE_GB}]: "
-        read input; POSTGRES_STORAGE_GB="${input:-$POSTGRES_STORAGE_GB}"
-    fi
-    
-    # Cortex configuration
-    if confirm "Setup Cortex AI (search services for chat)?" "n"; then
-        SETUP_CORTEX=true
+        # Show what we're using
+        print_success "SNOWFLAKE_ACCOUNT: $SNOWFLAKE_ACCOUNT"
+        print_success "SNOWFLAKE_USER: $SNOWFLAKE_USER"
+        print_success "SNOWFLAKE_DATABASE: $SNOWFLAKE_DATABASE (default or from env)"
+        print_success "SNOWFLAKE_SCHEMA: $SNOWFLAKE_SCHEMA (default or from env)"
+        print_success "SNOWFLAKE_WAREHOUSE: $SNOWFLAKE_WAREHOUSE (default or from env)"
+        print_success "COMPUTE_POOL: $COMPUTE_POOL"
+        print_success "SNOWFLAKE_CONNECTION: $SNOWFLAKE_CONNECTION"
+        
+        # Validate connection
+        if snow connection test -c "$SNOWFLAKE_CONNECTION" &> /dev/null; then
+            print_success "Connection '$SNOWFLAKE_CONNECTION' verified"
+        else
+            print_warning "Connection test failed - will try anyway"
+        fi
+        
+        # Postgres uses defaults in non-interactive mode
+        if [ "$SETUP_POSTGRES" = "true" ]; then
+            print_info "Postgres config: instance=$POSTGRES_INSTANCE, family=$POSTGRES_COMPUTE_FAMILY, storage=${POSTGRES_STORAGE_GB}GB"
+        fi
     fi
     
     # Validate required variables
@@ -958,11 +1014,19 @@ step_6_build_docker() {
         print_info "Using Dockerfile.spcs for SPCS deployment"
     fi
     
-    print_step "Building Docker image..."
+    print_step "Building Docker image (linux/amd64 for SPCS compatibility)..."
     
-    if ! docker build -t "flux_ops_center:${IMAGE_TAG}" -f "$dockerfile" . 2>&1 | \
-        grep -E "^(Step|Successfully|COPY|RUN|FROM)" | while read line; do print_substep "$line"; done; then
+    # Build with explicit AMD64 platform for SPCS compatibility (Apple Silicon builds ARM by default)
+    local build_output
+    build_output=$(docker build --platform linux/amd64 -t "flux_ops_center:${IMAGE_TAG}" -f "$dockerfile" . 2>&1)
+    local build_status=$?
+    
+    # Display filtered output
+    echo "$build_output" | grep -E "^(Step|Successfully|COPY|RUN|FROM)" | while read line; do print_substep "$line"; done
+    
+    if [ $build_status -ne 0 ]; then
         print_error "Docker build failed"
+        echo "$build_output" | tail -20  # Show last 20 lines for debugging
         exit 1
     fi
     
@@ -991,8 +1055,19 @@ step_7_push_image() {
     print_success "Tagged as: $FULL_IMAGE"
     
     print_step "Pushing image to Snowflake..."
-    if ! docker push "$FULL_IMAGE" 2>&1 | grep -E "^[a-f0-9]+:|latest:|Pushed|Digest" | while read line; do print_substep "$line"; done; then
+    
+    # Capture push output and exit code properly (pipe masks exit codes)
+    local push_output
+    push_output=$(docker push "$FULL_IMAGE" 2>&1)
+    local push_status=$?
+    
+    # Display filtered output
+    echo "$push_output" | grep -E "^[a-f0-9]+:|latest:|Pushed|Digest" | while read line; do print_substep "$line"; done
+    
+    if [ $push_status -ne 0 ]; then
         print_error "Failed to push image"
+        print_warning "Push output:"
+        echo "$push_output" | tail -10
         print_warning "Ensure the image repository exists and you have access"
         exit 1
     fi
@@ -1194,8 +1269,12 @@ EOF
         
         print_step "Creating Postgres instance and network rules..."
         
-        # Capture output to extract credentials
-        local pg_output=$(snow sql -c "$SNOWFLAKE_CONNECTION" -f "$POSTGRES_SQL_FILE" 2>&1)
+        # Capture output to extract credentials and check for errors
+        local pg_output
+        pg_output=$(snow sql -c "$SNOWFLAKE_CONNECTION" -f "$POSTGRES_SQL_FILE" 2>&1)
+        local pg_sql_status=$?
+        
+        # Display output, highlighting credentials
         echo "$pg_output" | while read line; do
             if [[ "$line" == *"password"* ]] || [[ "$line" == *"PASSWORD"* ]] || [[ "$line" == *"user"* ]]; then
                 echo -e "    ${RED}${BOLD}>>> $line${NC}"
@@ -1203,6 +1282,25 @@ EOF
                 print_substep "$line"
             fi
         done
+        
+        # Check if SQL execution failed
+        if [ $pg_sql_status -ne 0 ]; then
+            print_error "Failed to create Postgres instance"
+            print_warning "Common causes:"
+            print_warning "  - Snowflake Postgres not enabled for this account"
+            print_warning "  - Insufficient privileges (requires ACCOUNTADMIN)"
+            print_warning "  - Network policy creation failed"
+            echo ""
+            print_warning "SQL output:"
+            echo "$pg_output" | tail -15
+            exit 1
+        fi
+        
+        # Also check if output contains error indicators
+        if echo "$pg_output" | grep -qiE "error|failed|denied|not authorized"; then
+            print_error "Postgres creation may have failed - check output above"
+            print_warning "If you see permission errors, ensure you have ACCOUNTADMIN role"
+        fi
         
         ROLLBACK_POSTGRES=true
         
@@ -1243,16 +1341,27 @@ EOF
             print_success "Postgres host: $POSTGRES_HOST"
         fi
         
-        # Prompt for credentials that were shown
-        echo ""
-        print_warning "Enter the Postgres credentials that were displayed above:"
-        echo -ne "  ${YELLOW}?${NC} Postgres username (usually 'application'): "
-        read POSTGRES_USER
-        POSTGRES_USER="${POSTGRES_USER:-application}"
-        
-        echo -ne "  ${YELLOW}?${NC} Postgres password: "
-        read -s POSTGRES_PASSWORD
-        echo ""
+        # Prompt for credentials that were shown (only in interactive mode)
+        if [ "$INTERACTIVE_MODE" = true ]; then
+            echo ""
+            print_warning "Enter the Postgres credentials that were displayed above:"
+            echo -ne "  ${YELLOW}?${NC} Postgres username (usually 'application'): "
+            read POSTGRES_USER
+            POSTGRES_USER="${POSTGRES_USER:-application}"
+            
+            echo -ne "  ${YELLOW}?${NC} Postgres password: "
+            read -s POSTGRES_PASSWORD
+            echo ""
+        else
+            # Non-interactive mode: use environment variables or defaults
+            POSTGRES_USER="${POSTGRES_USER:-application}"
+            if [ -z "$POSTGRES_PASSWORD" ]; then
+                print_warning "Non-interactive mode: POSTGRES_PASSWORD not set"
+                print_warning "Set POSTGRES_PASSWORD environment variable or run interactively"
+                print_warning "You can load PostGIS data later with:"
+                print_info "  python backend/scripts/load_postgis_data.py --host <HOST> --user <USER> --password <PASS>"
+            fi
+        fi
     fi
     
     STEP_9_DONE=true
@@ -1352,17 +1461,21 @@ step_10_external_access() {
         fi
     fi
     
-    # Prompt for credentials if not already set
+    # Prompt for credentials if not already set (only in interactive mode)
     if [ -z "$POSTGRES_USER" ]; then
-        echo -ne "  ${YELLOW}?${NC} Postgres username [application]: "
-        read POSTGRES_USER
+        if [ "$INTERACTIVE_MODE" = true ]; then
+            echo -ne "  ${YELLOW}?${NC} Postgres username [application]: "
+            read POSTGRES_USER
+        fi
         POSTGRES_USER="${POSTGRES_USER:-application}"
     fi
     
     if [ -z "$POSTGRES_PASSWORD" ]; then
-        echo -ne "  ${YELLOW}?${NC} Postgres password: "
-        read -s POSTGRES_PASSWORD
-        echo ""
+        if [ "$INTERACTIVE_MODE" = true ]; then
+            echo -ne "  ${YELLOW}?${NC} Postgres password: "
+            read -s POSTGRES_PASSWORD
+            echo ""
+        fi
     fi
     
     if [ -z "$POSTGRES_PASSWORD" ]; then

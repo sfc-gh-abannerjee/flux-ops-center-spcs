@@ -1,4 +1,6 @@
-FROM python:3.11-slim
+# IMPORTANT: Snowflake SPCS requires AMD64 architecture
+# This ensures correct builds on Apple Silicon (M1/M2/M3) Macs
+FROM --platform=linux/amd64 python:3.11-slim
 
 WORKDIR /app
 
