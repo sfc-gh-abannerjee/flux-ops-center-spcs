@@ -81,13 +81,13 @@ python backend/scripts/load_postgis_data.py --service your_pg_service
 
 This loads ~390MB of spatial data from [GitHub Releases](https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs/releases) and creates derived PostGIS views:
 
-| View | Purpose | Row Count |
+| View/Table | Purpose | Row Count |
 |------|---------|-----------|
 | `buildings_spatial` | Building footprints with centroid coordinates | ~150,000 |
 | `grid_assets` | Asset locations for risk analysis | ~66,000 |
-| `power_lines_spatial` | Full-detail power line geometries | ~13,100 |
-| `power_lines_lod_overview` | Simplified power lines for zoom < 12 | ~12,200 |
-| `power_lines_lod_mid` | Moderate detail for zoom 12-14 | ~13,100 |
+| `power_lines_spatial` | Curated multi-vertex power line geometries | ~5,100 |
+| `power_lines_lod_overview` | Simplified power lines for zoom < 12 | ~4,300 |
+| `power_lines_lod_mid` | Moderate detail for zoom 12-14 | ~5,100 |
 | `vegetation_risk_computed` | Pre-computed vegetation risk with spatial joins | ~49,000 |
 | `circuit_service_areas` | Circuit boundary polygons | ~50 |
 | `circuit_status_realtime` | Real-time circuit health metrics | ~50 |

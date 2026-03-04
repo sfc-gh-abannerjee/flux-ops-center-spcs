@@ -9,6 +9,7 @@ Core Spatial Layers:
 - building_footprints: 2.6M building polygons with height data (~310MB compressed)
 - osm_water: 12K water body polygons (~6MB compressed)
 - grid_power_lines: 13K power line geometries (~800KB compressed)
+- power_lines_spatial: 5.1K curated multi-vertex power line geometries (~782KB compressed)
 - vegetation_risk: 49K vegetation risk points (~4MB compressed)
 - substations: 275 substation points (~12KB compressed)
 - transformers: 91K transformer records (~3MB compressed)
@@ -68,6 +69,12 @@ DATA_FILES = {
         "filename": "grid_power_lines.csv.gz",
         "table": "grid_power_lines",
         "rows": 13104,
+        "size_mb": 1,
+    },
+    "powerlines_curated": {
+        "filename": "power_lines_spatial.csv.gz",
+        "table": "power_lines_spatial",
+        "rows": 5141,
         "size_mb": 1,
     },
     "vegetation": {
@@ -154,6 +161,20 @@ SCHEMAS = {
             centroid_lat DOUBLE PRECISION,
             centroid_lon DOUBLE PRECISION,
             created_at TIMESTAMP DEFAULT NOW()
+        );
+    """,
+    "power_lines_spatial": """
+        DROP VIEW IF EXISTS power_lines_lod_overview CASCADE;
+        DROP VIEW IF EXISTS power_lines_lod_mid CASCADE;
+        DROP VIEW IF EXISTS power_lines_spatial CASCADE;
+        DROP TABLE IF EXISTS power_lines_spatial CASCADE;
+        CREATE TABLE power_lines_spatial (
+            power_line_id VARCHAR(100) PRIMARY KEY,
+            class VARCHAR(50),
+            length_meters DOUBLE PRECISION,
+            centroid_lon DOUBLE PRECISION,
+            centroid_lat DOUBLE PRECISION,
+            geom GEOMETRY(LineString, 4326)
         );
     """,
     "vegetation_risk": """
@@ -295,6 +316,10 @@ INDEXES = {
         "CREATE INDEX IF NOT EXISTS idx_grid_power_lines_circuit ON grid_power_lines (circuit_id);",
         "CREATE INDEX IF NOT EXISTS idx_grid_power_lines_substation ON grid_power_lines (substation_id);",
         "CREATE INDEX IF NOT EXISTS idx_grid_power_lines_type ON grid_power_lines (line_type);",
+    ],
+    "power_lines_spatial": [
+        "CREATE INDEX IF NOT EXISTS idx_power_lines_spatial_geom ON power_lines_spatial USING GIST (geom);",
+        "CREATE INDEX IF NOT EXISTS idx_power_lines_spatial_class ON power_lines_spatial (class);",
     ],
     "vegetation_risk": [
         "CREATE INDEX IF NOT EXISTS idx_vegetation_geom ON vegetation_risk USING GIST (geom);",
@@ -491,26 +516,15 @@ DERIVED_VIEWS = {
             'Pre-computed vegetation risk with spatial analysis - refresh with REFRESH MATERIALIZED VIEW vegetation_risk_computed';
     """,
     
-    # 4. power_lines_spatial - Alias view for grid_power_lines
-    #    IMPORTANT: The FastAPI backend expects columns named: power_line_id, class, length_meters
-    #    These are aliased from grid_power_lines columns: line_id, voltage_class, line_length_m
+    # 4. power_lines_spatial - NOW LOADED DIRECTLY FROM GITHUB RELEASE
+    #    Previously this was a VIEW over grid_power_lines, but the raw segments
+    #    are simple 2-point lines. The curated data (power_lines_spatial.csv.gz)
+    #    contains 5,141 multi-vertex geometries (avg 13 vertices) that look like
+    #    realistic power line routes following roads and corridors.
+    #    The table is loaded by the 'powerlines_curated' layer in DATA_FILES.
+    #    IMPORTANT: The FastAPI backend expects columns: power_line_id, class, length_meters
     #    Referenced by: /api/spatial/power-lines, /api/spatial/nearest-power-line, 
     #    /api/spatial/compute-vegetation-risk, /api/spatial/vegetation-near-lines
-    "power_lines_spatial": """
-        DROP VIEW IF EXISTS power_lines_spatial CASCADE;
-        CREATE VIEW power_lines_spatial AS 
-        SELECT 
-            line_id AS power_line_id,
-            voltage_class AS class,
-            line_length_m AS length_meters,
-            centroid_lon,
-            centroid_lat,
-            geom
-        FROM grid_power_lines
-        WHERE geom IS NOT NULL;
-        
-        COMMENT ON VIEW power_lines_spatial IS 'Power line geometries for spatial queries - columns aliased for FastAPI backend compatibility';
-    """,
     
     # 5. circuit_service_areas - Circuit boundary polygons for service area analysis
     #    Referenced by: /api/spatial/outage-impact, /api/spatial/circuit-contains
@@ -857,12 +871,14 @@ def create_derived_views(conn_args: list) -> bool:
     These views depend on the raw tables being loaded first:
     - buildings_spatial: View over building_footprints with centroid coords
     - grid_assets: Alias view for grid_assets_cache
-    - power_lines_spatial: View over grid_power_lines with aliased columns
     - power_lines_lod_overview: Simplified power lines for zoom < 12
     - power_lines_lod_mid: Moderately simplified power lines for zoom 12-14
     - vegetation_risk_computed: Materialized view with spatial risk analysis
     - circuit_service_areas: View with circuit boundary polygons
     - circuit_status_realtime: Table derived from grid_assets_cache + substations
+    
+    NOTE: power_lines_spatial is now loaded directly as a table from the
+    GitHub Release (powerlines_curated layer), not created as a derived view.
     
     Also grants SELECT on all tables to the 'application' Postgres user,
     which is used by the SPCS service to connect to Postgres.
@@ -873,15 +889,15 @@ def create_derived_views(conn_args: list) -> bool:
     print(f"{'='*60}")
     
     # Order matters: base views first, then views that depend on them.
-    # power_lines_lod_* MUST come after power_lines_spatial (they SELECT from it).
+    # power_lines_spatial is now a loaded table (not a derived view).
+    # power_lines_lod_* MUST come after power_lines_spatial is loaded (they SELECT from it).
     # vegetation_risk_computed is a materialized view with spatial joins (slowest).
     # circuit_status_realtime depends on grid_assets_cache + substations.
     view_order = [
         "buildings_spatial",
         "grid_assets",
-        "power_lines_spatial",
-        "power_lines_lod_overview",   # depends on power_lines_spatial
-        "power_lines_lod_mid",        # depends on power_lines_spatial
+        "power_lines_lod_overview",   # depends on power_lines_spatial TABLE
+        "power_lines_lod_mid",        # depends on power_lines_spatial TABLE
         "circuit_service_areas",
         "vegetation_risk_computed",
         "circuit_status_realtime",
