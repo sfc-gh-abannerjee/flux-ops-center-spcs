@@ -585,6 +585,58 @@ DERIVED_VIEWS = {
 
         COMMENT ON TABLE circuit_status_realtime IS 'Real-time circuit status derived from grid assets and substations';
     """,
+    
+    # =========================================================================
+    # 7-8. Power Line LOD (Level of Detail) Views
+    # =========================================================================
+    # The /api/spatial/layers/power-lines endpoint uses zoom-based LOD selection:
+    #   - zoom < 12  → power_lines_lod_overview (major lines, heavy simplification)
+    #   - zoom 12-14 → power_lines_lod_mid (all lines, moderate simplification)
+    #   - zoom >= 15  → power_lines_spatial (full detail)
+    #
+    # Without these LOD views, the endpoint returns 500 at default zoom levels.
+    # ST_Simplify reduces vertex count for faster rendering at low zoom levels.
+    # The tolerance parameter (in degrees, ~0.01° ≈ 1.1km) controls simplification.
+    # =========================================================================
+    
+    # 7. power_lines_lod_overview - Heavy simplification for metro-scale zoom
+    #    Only major lines (> 1000m), ~96% vertex reduction
+    #    Used by frontend at zoom < 12 (metro/regional view)
+    "power_lines_lod_overview": """
+        DROP VIEW IF EXISTS power_lines_lod_overview CASCADE;
+        CREATE VIEW power_lines_lod_overview AS 
+        SELECT 
+            power_line_id,
+            class,
+            length_meters,
+            centroid_lon,
+            centroid_lat,
+            ST_Simplify(geom, 0.01) AS geom
+        FROM power_lines_spatial
+        WHERE length_meters > 1000;
+        
+        COMMENT ON VIEW power_lines_lod_overview IS 
+            'LOD overview: major power lines (>1km) with heavy simplification for zoom < 12';
+    """,
+    
+    # 8. power_lines_lod_mid - Moderate simplification for neighborhood-scale zoom
+    #    All lines, ~88% vertex reduction
+    #    Used by frontend at zoom 12-14
+    "power_lines_lod_mid": """
+        DROP VIEW IF EXISTS power_lines_lod_mid CASCADE;
+        CREATE VIEW power_lines_lod_mid AS 
+        SELECT 
+            power_line_id,
+            class,
+            length_meters,
+            centroid_lon,
+            centroid_lat,
+            ST_Simplify(geom, 0.001) AS geom
+        FROM power_lines_spatial;
+        
+        COMMENT ON VIEW power_lines_lod_mid IS 
+            'LOD mid-detail: all power lines with moderate simplification for zoom 12-14';
+    """,
 }
 
 
@@ -805,8 +857,10 @@ def create_derived_views(conn_args: list) -> bool:
     These views depend on the raw tables being loaded first:
     - buildings_spatial: View over building_footprints with centroid coords
     - grid_assets: Alias view for grid_assets_cache
-    - vegetation_risk_computed: Materialized view with spatial risk analysis
     - power_lines_spatial: View over grid_power_lines with aliased columns
+    - power_lines_lod_overview: Simplified power lines for zoom < 12
+    - power_lines_lod_mid: Moderately simplified power lines for zoom 12-14
+    - vegetation_risk_computed: Materialized view with spatial risk analysis
     - circuit_service_areas: View with circuit boundary polygons
     - circuit_status_realtime: Table derived from grid_assets_cache + substations
     
@@ -818,12 +872,16 @@ def create_derived_views(conn_args: list) -> bool:
     print("These views are required by the FastAPI backend")
     print(f"{'='*60}")
     
-    # Order matters: simple views first, then materialized views (depends on base tables),
-    # then circuit_status_realtime (depends on grid_assets_cache + substations)
+    # Order matters: base views first, then views that depend on them.
+    # power_lines_lod_* MUST come after power_lines_spatial (they SELECT from it).
+    # vegetation_risk_computed is a materialized view with spatial joins (slowest).
+    # circuit_status_realtime depends on grid_assets_cache + substations.
     view_order = [
         "buildings_spatial",
         "grid_assets",
         "power_lines_spatial",
+        "power_lines_lod_overview",   # depends on power_lines_spatial
+        "power_lines_lod_mid",        # depends on power_lines_spatial
         "circuit_service_areas",
         "vegetation_risk_computed",
         "circuit_status_realtime",
