@@ -47,7 +47,7 @@
 #   COMPUTE_POOL           - SPCS compute pool name
 #   SNOWFLAKE_CONNECTION   - Snowflake CLI connection name
 #   SETUP_POSTGRES=false   - Set to skip Postgres setup
-#   SETUP_CORTEX=false     - Set to skip Cortex AI setup
+#   SETUP_CORTEX=false     - Set to skip Cortex AI / Grid Intelligence Agent setup
 # =============================================================================
 
 # Don't use set -e - we handle errors ourselves for rollback
@@ -98,7 +98,7 @@ POSTGRES_COMPUTE_FAMILY="${POSTGRES_COMPUTE_FAMILY:-STANDARD_M}"
 POSTGRES_STORAGE_GB="${POSTGRES_STORAGE_GB:-100}"
 POSTGRES_VERSION="${POSTGRES_VERSION:-17}"
 SETUP_POSTGRES="${SETUP_POSTGRES:-true}"
-SETUP_CORTEX="${SETUP_CORTEX:-false}"
+SETUP_CORTEX="${SETUP_CORTEX:-true}"
 POSTGRES_HOST=""
 POSTGRES_USER=""
 POSTGRES_PASSWORD=""
@@ -1649,9 +1649,90 @@ step_12_setup_cortex() {
         return
     fi
     
-    print_header "12" "Setup Cortex AI (Search Services)"
+    print_header "12" "Setup Cortex AI (Grid Intelligence Agent)"
     
-    # Check if Cortex Search SQL exists
+    # =========================================================================
+    # CORTEX AI DATA PIPELINE
+    # =========================================================================
+    # The Grid Intelligence Agent requires this chain of objects:
+    #
+    #   1. Source data tables (sample docs loaded from data/cortex_search_data/)
+    #      - PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS  (equipment manuals, procedures)
+    #      - ML_DEMO.COMPLIANCE_DOCS                  (NERC/ERCOT regulations)
+    #
+    #   2. Cortex Search Services (created from 07_create_cortex_search.sql)
+    #      - PRODUCTION.TECHNICAL_DOCS_SEARCH   (indexes technical manuals)
+    #      - ML_DEMO.COMPLIANCE_DOCS_SEARCH     (indexes compliance docs)
+    #
+    #   3. Cortex Agent (created from 08_create_cortex_agent.sql)
+    #      - SNOWFLAKE_INTELLIGENCE.AGENTS.GRID_INTELLIGENCE_AGENT
+    #      - Uses both search services as RAG tools
+    #
+    # The SPCS service connects to the agent via REST API using env vars:
+    #   CORTEX_AGENT_DATABASE, CORTEX_AGENT_SCHEMA, CORTEX_AGENT_NAME
+    # =========================================================================
+    
+    # --- Step 12a: Load sample data if source tables are empty ---
+    # The sample data files in data/cortex_search_data/ contain realistic
+    # technical documentation and compliance docs for the agent to search.
+    # Without this data, the search services have nothing to index.
+    
+    print_step "Checking source data for Cortex Search..."
+    
+    # Ensure schemas exist
+    snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+        "USE ROLE SYSADMIN; CREATE SCHEMA IF NOT EXISTS ${SNOWFLAKE_DATABASE}.PRODUCTION; CREATE SCHEMA IF NOT EXISTS ${SNOWFLAKE_DATABASE}.ML_DEMO;" >/dev/null 2>&1
+    
+    local tech_docs=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+        "SELECT COUNT(*) FROM ${SNOWFLAKE_DATABASE}.PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS" 2>/dev/null | grep -E "^[0-9]+" | head -1)
+    
+    local compliance_docs=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+        "SELECT COUNT(*) FROM ${SNOWFLAKE_DATABASE}.ML_DEMO.COMPLIANCE_DOCS" 2>/dev/null | grep -E "^[0-9]+" | head -1)
+    
+    # Auto-load sample data if tables are empty or don't exist
+    local tech_sample="$PROJECT_ROOT/data/cortex_search_data/technical_manuals_sample.sql"
+    local compliance_sample="$PROJECT_ROOT/data/cortex_search_data/compliance_docs.sql"
+    
+    if [ -z "$tech_docs" ] || [ "$tech_docs" = "0" ]; then
+        if [ -f "$tech_sample" ]; then
+            print_step "Loading technical documentation sample data..."
+            print_info "Source: data/cortex_search_data/technical_manuals_sample.sql"
+            if snow sql -c "$SNOWFLAKE_CONNECTION" -f "$tech_sample" \
+                -D "database=${SNOWFLAKE_DATABASE}" 2>&1 | tail -3; then
+                print_success "Technical documentation loaded"
+            else
+                print_warning "Failed to load technical docs - agent may have limited search capability"
+            fi
+        else
+            print_warning "Sample data not found: $tech_sample"
+            print_info "Technical documentation search will be unavailable"
+        fi
+    else
+        print_substep "Technical docs already loaded ($tech_docs rows)"
+    fi
+    
+    if [ -z "$compliance_docs" ] || [ "$compliance_docs" = "0" ]; then
+        if [ -f "$compliance_sample" ]; then
+            print_step "Loading compliance documentation sample data..."
+            print_info "Source: data/cortex_search_data/compliance_docs.sql"
+            if snow sql -c "$SNOWFLAKE_CONNECTION" -f "$compliance_sample" \
+                -D "database=${SNOWFLAKE_DATABASE}" 2>&1 | tail -3; then
+                print_success "Compliance documentation loaded"
+            else
+                print_warning "Failed to load compliance docs - agent may have limited search capability"
+            fi
+        else
+            print_warning "Sample data not found: $compliance_sample"
+            print_info "Compliance documentation search will be unavailable"
+        fi
+    else
+        print_substep "Compliance docs already loaded ($compliance_docs rows)"
+    fi
+    
+    # --- Step 12b: Create Cortex Search Services ---
+    # These services index the source tables and make them searchable via the agent.
+    # Indexing starts immediately and typically completes within a few minutes.
+    
     local cortex_sql="$PROJECT_ROOT/scripts/sql/07_create_cortex_search.sql"
     if [ ! -f "$cortex_sql" ]; then
         print_warning "Cortex Search SQL not found at $cortex_sql"
@@ -1660,44 +1741,37 @@ step_12_setup_cortex() {
     fi
     
     print_step "Creating Cortex Search services..."
-    print_info "This enables RAG-based chat for the Grid Intelligence Assistant"
+    print_info "This enables RAG-based search for the Grid Intelligence Assistant"
     
-    # Check if source tables exist
-    local tech_docs=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q \
-        "SELECT COUNT(*) FROM ${SNOWFLAKE_DATABASE}.PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS" 2>/dev/null | grep -E "^[0-9]+" | head -1)
-    
-    if [ -z "$tech_docs" ] || [ "$tech_docs" = "0" ]; then
-        print_warning "Source tables for Cortex Search not found"
-        print_info "You need to load technical documentation first"
-        print_substep "Tables needed: PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS, ML_DEMO.COMPLIANCE_DOCS"
-        STEP_12_DONE=true
-        return
-    fi
-    
-    # Run Cortex Search setup
     if snow sql -c "$SNOWFLAKE_CONNECTION" -f "$cortex_sql" \
         -D "database=${SNOWFLAKE_DATABASE}" \
         -D "warehouse=${SNOWFLAKE_WAREHOUSE}" 2>&1 | \
-        grep -E "^(CREATE|SELECT|Created)" | while read line; do print_substep "$line"; done; then
+        grep -E "^(CREATE|SELECT|Created|STATUS)" | while read line; do print_substep "$line"; done; then
         print_success "Cortex Search services created"
     else
         print_warning "Cortex Search setup had issues - check manually"
     fi
     
-    # Check for agent setup
+    # --- Step 12c: Create Grid Intelligence Agent ---
+    # The agent ties together the search services and provides the chat interface.
+    # It uses Claude Sonnet for orchestration and the search services for RAG.
+    
     local agent_sql="$PROJECT_ROOT/scripts/sql/08_create_cortex_agent.sql"
     if [ -f "$agent_sql" ]; then
-        if confirm "Also create Cortex Agent?" "n"; then
-            print_step "Creating Cortex Agent..."
-            snow sql -c "$SNOWFLAKE_CONNECTION" -f "$agent_sql" \
-                -D "database=${SNOWFLAKE_DATABASE}" \
-                -D "warehouse=${SNOWFLAKE_WAREHOUSE}" 2>&1 | \
-                grep -E "^(CREATE|SELECT)" | while read line; do print_substep "$line"; done
+        print_step "Creating Grid Intelligence Agent..."
+        print_info "Agent: SNOWFLAKE_INTELLIGENCE.AGENTS.GRID_INTELLIGENCE_AGENT"
+        if snow sql -c "$SNOWFLAKE_CONNECTION" -f "$agent_sql" \
+            -D "database=${SNOWFLAKE_DATABASE}" \
+            -D "warehouse=${SNOWFLAKE_WAREHOUSE}" 2>&1 | \
+            grep -E "^(CREATE|SELECT|STATUS|GRANT)" | while read line; do print_substep "$line"; done; then
+            print_success "Grid Intelligence Agent created"
+        else
+            print_warning "Agent creation had issues - check manually"
         fi
     fi
     
     STEP_12_DONE=true
-    print_success "Cortex AI setup completed"
+    print_success "Cortex AI setup completed - Grid Intelligence Agent is ready"
 }
 
 # =============================================================================
