@@ -1248,6 +1248,27 @@ step_9_create_postgres() {
         if [ -n "$POSTGRES_HOST" ]; then
             print_success "Postgres host: $POSTGRES_HOST"
         fi
+        
+        # Instance exists — still need credentials for steps 10 (external access) & 11 (PostGIS data load).
+        # On first run, these are captured after CREATE POSTGRES INSTANCE. On re-runs, the instance
+        # already exists so we must prompt again (Snowflake Postgres passwords cannot be retrieved).
+        POSTGRES_USER="${POSTGRES_USER:-application}"
+        
+        if [ -z "$POSTGRES_PASSWORD" ]; then
+            if [ "$INTERACTIVE_MODE" = true ]; then
+                echo ""
+                print_info "Postgres credentials are needed for external access setup and PostGIS data loading."
+                print_info "Enter the password that was shown when the instance was first created."
+                echo -ne "  ${YELLOW}?${NC} Postgres password: "
+                read -s POSTGRES_PASSWORD
+                echo ""
+            fi
+            
+            if [ -z "$POSTGRES_PASSWORD" ]; then
+                print_warning "No Postgres password provided — steps 10 and 11 may be skipped."
+                print_info "Set POSTGRES_PASSWORD env var or run interactively to enable PostGIS data loading."
+            fi
+        fi
     else
         echo ""
         echo -e "  ${RED}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
