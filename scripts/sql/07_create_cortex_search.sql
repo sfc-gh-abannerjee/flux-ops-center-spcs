@@ -30,7 +30,9 @@
 --   - Configure the SPCS service to use the agent
 -- =============================================================================
 
-USE ROLE SYSADMIN;
+-- IMPORTANT: Cortex Search service creation requires ACCOUNTADMIN role.
+--   SYSADMIN will fail with internal errors on some accounts.
+USE ROLE ACCOUNTADMIN;
 USE DATABASE IDENTIFIER('<% database %>');
 USE WAREHOUSE IDENTIFIER('<% warehouse %>');
 

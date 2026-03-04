@@ -4,6 +4,10 @@
 -- This file contains sample technical documentation chunks for the 
 -- Grid Intelligence Agent's document search feature.
 --
+-- IMPORTANT: This is Snowflake SQL, not PostgreSQL.
+--   - Uses TRUNCATE + INSERT (not ON CONFLICT) for idempotent loading
+--   - Uses Jinja2 template variables (<% database %>) for Snow CLI
+--
 -- Usage:
 --   snow sql -f data/cortex_search_data/technical_manuals_sample.sql \
 --       -D "database=FLUX_DB" -c your_connection_name
@@ -23,6 +27,9 @@ CREATE TABLE IF NOT EXISTS TECHNICAL_MANUALS_PDF_CHUNKS (
     LANGUAGE_NAME VARCHAR(50) DEFAULT 'English',
     LANGUAGE_NATIVE VARCHAR(50) DEFAULT 'English'
 );
+
+-- Truncate to make this script idempotent (safe to re-run)
+TRUNCATE TABLE IF EXISTS TECHNICAL_MANUALS_PDF_CHUNKS;
 
 -- Insert sample technical documentation chunks
 INSERT INTO TECHNICAL_MANUALS_PDF_CHUNKS (CHUNK_ID, DOCUMENT_ID, CHUNK_TEXT, DOCUMENT_TYPE)
@@ -52,7 +59,6 @@ VALUES
 (12, 'DOC_6', 'SCADA System Architecture - DNP3 Protocol Implementation. Master Station Configuration: Poll interval for critical measurements (breaker status, transformer load): 2 seconds. Poll interval for analog values (voltage, current, power): 10 seconds. Event data polling: Integrity poll every 60 seconds with change-of-state reporting enabled. DNP3 Settings for RTU/IED: Device address: Unique per device (1-65519). Confirm mode: Enabled for control operations. Application layer timeout: 5 seconds. Link layer retry: 3 attempts with 2-second interval. Unsolicited response: Enabled for Class 1 (critical alarms) and Class 2 (normal alarms). Security: Enable Secure Authentication (SA) per IEEE 1815 for all critical infrastructure. Control Command Structure: CROB (Control Relay Output Block) with Select-Before-Operate (SBO) required for all breaker operations. Trip-Close-Trip sequence for transformer de-energization. Response time requirement: Control operation acknowledgment within 2 seconds for distribution automation schemes.', 'System Configuration'),
 
 (13, 'DOC_6', 'Cybersecurity Requirements - NERC CIP Compliance for SCADA Systems. CIP-005: Electronic Security Perimeter (ESP) must be defined for all SCADA networks. Implement firewall rules permitting only required DNP3 traffic (TCP/UDP port 20000). All remote access requires multi-factor authentication and encrypted VPN tunnel. CIP-007: System hardening requirements - disable unnecessary services, apply security patches within 35 days of vendor release. Antivirus/whitelisting required on all Windows-based SCADA components. CIP-010: Configuration management baseline must document all authorized software, ports, and services. Any deviation requires formal change control process. CIP-011: Information protection - SCADA system diagrams and IP addresses classified as BES Cyber System Information (BCSI). Storage and transmission requires encryption (AES-256 minimum). Incident Response: Reportable cyber incidents must be reported to E-ISAC within 1 hour of detection. Preserve forensic evidence by capturing system logs, network traffic, and memory dumps before remediation activities.', 'Security Compliance')
-
-ON CONFLICT (CHUNK_ID) DO NOTHING;
+;
 
 SELECT 'Loaded ' || COUNT(*) || ' technical manual chunks' AS STATUS FROM TECHNICAL_MANUALS_PDF_CHUNKS;

@@ -10,10 +10,13 @@
 --      - <database>.PRODUCTION.TECHNICAL_DOCS_SEARCH
 --      - <database>.ML_DEMO.COMPLIANCE_DOCS_SEARCH
 --   2. Warehouse must be available for agent execution
---   3. (Optional) Semantic model for text-to-SQL queries
+--
+-- IMPORTANT: Uses the FROM SPECIFICATION $$ ... $$ syntax with YAML.
+--   The older property-based syntax (MODELS = ..., TOOLS = ...) is NOT supported.
+--   See: https://docs.snowflake.com/en/sql-reference/sql/create-agent
 --
 -- Variables (Jinja2 syntax for Snow CLI):
---   <% database %>          - Database containing search services
+--   <% database %>          - Database containing search services (e.g., FLUX_DB)
 --   <% warehouse %>         - Warehouse for agent queries
 --   <% agent_database %>    - Database to create agent in (default: SNOWFLAKE_INTELLIGENCE)
 --   <% agent_schema %>      - Schema to create agent in (default: AGENTS)
@@ -23,20 +26,18 @@
 --   - A Cortex Agent with access to:
 --     1. Technical documentation search (equipment manuals, procedures)
 --     2. Compliance documentation search (NERC, ERCOT regulations)
---     3. (Optional) Semantic model for SQL queries on grid data
 --
 -- Usage:
 --   snow sql -f scripts/sql/08_create_cortex_agent.sql \
 --       -D "database=FLUX_DB" \
 --       -D "warehouse=FLUX_WH" \
---       -D "agent_database=SNOWFLAKE_INTELLIGENCE" \
---       -D "agent_schema=AGENTS" \
---       -D "agent_name=GRID_INTELLIGENCE_AGENT" \
 --       -c your_connection_name
 --
 -- After running this script:
---   - Deploy SPCS service (03_create_service.sql) with matching agent config
---   - Or update existing service with: ALTER SERVICE ... SET env vars
+--   - The SPCS service auto-discovers the agent using env vars:
+--     CORTEX_AGENT_DATABASE (default: SNOWFLAKE_INTELLIGENCE)
+--     CORTEX_AGENT_SCHEMA   (default: AGENTS)
+--     CORTEX_AGENT_NAME     (default: GRID_INTELLIGENCE_AGENT)
 -- =============================================================================
 
 USE ROLE ACCOUNTADMIN;
@@ -55,64 +56,60 @@ USE WAREHOUSE IDENTIFIER('<% warehouse %>');
 -- =============================================================================
 -- SECTION 2: CREATE GRID INTELLIGENCE AGENT
 -- =============================================================================
--- This agent is designed for utility grid operations teams to:
--- - Search technical documentation for equipment troubleshooting
--- - Look up NERC/ERCOT compliance requirements
--- - Query grid data using natural language (if semantic model available)
+-- Uses FROM SPECIFICATION with YAML to define the agent's tools, instructions,
+-- and resource bindings. The agent orchestrates between two Cortex Search
+-- services for technical docs and compliance regulations.
 
-CREATE OR REPLACE CORTEX AGENT IDENTIFIER('<% agent_name | default("GRID_INTELLIGENCE_AGENT") %>')
-    COMMENT = 'Grid Intelligence Assistant for Flux Operations Center - searches technical docs and compliance regulations'
-    -- Agent orchestration model
-    MODELS = ('claude-sonnet-4-5')
-    -- Search tools for RAG
-    TOOLS = (
-        -- Technical documentation search
-        (
-            TYPE = 'CORTEX_SEARCH',
-            NAME = 'search_technical_docs',
-            DESCRIPTION = 'Search technical manuals, equipment documentation, maintenance procedures, and operational guides. Use this for questions about equipment specifications, troubleshooting, or maintenance.',
-            CORTEX_SEARCH_SERVICE = '<% database %>.PRODUCTION.TECHNICAL_DOCS_SEARCH',
-            ID_COLUMN = 'CHUNK_ID',
-            TITLE_COLUMN = 'DOCUMENT_TYPE',
-            MAX_RESULTS = 5
-        ),
-        -- Compliance documentation search
-        (
-            TYPE = 'CORTEX_SEARCH',
-            NAME = 'search_compliance_docs',
-            DESCRIPTION = 'Search NERC, ERCOT, and regulatory compliance documents. Use this for questions about regulations, standards, compliance requirements, TPL-001, FAC-003, EOP-011, CIP standards.',
-            CORTEX_SEARCH_SERVICE = '<% database %>.ML_DEMO.COMPLIANCE_DOCS_SEARCH',
-            ID_COLUMN = 'DOC_ID',
-            TITLE_COLUMN = 'TITLE',
-            MAX_RESULTS = 5
-        )
-    )
-    PROFILE = (
-        DISPLAY_NAME = 'Grid Intelligence',
-        AVATAR = 'ChartAgentIcon',
-        COLOR = 'blue'
-    )
-    INSTRUCTIONS = (
-        RESPONSE = 'Provide clear, actionable answers based on the documentation. When citing compliance requirements, include the specific standard number (e.g., TPL-001-5). For technical issues, include relevant equipment identifiers and procedures.',
-        ORCHESTRATION = 'You are the Grid Intelligence Assistant for utility operations. Help users find information in technical documentation and compliance regulations. Always search relevant sources before answering. Be concise and cite your sources.'
-    )
-    BUDGET = (
-        TOKENS = 4096,
-        SECONDS = 60
-    );
+CREATE OR REPLACE AGENT IDENTIFIER('<% agent_name | default("GRID_INTELLIGENCE_AGENT") %>')
+  COMMENT = 'Grid Intelligence Assistant for Flux Operations Center - searches technical docs and compliance regulations'
+  PROFILE = '{"display_name": "Grid Intelligence", "avatar": "ChartAgentIcon", "color": "blue"}'
+  FROM SPECIFICATION
+$$
+models:
+  orchestration: claude-sonnet-4-5
+
+orchestration:
+  budget:
+    seconds: 60
+    tokens: 4096
+
+instructions:
+  response: "Provide clear, actionable answers based on the documentation. When citing compliance requirements, include the specific standard number (e.g., TPL-001-5). For technical issues, include relevant equipment identifiers and procedures."
+  orchestration: "You are the Grid Intelligence Assistant for utility operations. Help users find information in technical documentation and compliance regulations. Always search relevant sources before answering. Be concise and cite your sources."
+
+tools:
+  - tool_spec:
+      type: cortex_search
+      name: search_technical_docs
+      description: "Search technical manuals, equipment documentation, maintenance procedures, and operational guides. Use this for questions about equipment specifications, troubleshooting, or maintenance."
+  - tool_spec:
+      type: cortex_search
+      name: search_compliance_docs
+      description: "Search NERC, ERCOT, and regulatory compliance documents including TPL-001, FAC-003, EOP-011, CIP standards."
+
+tool_resources:
+  search_technical_docs:
+    name: "<% database %>.PRODUCTION.TECHNICAL_DOCS_SEARCH"
+    max_results: "5"
+    id_column: "CHUNK_ID"
+    title_column: "DOCUMENT_TYPE"
+  search_compliance_docs:
+    name: "<% database %>.ML_DEMO.COMPLIANCE_DOCS_SEARCH"
+    max_results: "5"
+    id_column: "DOC_ID"
+    title_column: "TITLE"
+$$;
 
 SELECT 'Created Agent: <% agent_database | default("SNOWFLAKE_INTELLIGENCE") %>.<% agent_schema | default("AGENTS") %>.<% agent_name | default("GRID_INTELLIGENCE_AGENT") %>' AS STATUS;
 
 -- =============================================================================
 -- SECTION 3: GRANT PERMISSIONS
 -- =============================================================================
--- Grant access so the SPCS service can invoke the agent
+-- Grant access so the SPCS service (running as PUBLIC role) can invoke the agent
 
 GRANT USAGE ON DATABASE IDENTIFIER('<% agent_database | default("SNOWFLAKE_INTELLIGENCE") %>') TO ROLE PUBLIC;
 GRANT USAGE ON SCHEMA IDENTIFIER('<% agent_database | default("SNOWFLAKE_INTELLIGENCE") %>.<% agent_schema | default("AGENTS") %>') TO ROLE PUBLIC;
-
--- Grant usage on the agent itself
-GRANT USAGE ON CORTEX AGENT IDENTIFIER('<% agent_name | default("GRID_INTELLIGENCE_AGENT") %>') TO ROLE PUBLIC;
+GRANT USAGE ON AGENT IDENTIFIER('<% agent_name | default("GRID_INTELLIGENCE_AGENT") %>') TO ROLE PUBLIC;
 
 -- Grant usage on source search services
 GRANT USAGE ON CORTEX SEARCH SERVICE <% database %>.PRODUCTION.TECHNICAL_DOCS_SEARCH TO ROLE PUBLIC;
@@ -124,56 +121,13 @@ SELECT 'Granted permissions to PUBLIC role' AS STATUS;
 -- SECTION 4: VERIFICATION
 -- =============================================================================
 
-SELECT 
-    'Grid Intelligence Agent Created' AS STEP,
-    '<% agent_database | default("SNOWFLAKE_INTELLIGENCE") %>.<% agent_schema | default("AGENTS") %>.<% agent_name | default("GRID_INTELLIGENCE_AGENT") %>' AS AGENT_FQN,
-    '<% database %>.PRODUCTION.TECHNICAL_DOCS_SEARCH' AS TECHNICAL_SEARCH,
-    '<% database %>.ML_DEMO.COMPLIANCE_DOCS_SEARCH' AS COMPLIANCE_SEARCH,
-    'Configure SPCS service with matching CORTEX_AGENT_* env vars' AS NEXT_ACTION;
-
--- Show the created agent
-DESCRIBE AGENT IDENTIFIER('<% agent_name | default("GRID_INTELLIGENCE_AGENT") %>');
-
--- =============================================================================
--- SECTION 5: CONFIGURE SPCS SERVICE (Example)
--- =============================================================================
--- After creating the agent, update your SPCS service to use it:
---
---   ALTER SERVICE FLUX_DB.APPLICATIONS.FLUX_OPS_CENTER SUSPEND;
---   
---   -- Recreate with correct agent config
---   DROP SERVICE FLUX_DB.APPLICATIONS.FLUX_OPS_CENTER;
---   CREATE SERVICE FLUX_DB.APPLICATIONS.FLUX_OPS_CENTER
---   IN COMPUTE POOL FLUX_INTERACTIVE_POOL
---   FROM SPECIFICATION $$
---   spec:
---     containers:
---     - name: flux-ops-center
---       image: /flux_db/applications/flux_ops_center_repo/flux-ops-center:latest
---       env:
---         SNOWFLAKE_WAREHOUSE: "FLUX_WH"
---         CORTEX_AGENT_DATABASE: "<% agent_database | default('SNOWFLAKE_INTELLIGENCE') %>"
---         CORTEX_AGENT_SCHEMA: "<% agent_schema | default('AGENTS') %>"
---         CORTEX_AGENT_NAME: "<% agent_name | default('GRID_INTELLIGENCE_AGENT') %>"
---     endpoints:
---     - name: ui
---       port: 8080
---       public: true
---   $$
---   EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_POSTGRES_INTEGRATION, GOOGLE_FONTS_EAI)
---   QUERY_WAREHOUSE = FLUX_WH;
+SHOW AGENTS LIKE 'GRID_INTELLIGENCE_AGENT';
 
 -- =============================================================================
 -- TROUBLESHOOTING
 -- =============================================================================
--- Test the agent directly:
---   SELECT SNOWFLAKE.CORTEX.AGENT(
---       '<% agent_database | default("SNOWFLAKE_INTELLIGENCE") %>.<% agent_schema | default("AGENTS") %>.<% agent_name | default("GRID_INTELLIGENCE_AGENT") %>',
---       'What are the NERC requirements for vegetation management?'
---   );
---
 -- Check agent exists:
---   SHOW CORTEX AGENTS IN SCHEMA <% agent_database %>.<% agent_schema %>;
+--   SHOW AGENTS IN SCHEMA SNOWFLAKE_INTELLIGENCE.AGENTS;
 --
 -- Check search services are accessible:
 --   SHOW CORTEX SEARCH SERVICES IN DATABASE <% database %>;

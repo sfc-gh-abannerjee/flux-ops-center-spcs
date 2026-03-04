@@ -4,6 +4,10 @@
 -- This file contains sample NERC/ERCOT compliance documents for the 
 -- Grid Intelligence Agent's Compliance Search feature.
 --
+-- IMPORTANT: This is Snowflake SQL, not PostgreSQL.
+--   - Uses TRUNCATE + INSERT (not ON CONFLICT) for idempotent loading
+--   - Uses Jinja2 template variables (<% database %>) for Snow CLI
+--
 -- Usage:
 --   snow sql -f data/cortex_search_data/compliance_docs.sql \
 --       -D "database=FLUX_DB" -c your_connection_name
@@ -25,6 +29,9 @@ CREATE TABLE IF NOT EXISTS COMPLIANCE_DOCS (
     KEYWORDS VARCHAR(16777216),
     CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
+
+-- Truncate to make this script idempotent (safe to re-run)
+TRUNCATE TABLE IF EXISTS COMPLIANCE_DOCS;
 
 -- Insert compliance documents
 INSERT INTO COMPLIANCE_DOCS (DOC_ID, DOC_TYPE, TITLE, CONTENT, CATEGORY, EFFECTIVE_DATE, REVISION, APPLICABILITY, KEYWORDS)
@@ -255,7 +262,6 @@ Violation of these standards may result in equipment damage and potential cascad
 'Internal Standards', '2024-01-15', '2024.1',
 'Distribution Operations, Engineering, Planning',
 'transformer loading, thermal limits, summer peak, cascade prevention')
-
-ON CONFLICT (DOC_ID) DO NOTHING;
+;
 
 SELECT 'Loaded ' || COUNT(*) || ' compliance documents' AS STATUS FROM COMPLIANCE_DOCS;
