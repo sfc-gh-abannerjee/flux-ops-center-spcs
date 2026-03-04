@@ -1167,15 +1167,17 @@ CREATE TABLE IF NOT EXISTS POSTGRES_CONNECTION_CONFIG (
     UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
 
--- Store the Postgres host from the SHOW command result
--- We need to run this separately since MERGE doesn't work with RESULT_SCAN directly
+-- Store the Postgres host from the SHOW command result.
+-- The flow operator (->> ) pipes SHOW output into the next statement.
+-- Snowflake does not support PostgreSQL's ON CONFLICT ... DO UPDATE syntax,
+-- so we use DELETE + INSERT to upsert the config row.
 SHOW POSTGRES INSTANCES LIKE 'FLUX_OPS_POSTGRES'
 ->>
+DELETE FROM POSTGRES_CONNECTION_CONFIG WHERE CONFIG_KEY = 'POSTGRES_HOST';
 INSERT INTO POSTGRES_CONNECTION_CONFIG (CONFIG_KEY, CONFIG_VALUE, UPDATED_AT)
 SELECT 'POSTGRES_HOST', "host", CURRENT_TIMESTAMP()
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
-WHERE "name" = 'FLUX_OPS_POSTGRES'
-ON CONFLICT (CONFIG_KEY) DO UPDATE SET CONFIG_VALUE = EXCLUDED.CONFIG_VALUE, UPDATED_AT = CURRENT_TIMESTAMP();
+WHERE "name" = 'FLUX_OPS_POSTGRES';
 
 -- Helper view to get the Postgres host from config table (not RESULT_SCAN)
 CREATE OR REPLACE VIEW V_POSTGRES_HOST AS

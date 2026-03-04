@@ -1,10 +1,36 @@
+# =============================================================================
+# Flux Ops Center - Development Service Spec
+# =============================================================================
+# Single-instance configuration for development and standalone quickstart.
+#
+# This file is a reference template — the quickstart.sh script generates the
+# actual spec inline. If deploying manually via 03_create_service.sql, use
+# Jinja2 variables instead of the <placeholder> values below.
+#
+# For production HA configuration, see service_spec_prod.yaml.
+# =============================================================================
 spec:
   containers:
   - name: flux-ops-center
     image: /<database>/applications/<repo>/flux_ops_center:latest
     env:
+      # --- Snowflake configuration ---
       SNOWFLAKE_DATABASE: <your_database>
       SNOWFLAKE_WAREHOUSE: <your_warehouse>
+      # Schema env vars — the backend hardcodes APPLICATIONS as its default schema,
+      # and references ML_DEMO / CASCADE_ANALYSIS directly in query strings.
+      # These are passed for completeness and future flexibility.
+      SNOWFLAKE_SCHEMA: PRODUCTION
+      APPLICATIONS_SCHEMA: APPLICATIONS
+      ML_SCHEMA: ML_DEMO
+      CASCADE_SCHEMA: CASCADE_ANALYSIS
+      # --- Cortex Agent configuration (Grid Intelligence Assistant) ---
+      # The agent must exist before the service starts. Created by step 12
+      # of quickstart.sh or via scripts/sql/08_create_cortex_agent.sql.
+      CORTEX_AGENT_DATABASE: SNOWFLAKE_INTELLIGENCE
+      CORTEX_AGENT_SCHEMA: AGENTS
+      CORTEX_AGENT_NAME: GRID_INTELLIGENCE_AGENT
+      # --- Postgres configuration (dual-backend spatial queries) ---
       VITE_POSTGRES_HOST: <your_postgres_instance>.postgres.snowflake.app
       VITE_POSTGRES_PORT: "5432"
       VITE_POSTGRES_DATABASE: postgres
@@ -20,11 +46,8 @@ spec:
     readinessProbe:
       port: 8080
       path: /
-  
+
   endpoints:
-  - name: ui
+  - name: app
     port: 8080
     public: true
-  
-  # Development config: Single instance
-  # For production HA, use service_spec_prod.yaml with min_instances: 2

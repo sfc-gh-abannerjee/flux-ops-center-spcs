@@ -8,6 +8,12 @@
 --   - Uses TRUNCATE + INSERT (not ON CONFLICT) for idempotent loading
 --   - Uses Jinja2 template variables (<% database %>) for Snow CLI
 --
+-- PREREQUISITE:
+--   The TECHNICAL_MANUALS_PDF_CHUNKS table must already exist in PRODUCTION schema.
+--   It is created by 00_standalone_quickstart.sql (canonical DDL) or by quickstart.sh step 3.
+--   DO NOT redefine the table here — the canonical DDL includes columns (EMBEDDING,
+--   CHUNK_INDEX, TOKEN_COUNT, etc.) that this sample INSERT does not populate.
+--
 -- Usage:
 --   snow sql -f data/cortex_search_data/technical_manuals_sample.sql \
 --       -D "database=FLUX_DB" -c your_connection_name
@@ -16,16 +22,23 @@
 USE DATABASE IDENTIFIER('<% database %>');
 USE SCHEMA PRODUCTION;
 
--- Create the technical manuals table if it doesn't exist
+-- Create the table if it doesn't already exist (minimal schema for sample data loading).
+-- NOTE: 00_standalone_quickstart.sql defines a richer schema with EMBEDDING, CHUNK_INDEX,
+-- TOKEN_COUNT, DOCUMENT_TITLE, and CREATED_AT columns. If that script has already run,
+-- this CREATE TABLE IF NOT EXISTS is a safe no-op. The INSERT below only populates
+-- the columns common to both schemas.
 CREATE TABLE IF NOT EXISTS TECHNICAL_MANUALS_PDF_CHUNKS (
-    CHUNK_ID NUMBER PRIMARY KEY,
-    DOCUMENT_ID VARCHAR(100),
-    CHUNK_TEXT VARCHAR(16777216),
+    CHUNK_ID VARCHAR(100) PRIMARY KEY,
+    DOCUMENT_ID VARCHAR(100) NOT NULL,
     DOCUMENT_TYPE VARCHAR(200),
+    DOCUMENT_TITLE VARCHAR(500),
     SOURCE_SYSTEM VARCHAR(100) DEFAULT 'TECHNICAL_MANUALS_PDF',
-    LANGUAGE VARCHAR(10) DEFAULT 'en',
-    LANGUAGE_NAME VARCHAR(50) DEFAULT 'English',
-    LANGUAGE_NATIVE VARCHAR(50) DEFAULT 'English'
+    LANGUAGE VARCHAR(20) DEFAULT 'en',
+    CHUNK_INDEX INT,
+    CHUNK_TEXT TEXT NOT NULL,
+    TOKEN_COUNT INT,
+    EMBEDDING VECTOR(FLOAT, 1024),
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
 
 -- Truncate to make this script idempotent (safe to re-run)

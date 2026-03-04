@@ -1,27 +1,50 @@
+# =============================================================================
+# Flux Ops Center - Production Service Spec (High Availability)
+# =============================================================================
+# Multi-instance configuration that eliminates cold-start delays (30-45s).
+#
+# Key differences from service.yaml (development):
+#   - min_instances: 2  — keeps at least 2 containers warm at all times
+#   - max_instances: 5  — scales out under load
+#   - Higher memory/CPU limits for production workloads
+#
+# This file is a reference template. When deploying via 03_create_service.sql,
+# use Jinja2 variables instead of the <placeholder> values.
+# =============================================================================
 spec:
   containers:
   - name: flux-ops-center
     image: /<database>/applications/<repo>/flux_ops_center:<tag>
     env:
+      # --- Snowflake configuration ---
       SNOWFLAKE_DATABASE: <your_database>
       SNOWFLAKE_WAREHOUSE: <your_warehouse>
+      SNOWFLAKE_SCHEMA: PRODUCTION
+      APPLICATIONS_SCHEMA: APPLICATIONS
+      ML_SCHEMA: ML_DEMO
+      CASCADE_SCHEMA: CASCADE_ANALYSIS
+      # --- Cortex Agent configuration (Grid Intelligence Assistant) ---
+      CORTEX_AGENT_DATABASE: SNOWFLAKE_INTELLIGENCE
+      CORTEX_AGENT_SCHEMA: AGENTS
+      CORTEX_AGENT_NAME: GRID_INTELLIGENCE_AGENT
+      # --- Postgres configuration (dual-backend spatial queries) ---
       VITE_POSTGRES_HOST: <your_postgres_instance>.postgres.snowflake.app
       VITE_POSTGRES_PORT: "5432"
       VITE_POSTGRES_DATABASE: postgres
       VITE_POSTGRES_USER: <your_username>
       VITE_POSTGRES_PASSWORD: <your_password>
     resources:
-      limits:
-        memory: 28Gi
-        cpu: "6"
       requests:
         memory: 0.5Gi
         cpu: "0.5"
+      limits:
+        memory: 28Gi
+        cpu: "6"
     readinessProbe:
       port: 8080
       path: /
   endpoints:
-  - name: ui
+  - name: app
     port: 8080
     public: true
   # High availability: minimum 2 instances eliminates cold start delays (30-45s)

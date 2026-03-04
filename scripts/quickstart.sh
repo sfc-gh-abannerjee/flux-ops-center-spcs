@@ -1113,6 +1113,12 @@ step_8_deploy_service() {
     
     print_step "Generating deployment SQL..."
     
+    # Build External Access Integration list based on what's configured
+    local EAI_LIST="FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI"
+    if [ "$SETUP_POSTGRES" = "true" ] && [ -n "$POSTGRES_HOST" ]; then
+        EAI_LIST="FLUX_POSTGRES_INTEGRATION, FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI"
+    fi
+    
     # Generate SQL file
     cat > "$SQL_FILE" << EOF
 -- =============================================================================
@@ -1129,6 +1135,9 @@ CREATE IMAGE REPOSITORY IF NOT EXISTS ${IMAGE_REPO}
     COMMENT = 'Image repository for Flux Operations Center';
 
 -- Create SPCS Service
+-- NOTE: Postgres and Cortex Agent env vars are required for full functionality.
+--   Without VITE_POSTGRES_*, the map will show no PostGIS layers.
+--   Without CORTEX_AGENT_*, the Grid Intelligence chat won't connect to the agent.
 CREATE SERVICE IF NOT EXISTS ${SERVICE_NAME}
     IN COMPUTE POOL ${COMPUTE_POOL}
     FROM SPECIFICATION \$\$
@@ -1137,10 +1146,19 @@ spec:
     - name: flux-ops-center
       image: /${SNOWFLAKE_DATABASE}/${SNOWFLAKE_SCHEMA}/${IMAGE_REPO}/flux_ops_center:${IMAGE_TAG}
       env:
+        # Snowflake configuration
         SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE}
-        SNOWFLAKE_SCHEMA: ${SNOWFLAKE_SCHEMA}
         SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE}
-        SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE}
+        # Postgres configuration (dual-backend architecture for PostGIS spatial queries)
+        VITE_POSTGRES_HOST: "${POSTGRES_HOST}"
+        VITE_POSTGRES_PORT: "5432"
+        VITE_POSTGRES_DATABASE: postgres
+        VITE_POSTGRES_USER: "${POSTGRES_USER:-application}"
+        VITE_POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+        # Cortex Agent configuration (Grid Intelligence Assistant)
+        CORTEX_AGENT_DATABASE: SNOWFLAKE_INTELLIGENCE
+        CORTEX_AGENT_SCHEMA: AGENTS
+        CORTEX_AGENT_NAME: GRID_INTELLIGENCE_AGENT
       resources:
         requests:
           cpu: 2
@@ -1152,11 +1170,9 @@ spec:
     - name: app
       port: 8080
       public: true
-    - name: api
-      port: 8000
-      public: true
 \$\$
-    EXTERNAL_ACCESS_INTEGRATIONS = (FLUX_CARTO_INTEGRATION, GOOGLE_FONTS_EAI)
+    EXTERNAL_ACCESS_INTEGRATIONS = (${EAI_LIST})
+    QUERY_WAREHOUSE = ${SNOWFLAKE_WAREHOUSE}
     COMMENT = 'Flux Operations Center - Real-time Grid Visualization';
 
 SELECT SYSTEM\$GET_SERVICE_STATUS('${SERVICE_NAME}');

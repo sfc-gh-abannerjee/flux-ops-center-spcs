@@ -13,7 +13,7 @@ export CONN="your_connection"
 
 # 1. Create image repository
 snow sql -c $CONN -f scripts/sql/01_image_repository.sql \
-    -D "database=FLUX_DB" -D "schema=PUBLIC" -D "image_repo=FLUX_OPS_CENTER_IMAGES"
+    -D "database=FLUX_DB" -D "schema=APPLICATIONS" -D "image_repo=FLUX_OPS_CENTER_IMAGES"
 
 # 2. Push Docker image (see Docker guide)
 
@@ -22,13 +22,15 @@ snow sql -c $CONN -f scripts/sql/02_compute_pool.sql \
     -D "database=FLUX_DB" -D "compute_pool=FLUX_OPS_CENTER_POOL" \
     -D "instance_family=CPU_X64_S" -D "min_nodes=1" -D "max_nodes=2"
 
-# 4. Deploy service
+# 4. Deploy service (replace <postgres_host> and <postgres_password> with your values)
 snow sql -c $CONN -f scripts/sql/03_create_service.sql \
-    -D "database=FLUX_DB" -D "schema=PUBLIC" \
+    -D "database=FLUX_DB" -D "schema=APPLICATIONS" \
     -D "service_name=FLUX_OPS_CENTER_SERVICE" \
     -D "compute_pool=FLUX_OPS_CENTER_POOL" \
     -D "image_repo=FLUX_OPS_CENTER_IMAGES" \
-    -D "image_tag=latest" -D "warehouse=FLUX_WH"
+    -D "image_tag=latest" -D "warehouse=FLUX_WH" \
+    -D "postgres_host=<postgres_host>" \
+    -D "postgres_password=<postgres_password>"
 
 # 5. Validate
 snow sql -c $CONN -f scripts/sql/04_validation.sql \

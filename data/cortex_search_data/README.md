@@ -78,14 +78,19 @@ SHOW AGENTS IN SCHEMA SNOWFLAKE_INTELLIGENCE.AGENTS;
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `CHUNK_ID` | NUMBER | Primary key — integer chunk identifier (1, 2, 3, ...) |
+| `CHUNK_ID` | VARCHAR(100) | Primary key — unique chunk identifier |
 | `DOCUMENT_ID` | VARCHAR(100) | Parent document ID (e.g., `DOC_1`) |
 | `DOCUMENT_TYPE` | VARCHAR(200) | Type: Maintenance Procedure, Equipment Guide, etc. |
-| `CHUNK_TEXT` | VARCHAR | Full text content of the chunk |
+| `DOCUMENT_TITLE` | VARCHAR(500) | Full document title |
+| `CHUNK_TEXT` | TEXT | Full text content of the chunk |
+| `CHUNK_INDEX` | INT | Order within the parent document |
 | `SOURCE_SYSTEM` | VARCHAR(100) | Default: `TECHNICAL_MANUALS_PDF` |
-| `LANGUAGE` | VARCHAR(10) | Language code (default: `en`) |
-| `LANGUAGE_NAME` | VARCHAR(50) | Language name (default: `English`) |
-| `LANGUAGE_NATIVE` | VARCHAR(50) | Native language name (default: `English`) |
+| `LANGUAGE` | VARCHAR(20) | Language code (default: `en`) |
+| `TOKEN_COUNT` | INT | Token count for the chunk |
+| `EMBEDDING` | VECTOR(FLOAT, 1024) | Vector embedding (populated by AI processing) |
+| `CREATED_AT` | TIMESTAMP_NTZ | Row creation timestamp |
+
+> **Note**: The sample data INSERT only populates `CHUNK_ID`, `DOCUMENT_ID`, `CHUNK_TEXT`, and `DOCUMENT_TYPE`. Other columns use defaults or remain NULL.
 
 ### COMPLIANCE_DOCS
 
