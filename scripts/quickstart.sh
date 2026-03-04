@@ -890,6 +890,29 @@ step_2_init_database() {
         exit 1
     fi
     
+    # -------------------------------------------------------------------------
+    # Create Cascade Analysis ML Objects
+    # -------------------------------------------------------------------------
+    # The Cascade Analysis tab requires ML tables (GRID_NODES, GRID_EDGES,
+    # NODE_CENTRALITY_FEATURES_V2, GNN_PREDICTIONS, PRECOMPUTED_CASCADES, etc.)
+    # populated with synthetic grid data. This script is fully idempotent —
+    # it drops and recreates tables on each run, so it's safe to re-run.
+    # -------------------------------------------------------------------------
+    local cascade_sql="$PROJECT_ROOT/scripts/sql/10_create_cascade_ml_data.sql"
+    if [ -f "$cascade_sql" ]; then
+        print_step "Creating Cascade Analysis ML objects..."
+        print_info "This populates grid topology, centrality features, and precomputed cascades"
+        if snow sql -c "$SNOWFLAKE_CONNECTION" -f "$cascade_sql" 2>&1 | \
+            grep -E "^(CREATE|DROP|INSERT|TRUNCATE|number|row)" | tail -20 | while read line; do print_substep "$line"; done; then
+            print_success "Cascade Analysis ML objects created"
+        else
+            print_warning "Some Cascade Analysis SQL statements may have failed — check output above"
+        fi
+    else
+        print_warning "Cascade ML script not found at $cascade_sql"
+        print_info "Cascade Analysis tab may not work without ML objects"
+    fi
+    
     STEP_2_DONE=true
     print_success "Database initialization completed"
 }
