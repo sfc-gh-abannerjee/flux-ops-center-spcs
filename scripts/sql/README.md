@@ -40,19 +40,69 @@ snow sql -c $CONN -f scripts/sql/04_validation.sql \
 
 ## Script Order
 
-| # | Script | Purpose |
-|---|--------|---------|
-| 0 | `00_standalone_quickstart.sql` | Create database + sample data |
-| 1 | `01_image_repository.sql` | Create image repository |
-| 2 | `02_compute_pool.sql` | Create compute pool |
-| 3 | `03_create_service.sql` | Deploy SPCS service |
-| 4 | `04_validation.sql` | Validate deployment |
-| 5 | `05_postgres_setup.sql` | Set up Postgres |
-| 5a | `05a_external_access.sql` | External access integration |
-| 6 | `06_postgres_sync.sql` | Sync procedures |
-| 7 | `07_create_cortex_search.sql` | Cortex Search services |
-| 8 | `08_create_cortex_agent.sql` | Grid Intelligence Agent |
-| 9 | `09_extend_cascade_hierarchy.sql` | Extend topology to poles + meters |
+| # | Script | Role Required | Purpose |
+|---|--------|---------------|---------|
+| 0 | `00_standalone_quickstart.sql` | SYSADMIN | Create database + schemas + sample data |
+| 1 | `01_image_repository.sql` | SYSADMIN | Create image repository for Docker images |
+| 2 | `02_compute_pool.sql` | SYSADMIN | Create SPCS compute pool |
+| 3 | `03_create_service.sql` | SYSADMIN | Deploy the SPCS service |
+| 4 | `04_validation.sql` | SYSADMIN | Validate deployment health |
+| 5 | `05_postgres_setup.sql` | **ACCOUNTADMIN** | Create Snowflake Postgres instance |
+| 5a | `05a_external_access.sql` | **ACCOUNTADMIN** | Network rules + secrets for Postgres |
+| 5b | `05b_map_external_access.sql` | **ACCOUNTADMIN** | EAIs for CARTO tiles + Google Fonts |
+| 6 | `06_postgres_sync.sql` | SYSADMIN | Sync procedures (Snowflake → Postgres) |
+| 7 | `07_create_cortex_search.sql` | **ACCOUNTADMIN** | Cortex Search services for RAG |
+| 8 | `08_create_cortex_agent.sql` | **ACCOUNTADMIN** | Grid Intelligence Agent |
+| 9 | `09_extend_cascade_hierarchy.sql` | SYSADMIN | Extend topology to poles + meters |
+
+> **Note**: Scripts marked **ACCOUNTADMIN** will fail or produce internal errors if run with SYSADMIN. Each script sets its own role via `USE ROLE`.
+
+---
+
+## Jinja2 Template Variables
+
+All scripts use `<% variable %>` syntax for Snow CLI's `-D` flag:
+
+```bash
+snow sql -c my_conn -f scripts/sql/03_create_service.sql \
+    -D "database=FLUX_DB" \
+    -D "schema=APPLICATIONS" \
+    -D "service_name=FLUX_OPS_CENTER_SERVICE"
+```
+
+Common variables used across scripts:
+
+| Variable | Default | Used In |
+|----------|---------|---------|
+| `database` | `FLUX_DB` | All scripts |
+| `warehouse` | `FLUX_WH` | 03, 07, 08 |
+| `schema` | `APPLICATIONS` | 03, 05a, 05b |
+| `compute_pool` | `FLUX_OPS_CENTER_POOL` | 02, 03 |
+| `service_name` | `FLUX_OPS_CENTER_SERVICE` | 03, 04 |
+
+---
+
+## Common Pitfalls
+
+### Cortex Search fails with internal error (370001)
+**Cause**: Running `07_create_cortex_search.sql` with SYSADMIN role.
+**Fix**: The script now uses `ACCOUNTADMIN` automatically. If running manually, ensure you `USE ROLE ACCOUNTADMIN` first.
+
+### Agent creation fails with "invalid property 'MODELS'"
+**Cause**: Using the deprecated property-based agent syntax.
+**Fix**: `08_create_cortex_agent.sql` uses the correct `FROM SPECIFICATION $$ yaml $$` syntax. Do not modify to use `MODELS = (...)` or `TOOLS = (...)`.
+
+### "syntax error at position 25 unexpected 'AGENT'"
+**Cause**: Using `CREATE CORTEX AGENT` instead of `CREATE AGENT`.
+**Fix**: The correct DDL command is `CREATE AGENT` (no `CORTEX` prefix).
+
+### Map tiles blank (no background)
+**Cause**: Missing External Access Integrations for CARTO CDN and Google Fonts.
+**Fix**: Run `05b_map_external_access.sql` and update the service's `EXTERNAL_ACCESS_INTEGRATIONS`.
+
+### ON CONFLICT syntax error in sample data SQL
+**Cause**: PostgreSQL syntax in Snowflake SQL files.
+**Fix**: Pull latest — sample data files now use `TRUNCATE + INSERT` instead.
 
 ---
 
@@ -79,3 +129,4 @@ docker push <registry_url>/flux-ops-center:latest
 - [Full CLI Scripts Guide](../docs/deployment/CLI_SCRIPTS.md)
 - [Docker Images](../docs/DOCKER_IMAGES.md)
 - [All Deployment Options](../docs/deployment/)
+- [Cortex Search Data](../data/cortex_search_data/README.md)

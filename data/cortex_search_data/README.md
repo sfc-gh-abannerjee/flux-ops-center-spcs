@@ -1,97 +1,139 @@
 # Cortex Search Sample Data
 
-This directory contains sample data files for populating the Cortex Search Services required by the Grid Intelligence Agent.
+Sample data for the Grid Intelligence Agent's RAG-based search capabilities.
+
+---
+
+## Overview
+
+The Grid Intelligence Agent uses **two Cortex Search services** to answer natural language questions about grid operations:
+
+| Search Service | Source Table | Content |
+|----------------|-------------|---------|
+| `TECHNICAL_DOCS_SEARCH` | `PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS` | Equipment manuals, maintenance procedures, troubleshooting guides |
+| `COMPLIANCE_DOCS_SEARCH` | `ML_DEMO.COMPLIANCE_DOCS` | NERC reliability standards, ERCOT protocols, internal policies |
+
+The files in this directory provide realistic sample data so the agent works out of the box.
+
+---
 
 ## Files
 
-| File | Description | Target Table |
-|------|-------------|--------------|
-| `compliance_docs.sql` | 8 NERC/ERCOT compliance documents | `<database>.ML_DEMO.COMPLIANCE_DOCS` |
-| `technical_manuals_sample.sql` | 13 technical documentation chunks | `<database>.PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS` |
+| File | Rows | Target Schema.Table |
+|------|------|---------------------|
+| `technical_manuals_sample.sql` | 13 chunks | `PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS` |
+| `compliance_docs.sql` | 8 documents | `ML_DEMO.COMPLIANCE_DOCS` |
+
+---
 
 ## Usage
 
-### 1. Load Sample Data
+### Automatic (via quickstart.sh)
 
-Use Snowflake CLI to execute the SQL files:
+Step 12 of `quickstart.sh` auto-detects empty source tables and loads this data automatically. No manual action needed if you run the full quickstart.
+
+### Manual Loading
 
 ```bash
+# Load technical documentation
+snow sql -c your_connection -f data/cortex_search_data/technical_manuals_sample.sql \
+    -D "database=FLUX_DB"
+
 # Load compliance documents
-snow sql -f data/cortex_search_data/compliance_docs.sql \
-    -D "database=FLUX_DB" \
-    -c your_connection_name
-
-# Load technical manual chunks
-snow sql -f data/cortex_search_data/technical_manuals_sample.sql \
-    -D "database=FLUX_DB" \
-    -c your_connection_name
+snow sql -c your_connection -f data/cortex_search_data/compliance_docs.sql \
+    -D "database=FLUX_DB"
 ```
 
-Or execute directly in Snowsight/SQL worksheet after replacing `<% database %>` with your database name.
-
-### 2. Create Cortex Search Services
-
-After loading the data, create the search services using:
+**After loading data**, create the search services and agent:
 
 ```bash
-snow sql -f scripts/sql/07_create_cortex_search.sql \
-    -D "database=FLUX_DB" \
-    -D "warehouse=FLUX_WH" \
-    -c your_connection_name
+# Create Cortex Search services (requires ACCOUNTADMIN)
+snow sql -c your_connection -f scripts/sql/07_create_cortex_search.sql \
+    -D "database=FLUX_DB" -D "warehouse=FLUX_WH"
+
+# Create Grid Intelligence Agent
+snow sql -c your_connection -f scripts/sql/08_create_cortex_agent.sql \
+    -D "database=FLUX_DB" -D "warehouse=FLUX_WH"
 ```
 
-### 3. Verify Search Services
+### Verify
 
 ```sql
--- List available search services
-SHOW CORTEX SEARCH SERVICES IN SCHEMA FLUX_DB.PRODUCTION;
-SHOW CORTEX SEARCH SERVICES IN SCHEMA FLUX_DB.ML_DEMO;
+-- Check source data
+SELECT COUNT(*) FROM FLUX_DB.PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS;  -- Should be 13
+SELECT COUNT(*) FROM FLUX_DB.ML_DEMO.COMPLIANCE_DOCS;                  -- Should be 8
 
--- Test a search query
-SELECT SNOWFLAKE.CORTEX.SEARCH_PREVIEW(
-    'FLUX_DB.PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS_SEARCH_SERVICE',
-    '{"query": "transformer oil sampling", "columns": ["CHUNK_TEXT"], "limit": 3}'
-);
+-- Check search services exist
+SHOW CORTEX SEARCH SERVICES IN DATABASE FLUX_DB;
+
+-- Check agent exists
+SHOW AGENTS IN SCHEMA SNOWFLAKE_INTELLIGENCE.AGENTS;
 ```
 
+---
+
 ## Data Schema
-
-### COMPLIANCE_DOCS
-
-| Column | Type | Description |
-|--------|------|-------------|
-| DOC_ID | NUMBER | Primary key |
-| DOCUMENT_TITLE | VARCHAR | Document title |
-| DOCUMENT_TEXT | VARCHAR | Full document content |
-| CATEGORY | VARCHAR | Category (e.g., NERC, ERCOT) |
-| EFFECTIVE_DATE | DATE | When the regulation became effective |
-| DOCUMENT_TYPE | VARCHAR | Type (Standard, Regulation, etc.) |
 
 ### TECHNICAL_MANUALS_PDF_CHUNKS
 
 | Column | Type | Description |
 |--------|------|-------------|
-| CHUNK_ID | NUMBER | Primary key |
-| DOCUMENT_ID | VARCHAR | Parent document identifier |
-| CHUNK_TEXT | VARCHAR | Text content of the chunk |
-| DOCUMENT_TYPE | VARCHAR | Type (Procedure, Guide, etc.) |
-| SOURCE_SYSTEM | VARCHAR | Origin system |
-| LANGUAGE | VARCHAR | Language code (e.g., 'en') |
+| `CHUNK_ID` | VARCHAR | Unique chunk identifier (e.g., `DOC_1_CHUNK_1`) |
+| `DOCUMENT_ID` | VARCHAR | Parent document ID (e.g., `DOC_1`) |
+| `DOCUMENT_TYPE` | VARCHAR | Type: Maintenance Procedure, Equipment Guide, etc. |
+| `CHUNK_TEXT` | VARCHAR | Full text content of the chunk |
+| `CHUNK_INDEX` | NUMBER | Order within the parent document |
+| `SOURCE_SYSTEM` | VARCHAR | Origin system (e.g., `MAXIMO`, `SHAREPOINT`) |
+| `LANGUAGE` | VARCHAR | Language code (default: `en`) |
+
+### COMPLIANCE_DOCS
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `DOC_ID` | VARCHAR | Standard identifier (e.g., `NERC-TPL-001-5.1`) |
+| `DOC_TYPE` | VARCHAR | Type: Reliability Standard, Emergency Procedure, etc. |
+| `TITLE` | VARCHAR | Full document title |
+| `CONTENT` | VARCHAR | Complete document text |
+| `CATEGORY` | VARCHAR | Category: Reliability Standards, Emergency Operations, etc. |
+| `EFFECTIVE_DATE` | DATE | When the regulation became effective |
+| `REVISION` | VARCHAR | Version number |
+| `APPLICABILITY` | VARCHAR | Which organizations/roles this applies to |
+| `KEYWORDS` | VARCHAR | Comma-separated search keywords |
+
+---
+
+## Common Issues
+
+### `ON CONFLICT` syntax error
+The SQL files use Snowflake SQL, not PostgreSQL. If you see `ON CONFLICT` errors, you have an outdated version of the files. Pull the latest from the repo.
+
+### Cortex Search service creation fails with internal error
+Use `ACCOUNTADMIN` role, not `SYSADMIN`. The `07_create_cortex_search.sql` script handles this automatically.
+
+### Agent creation fails with "invalid property 'MODELS'"
+The agent uses `FROM SPECIFICATION $$ yaml $$` syntax. The `08_create_cortex_agent.sql` script handles this correctly. Do not use the older property-based syntax (`MODELS = (...)`, `TOOLS = (...)`).
+
+---
 
 ## Adding Your Own Data
 
-To add your own documents:
+To replace sample data with production documents:
 
-1. **Compliance Documents**: Insert rows into `COMPLIANCE_DOCS` with your regulatory content
-2. **Technical Manuals**: Chunk your PDF documents and insert into `TECHNICAL_MANUALS_PDF_CHUNKS`
+1. **Technical Manuals**: Chunk your PDFs and insert into `TECHNICAL_MANUALS_PDF_CHUNKS`. Consider using Snowflake's Document AI (`PARSE_DOCUMENT`) for automatic extraction.
 
-For production use, consider:
-- Using Snowflake's Document AI to extract and chunk PDF content automatically
-- Implementing a data pipeline to refresh search services as new documents are added
-- Setting appropriate `TARGET_LAG` values based on how frequently your data changes
+2. **Compliance Docs**: Insert regulatory documents into `COMPLIANCE_DOCS` with appropriate metadata.
+
+3. **Refresh Search Services**: The services auto-refresh based on `TARGET_LAG` (default: 1 hour). Force refresh:
+   ```sql
+   ALTER CORTEX SEARCH SERVICE FLUX_DB.PRODUCTION.TECHNICAL_DOCS_SEARCH RESUME;
+   ```
+
+---
 
 ## Related Files
 
-- `scripts/sql/07_create_cortex_search.sql` - Creates the Cortex Search Services
-- `scripts/sql/08_create_cortex_agent.sql` - Creates the Grid Intelligence Agent
-- `README.md` (root) - Full setup instructions
+| File | Purpose |
+|------|---------|
+| `scripts/sql/07_create_cortex_search.sql` | Creates Cortex Search services from these tables |
+| `scripts/sql/08_create_cortex_agent.sql` | Creates the Grid Intelligence Agent |
+| `scripts/quickstart.sh` (Step 12) | Automates the full pipeline |

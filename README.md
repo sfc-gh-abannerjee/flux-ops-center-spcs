@@ -31,19 +31,20 @@ This repository demonstrates interactive grid operations capabilities:
 ```bash
 git clone https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs.git
 cd flux-ops-center-spcs
-snow sql -c your_connection -f scripts/sql/00_standalone_quickstart.sql
-./scripts/quickstart.sh
-```
 
-Then load map data (**required for map visualization**):
-```bash
+# 1. Create database, schemas, and sample data
+snow sql -c your_connection -f scripts/sql/00_standalone_quickstart.sql
+
+# 2. Deploy everything (interactive — builds, deploys, sets up Postgres + Cortex)
+./scripts/quickstart.sh
+
+# 3. Load PostGIS map data (~390MB from GitHub Releases)
 python backend/scripts/load_postgis_data.py --service your_pg_service
 ```
 
-This loads ~390MB of geospatial data and creates derived PostGIS views:
-- `buildings_spatial` - Building footprints with centroid coordinates
-- `grid_assets` - Asset locations for map rendering
-- `vegetation_risk_computed` - Pre-computed risk scores with spatial joins to nearest power lines
+The quickstart script handles all 13 steps: Docker image build/push, compute pool, SPCS service, Snowflake Postgres with PostGIS, External Access Integrations, and Grid Intelligence Agent setup.
+
+> **Map Layers**: Buildings are visible by default. Power lines and vegetation risk layers are **off by default** — toggle them on in the Layers panel (top-right of map).
 
 **[Full Quick Start Guide →](docs/deployment/QUICKSTART.md)**
 
@@ -85,9 +86,12 @@ This loads ~390MB of geospatial data and creates derived PostGIS views:
 - Wave-by-wave propagation
 
 ### Grid Intelligence Agent
-- Natural language queries via Cortex
-- Context-aware responses
-- Integrated with live data
+- Natural language queries via Cortex Agent
+- RAG-powered search across technical docs and compliance regulations
+- Two Cortex Search services: equipment manuals + NERC/ERCOT standards
+- Set up automatically by `quickstart.sh` Step 12
+
+**[Agent Setup Details →](docs/deployment/QUICKSTART.md#grid-intelligence-agent)**
 
 ---
 
@@ -183,14 +187,18 @@ docker pull --platform linux/amd64 ghcr.io/sfc-gh-abannerjee/flux-ops-center-spc
 ```
 flux-ops-center-spcs/
 ├── docs/                    # Documentation
-│   ├── deployment/          # Deployment guides
+│   ├── deployment/          # Deployment guides (QUICKSTART, CLI_SCRIPTS, etc.)
 │   ├── DOCKER_IMAGES.md     # Container image guide
 │   └── ...
 ├── scripts/
-│   ├── sql/                 # SQL deployment scripts
-│   └── quickstart.sh        # Interactive deployment
-├── backend/                 # FastAPI server
-├── src/                     # React frontend
+│   ├── sql/                 # SQL deployment scripts (00-09)
+│   └── quickstart.sh        # Interactive 13-step deployment
+├── data/
+│   ├── cortex_search_data/  # Sample data for Grid Intelligence Agent
+│   └── postgis_exports/     # PostGIS data loading scripts
+├── backend/                 # FastAPI server (Python)
+│   └── scripts/             # Data loading scripts (load_postgis_data.py)
+├── src/                     # React frontend (TypeScript)
 ├── terraform/               # IaC configuration
 ├── notebooks/               # Snowflake notebooks
 └── git_deploy/              # GitOps deployment
