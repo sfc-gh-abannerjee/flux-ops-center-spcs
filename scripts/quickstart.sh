@@ -685,8 +685,17 @@ step_1_prerequisites() {
             missing_vars=true
         fi
         if [ -z "$COMPUTE_POOL" ]; then
-            print_error "COMPUTE_POOL environment variable is required with --all"
-            missing_vars=true
+            # Auto-discover an existing ACTIVE compute pool or use default
+            print_info "COMPUTE_POOL not set, discovering existing pools..."
+            COMPUTE_POOL=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q "SHOW COMPUTE POOLS" --format json 2>/dev/null | \
+                python3 -c "import sys,json; pools=json.load(sys.stdin); active=[p['name'] for p in pools if p['state'] in ('ACTIVE','IDLE')]; print(active[0] if active else '')" 2>/dev/null)
+            
+            if [ -z "$COMPUTE_POOL" ]; then
+                COMPUTE_POOL="FLUX_OPS_COMPUTE_POOL"
+                print_info "No active pool found, will create: $COMPUTE_POOL"
+            else
+                print_success "Discovered compute pool: $COMPUTE_POOL"
+            fi
         fi
         if [ -z "$SNOWFLAKE_CONNECTION" ]; then
             print_error "SNOWFLAKE_CONNECTION environment variable is required with --all"
@@ -817,8 +826,10 @@ step_2_init_database() {
         print_step "Verifying schemas..."
         local schemas_ok=true
         for schema in PRODUCTION APPLICATIONS ML_DEMO CASCADE_ANALYSIS RAW; do
+            # Use --format json to avoid matching the echoed SQL statement
             local schema_exists=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q \
-                "SHOW SCHEMAS LIKE '${schema}' IN DATABASE ${SNOWFLAKE_DATABASE}" 2>/dev/null | grep -c "${schema}" || echo "0")
+                "SHOW SCHEMAS LIKE '${schema}' IN DATABASE ${SNOWFLAKE_DATABASE}" --format json 2>/dev/null | \
+                python3 -c "import sys,json; data=json.load(sys.stdin); print(len(data))" 2>/dev/null || echo "0")
             if [ "$schema_exists" -gt 0 ]; then
                 print_success "  Schema $schema exists"
             else
@@ -910,9 +921,13 @@ step_3_create_compute_pool() {
     else
         print_step "Creating compute pool ${COMPUTE_POOL}..."
         
-        # Prompt for compute pool size
-        echo -ne "  ${YELLOW}?${NC} Compute pool instance family [${COMPUTE_POOL_SIZE}]: "
-        read input; COMPUTE_POOL_SIZE="${input:-$COMPUTE_POOL_SIZE}"
+        # Prompt for compute pool size (skip in non-interactive mode)
+        if [ "$INTERACTIVE_MODE" = true ]; then
+            echo -ne "  ${YELLOW}?${NC} Compute pool instance family [${COMPUTE_POOL_SIZE}]: "
+            read input; COMPUTE_POOL_SIZE="${input:-$COMPUTE_POOL_SIZE}"
+        else
+            print_info "Using instance family: ${COMPUTE_POOL_SIZE}"
+        fi
         
         if ! snow sql -c "$SNOWFLAKE_CONNECTION" -q "
             CREATE COMPUTE POOL IF NOT EXISTS ${COMPUTE_POOL}

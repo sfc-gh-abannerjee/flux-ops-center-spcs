@@ -11,7 +11,7 @@
 --   <% postgres_instance %>      - Postgres instance name (default: FLUX_OPS_POSTGRES)
 --   <% postgres_compute %>       - Compute family (HIGHMEM_XL recommended, STANDARD_M minimum)
 --   <% postgres_storage_gb %>    - Storage size in GB (10-65535)
---   <% postgres_version %>       - Postgres version (16, 17, or 18)
+--   <% postgres_version %>       - Postgres version (default: latest)
 --
 -- Usage:
 --   snow sql -f scripts/sql/05_postgres_setup.sql \
@@ -20,7 +20,6 @@
 --       -D "postgres_instance=FLUX_OPS_POSTGRES" \
 --       -D "postgres_compute=HIGHMEM_XL" \
 --       -D "postgres_storage_gb=100" \
---       -D "postgres_version=17" \
 --       -c your_connection_name
 --
 -- Prerequisites:

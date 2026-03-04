@@ -365,12 +365,10 @@ DERIVED_VIEWS = {
             asset_type,
             asset_name,
             circuit_id,
-            substation_id,
-            transformer_id,
             health_score,
             status,
-            ST_X(geom) AS longitude,
-            ST_Y(geom) AS latitude,
+            longitude,
+            latitude,
             geom
         FROM grid_assets_cache
         WHERE geom IS NOT NULL;
@@ -387,7 +385,7 @@ DERIVED_VIEWS = {
         WITH vegetation_with_coords AS (
             SELECT 
                 tree_id,
-                species,
+                class,
                 subtype,
                 ST_X(geom) AS longitude,
                 ST_Y(geom) AS latitude,
@@ -431,7 +429,7 @@ DERIVED_VIEWS = {
         )
         SELECT 
             v.tree_id,
-            v.species,
+            v.class AS species,
             v.subtype,
             v.longitude,
             v.latitude,
@@ -493,26 +491,25 @@ DERIVED_VIEWS = {
             'Pre-computed vegetation risk with spatial analysis - refresh with REFRESH MATERIALIZED VIEW vegetation_risk_computed';
     """,
     
-    # 4. power_lines_spatial - Alias view for grid_power_lines (backend expects this name)
+    # 4. power_lines_spatial - Alias view for grid_power_lines
+    #    IMPORTANT: The FastAPI backend expects columns named: power_line_id, class, length_meters
+    #    These are aliased from grid_power_lines columns: line_id, voltage_class, line_length_m
     #    Referenced by: /api/spatial/power-lines, /api/spatial/nearest-power-line, 
     #    /api/spatial/compute-vegetation-risk, /api/spatial/vegetation-near-lines
     "power_lines_spatial": """
         DROP VIEW IF EXISTS power_lines_spatial CASCADE;
         CREATE VIEW power_lines_spatial AS 
         SELECT 
-            line_id,
-            line_name,
-            voltage_class,
-            line_type,
-            length_km,
-            status,
-            circuit_id,
-            substation_id,
+            line_id AS power_line_id,
+            voltage_class AS class,
+            line_length_m AS length_meters,
+            centroid_lon,
+            centroid_lat,
             geom
         FROM grid_power_lines
         WHERE geom IS NOT NULL;
         
-        COMMENT ON VIEW power_lines_spatial IS 'Alias for grid_power_lines - provides power line geometries for spatial queries';
+        COMMENT ON VIEW power_lines_spatial IS 'Power line geometries for spatial queries - columns aliased for FastAPI backend compatibility';
     """,
     
     # 5. circuit_service_areas - Circuit boundary polygons for service area analysis
@@ -547,16 +544,76 @@ DERIVED_VIEWS = {
         
         COMMENT ON VIEW circuit_service_areas IS 'Circuit service area boundaries derived from asset locations';
     """,
+    
+    # 6. circuit_status_realtime - Real-time circuit status derived from grid_assets_cache + substations
+    #    This table is required by the FastAPI backend for circuit monitoring endpoints.
+    #    Not included in the GitHub release data - must be derived from existing tables.
+    "circuit_status_realtime": """
+        DROP TABLE IF EXISTS circuit_status_realtime CASCADE;
+        CREATE TABLE circuit_status_realtime (
+            circuit_id VARCHAR(100) PRIMARY KEY,
+            substation_id VARCHAR(50),
+            substation_name VARCHAR(200),
+            avg_health_score NUMERIC(5,2),
+            avg_load_percent NUMERIC(5,2),
+            center_lat DOUBLE PRECISION,
+            center_lon DOUBLE PRECISION,
+            last_updated TIMESTAMP DEFAULT NOW()
+        );
+
+        INSERT INTO circuit_status_realtime (
+            circuit_id, substation_id, substation_name,
+            avg_health_score, avg_load_percent,
+            center_lat, center_lon, last_updated
+        )
+        SELECT 
+            g.circuit_id,
+            s.substation_id,
+            s.substation_name,
+            ROUND(AVG(g.health_score)::numeric, 2),
+            ROUND(AVG(g.load_percent)::numeric, 2),
+            AVG(g.latitude),
+            AVG(g.longitude),
+            NOW()
+        FROM grid_assets_cache g
+        JOIN substations s ON g.circuit_id LIKE '%' || s.substation_id || '%'
+        WHERE g.circuit_id IS NOT NULL AND g.latitude IS NOT NULL
+        GROUP BY g.circuit_id, s.substation_id, s.substation_name;
+
+        CREATE INDEX IF NOT EXISTS idx_circuit_status_circuit ON circuit_status_realtime (circuit_id);
+        CREATE INDEX IF NOT EXISTS idx_circuit_status_substation ON circuit_status_realtime (substation_id);
+
+        COMMENT ON TABLE circuit_status_realtime IS 'Real-time circuit status derived from grid assets and substations';
+    """,
 }
 
 
 def download_file(url: str, dest: Path, desc: str) -> bool:
-    """Download a file with progress indicator."""
+    """Download a file with progress indicator.
+    
+    Uses urllib first, falls back to curl if SSL verification fails
+    (common on macOS where Python may not use the system certificate store).
+    """
     print(f"  Downloading {desc}...")
     try:
         urllib.request.urlretrieve(url, dest)
         return True
     except Exception as e:
+        if "CERTIFICATE_VERIFY_FAILED" in str(e) or "SSL" in str(e):
+            print(f"  SSL error with urllib, falling back to curl...")
+            try:
+                result = subprocess.run(
+                    ["curl", "-sL", "-o", str(dest), url],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
+                    return True
+                print(f"  ERROR: curl download also failed: {result.stderr}")
+                return False
+            except FileNotFoundError:
+                print(f"  ERROR: curl not found. Install curl or fix Python SSL certificates.")
+                print(f"  On macOS: Run 'Install Certificates.command' from your Python installation.")
+                return False
         print(f"  ERROR: Failed to download {url}: {e}")
         return False
 
@@ -667,6 +724,14 @@ def verify_postgis(conn_args: list) -> bool:
             print("  PostGIS not found. Creating extension...")
             create_sql = "CREATE EXTENSION IF NOT EXISTS postgis;"
             if not run_psql(create_sql, conn_args, "Create PostGIS"):
+                print("  ERROR: Failed to create PostGIS extension.")
+                print("  If using PostgreSQL 18, this may fail due to a known pgaudit bug.")
+                print("  Workaround: Use PostgreSQL 17 instead (POSTGRES_VERSION = 17).")
+                return False
+            # Verify it worked after creation
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print("  ERROR: PostGIS extension created but version check still fails.")
                 return False
         version = result.stdout.strip()
         print(f"  PostGIS version: {version}")
@@ -741,15 +806,28 @@ def create_derived_views(conn_args: list) -> bool:
     - buildings_spatial: View over building_footprints with centroid coords
     - grid_assets: Alias view for grid_assets_cache
     - vegetation_risk_computed: Materialized view with spatial risk analysis
+    - power_lines_spatial: View over grid_power_lines with aliased columns
+    - circuit_service_areas: View with circuit boundary polygons
+    - circuit_status_realtime: Table derived from grid_assets_cache + substations
+    
+    Also grants SELECT on all tables to the 'application' Postgres user,
+    which is used by the SPCS service to connect to Postgres.
     """
     print(f"\n{'='*60}")
     print("CREATING DERIVED VIEWS")
     print("These views are required by the FastAPI backend")
     print(f"{'='*60}")
     
-    # Order matters: buildings_spatial and grid_assets first (simple views),
-    # then vegetation_risk_computed (depends on grid_assets_cache)
-    view_order = ["buildings_spatial", "grid_assets", "vegetation_risk_computed"]
+    # Order matters: simple views first, then materialized views (depends on base tables),
+    # then circuit_status_realtime (depends on grid_assets_cache + substations)
+    view_order = [
+        "buildings_spatial",
+        "grid_assets",
+        "power_lines_spatial",
+        "circuit_service_areas",
+        "vegetation_risk_computed",
+        "circuit_status_realtime",
+    ]
     
     success_count = 0
     for view_name in view_order:
@@ -787,6 +865,23 @@ def create_derived_views(conn_args: list) -> bool:
             print(f"    ERROR: Failed to create {view_name}")
     
     print(f"\n  Derived views created: {success_count}/{len(view_order)}")
+    
+    # Grant SELECT on all tables/views to the 'application' user.
+    # The SPCS service connects to Postgres as 'application' (not snowflake_admin),
+    # so it needs explicit read permissions on all objects.
+    print(f"\n  Granting SELECT to 'application' user...")
+    grant_sql = """
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO application;
+        GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO application;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO application;
+    """
+    if run_psql(grant_sql, conn_args, "Grant SELECT to application"):
+        print(f"    SUCCESS: application user granted SELECT on all tables")
+    else:
+        print(f"    WARNING: Failed to grant SELECT to application user")
+        print(f"    The SPCS service may get 'permission denied' errors.")
+        print(f"    Manual fix: psql -> GRANT SELECT ON ALL TABLES IN SCHEMA public TO application;")
+    
     return success_count == len(view_order)
 
 

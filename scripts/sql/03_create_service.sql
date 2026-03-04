@@ -23,6 +23,8 @@
 --   <% image_tag %>      - Docker image tag (default: latest)
 --   <% warehouse %>      - Warehouse for queries
 --   <% postgres_host %>  - Postgres instance hostname (from SHOW POSTGRES INSTANCES)
+--   <% postgres_user %>  - Postgres application user (default: application)
+--   <% postgres_password %> - Postgres application user password
 --   <% postgres_secret %> - Secret containing Postgres credentials (optional)
 --   <% cortex_agent_name %> - Cortex Agent name (default: GRID_INTELLIGENCE_AGENT)
 --   <% cortex_agent_database %> - Database containing Cortex Agent (default: SNOWFLAKE_INTELLIGENCE)
@@ -48,6 +50,7 @@
 --       -D "image_tag=latest" \
 --       -D "warehouse=FLUX_WH" \
 --       -D "postgres_host=<instance>.postgres.snowflake.app" \
+--       -D "postgres_password=<application_user_password>" \
 --       -D "cortex_agent_name=GRID_INTELLIGENCE_AGENT" \
 --       -c your_connection_name
 -- =============================================================================
@@ -87,6 +90,8 @@ spec:
         VITE_POSTGRES_HOST: <% postgres_host %>
         VITE_POSTGRES_PORT: "5432"
         VITE_POSTGRES_DATABASE: postgres
+        VITE_POSTGRES_USER: <% postgres_user | default('application') %>
+        VITE_POSTGRES_PASSWORD: <% postgres_password %>
       resources:
         requests:
           cpu: 2
