@@ -95,8 +95,8 @@ export const DOCK_PANEL_DIMENSIONS = {
 } as const;
 
 export const SUGGESTED_PROMPTS = [
-  "Compare summer load patterns 2023 vs 2024 vs 2025",
-  "Show energy burden changes vs 2024 baseline by income classification",
-  "Which transformers show increasing stress over the past 3 years?",
-  "Find transformer oil sampling procedures for high-voltage equipment"
+  "What are the transformer oil sampling procedures for high-voltage equipment?",
+  "Explain NERC TPL-001 cascade prevention requirements",
+  "What are the safety procedures for vegetation management near power lines?",
+  "How should I configure SEL-387E differential protection relays?"
 ];

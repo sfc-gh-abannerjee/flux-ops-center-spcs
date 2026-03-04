@@ -579,7 +579,7 @@ JOIN PRODUCTION.TRANSFORMER_METADATA tm ON t.TRANSFORMER_ID = tm.TRANSFORMER_ID
 WHERE t.PREDICTION_DATE = (SELECT MAX(PREDICTION_DATE) FROM T_TRANSFORMER_TEMPORAL_TRAINING);
 
 -- Compliance Documents (Required by 07_create_cortex_search.sql for Cortex Search)
--- This table stores NERC/ERCOT regulatory compliance documents for RAG-based search
+-- This table stores NERC and regulatory compliance documents for RAG-based search
 CREATE TABLE IF NOT EXISTS COMPLIANCE_DOCS (
     DOC_ID VARCHAR(100) PRIMARY KEY,
     DOC_TYPE VARCHAR(100) NOT NULL,

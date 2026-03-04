@@ -6147,7 +6147,7 @@ async def calculate_economic_impact(cascade_result: dict = None):
     
     Operators don't make decisions based on "64,800 customers affected."
     They make decisions based on:
-    - Regulatory penalty exposure (PUCT, ERCOT compliance)
+    - Regulatory penalty exposure (PUC, grid operator compliance)
     - Lost revenue (unserved energy)
     - Restoration costs (crew overtime, equipment)
     - Reputation damage (media coverage threshold)
@@ -6156,12 +6156,12 @@ async def calculate_economic_impact(cascade_result: dict = None):
     """
     start = time.time()
     
-    # Texas utility cost parameters (industry averages)
+    # Utility cost parameters (industry averages)
     COST_PARAMS = {
         # Regulatory penalties
-        'puct_penalty_per_customer_hour': 50.0,  # PUCT customer service penalties
-        'ercot_non_compliance_base': 25000.0,  # Base penalty for reliability violations
-        'ercot_penalty_per_mw_unserved': 9000.0,  # Value of Lost Load (VOLL)
+        'puc_penalty_per_customer_hour': 50.0,  # Public Utility Commission customer service penalties
+        'grid_operator_non_compliance_base': 25000.0,  # Base penalty for reliability violations
+        'grid_operator_penalty_per_mw_unserved': 9000.0,  # Value of Lost Load (VOLL)
         
         # Revenue loss
         'avg_revenue_per_kwh': 0.12,  # Average retail rate
@@ -6202,10 +6202,10 @@ async def calculate_economic_impact(cascade_result: dict = None):
         
         # Calculate costs
         # 1. Regulatory penalties
-        puct_penalty = customers * estimated_hours * COST_PARAMS['puct_penalty_per_customer_hour']
-        ercot_penalty = (COST_PARAMS['ercot_non_compliance_base'] + 
-                        capacity_mw * COST_PARAMS['ercot_penalty_per_mw_unserved'])
-        regulatory_total = puct_penalty + ercot_penalty
+        puc_penalty = customers * estimated_hours * COST_PARAMS['puc_penalty_per_customer_hour']
+        grid_operator_penalty = (COST_PARAMS['grid_operator_non_compliance_base'] + 
+                        capacity_mw * COST_PARAMS['grid_operator_penalty_per_mw_unserved'])
+        regulatory_total = puc_penalty + grid_operator_penalty
         
         # 2. Lost revenue
         unserved_energy_mwh = customers * estimated_hours * COST_PARAMS['avg_consumption_kwh_per_customer_hour'] / 1000
@@ -6224,7 +6224,7 @@ async def calculate_economic_impact(cascade_result: dict = None):
         # Determine severity tier
         if customers >= COST_PARAMS['emergency_declaration_threshold']:
             severity_tier = "EMERGENCY"
-            severity_description = "State emergency declaration likely. Governor's office, PUCT, and media involvement certain."
+            severity_description = "State emergency declaration likely. Governor's office, PUC, and media involvement certain."
         elif customers >= COST_PARAMS['regulatory_scrutiny_threshold']:
             severity_tier = "CRITICAL"
             severity_description = "Regulatory investigation probable. Executive leadership must be notified immediately."
@@ -6240,8 +6240,8 @@ async def calculate_economic_impact(cascade_result: dict = None):
                 "total_estimated_cost": round(total_impact, 2),
                 "breakdown": {
                     "regulatory_penalties": {
-                        "puct_customer_service": round(puct_penalty, 2),
-                        "ercot_reliability": round(ercot_penalty, 2),
+                        "puc_customer_service": round(puc_penalty, 2),
+                        "grid_operator_reliability": round(grid_operator_penalty, 2),
                         "subtotal": round(regulatory_total, 2)
                     },
                     "lost_revenue": {

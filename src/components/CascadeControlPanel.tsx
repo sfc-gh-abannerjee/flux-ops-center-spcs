@@ -118,7 +118,7 @@ interface EconomicImpactResponse {
   economic_impact: {
     total_estimated_cost: number;
     breakdown: {
-      regulatory_penalties: { puct_customer_service: number; ercot_reliability: number; subtotal: number };
+      regulatory_penalties: { puc_customer_service: number; grid_operator_reliability: number; subtotal: number };
       lost_revenue: { unserved_energy_mwh: number; subtotal: number };
       restoration_costs: { crew_hours: number; crew_cost: number; equipment_cost: number; subtotal: number };
     };

@@ -88,7 +88,7 @@ The quickstart script handles all 13 steps: Docker image build/push, compute poo
 ### Grid Intelligence Agent
 - Natural language queries via Cortex Agent
 - RAG-powered search across technical docs and compliance regulations
-- Two Cortex Search services: equipment manuals + NERC/ERCOT standards
+- Two Cortex Search services: equipment manuals + NERC/regulatory standards
 - Set up automatically by `quickstart.sh` Step 12
 
 **[Agent Setup Details →](docs/deployment/QUICKSTART.md#grid-intelligence-agent)**

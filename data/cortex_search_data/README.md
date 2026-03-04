@@ -11,7 +11,7 @@ The Grid Intelligence Agent uses **two Cortex Search services** to answer natura
 | Search Service | Source Table | Content |
 |----------------|-------------|---------|
 | `TECHNICAL_DOCS_SEARCH` | `PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS` | Equipment manuals, maintenance procedures, troubleshooting guides |
-| `COMPLIANCE_DOCS_SEARCH` | `ML_DEMO.COMPLIANCE_DOCS` | NERC reliability standards, ERCOT protocols, internal policies |
+| `COMPLIANCE_DOCS_SEARCH` | `ML_DEMO.COMPLIANCE_DOCS` | NERC reliability standards, regulatory protocols, internal utility policies |
 
 The files in this directory provide realistic sample data so the agent works out of the box.
 
@@ -21,7 +21,7 @@ The files in this directory provide realistic sample data so the agent works out
 
 | File | Rows | Target Schema.Table |
 |------|------|---------------------|
-| `technical_manuals_sample.sql` | 13 chunks | `PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS` |
+| `technical_manuals_sample.sql` | 23 chunks | `PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS` |
 | `compliance_docs.sql` | 8 documents | `ML_DEMO.COMPLIANCE_DOCS` |
 
 ---
@@ -60,7 +60,7 @@ snow sql -c your_connection -f scripts/sql/08_create_cortex_agent.sql \
 
 ```sql
 -- Check source data
-SELECT COUNT(*) FROM FLUX_DB.PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS;  -- Should be 13
+SELECT COUNT(*) FROM FLUX_DB.PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS;  -- Should be 23
 SELECT COUNT(*) FROM FLUX_DB.ML_DEMO.COMPLIANCE_DOCS;                  -- Should be 8
 
 -- Check search services exist

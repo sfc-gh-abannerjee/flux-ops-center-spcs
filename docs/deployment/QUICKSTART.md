@@ -177,7 +177,7 @@ The Grid Intelligence Agent provides natural language access to technical docume
 
 ### What Gets Created
 
-1. **Source Data** — Sample technical manuals (13 chunks) and NERC/ERCOT compliance docs (8 documents) loaded from `data/cortex_search_data/`
+1. **Source Data** — Sample technical manuals (23 chunks) and NERC/regulatory compliance docs (8 documents) loaded from `data/cortex_search_data/`
 2. **Cortex Search Services** — Two search services that index the source data for RAG retrieval
 3. **Cortex Agent** — `SNOWFLAKE_INTELLIGENCE.AGENTS.GRID_INTELLIGENCE_AGENT` using Claude Sonnet for orchestration
 

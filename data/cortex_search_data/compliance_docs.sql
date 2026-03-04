@@ -1,8 +1,8 @@
 -- =============================================================================
 -- Compliance Documents Sample Data
 -- =============================================================================
--- This file contains sample NERC/ERCOT compliance documents for the 
--- Grid Intelligence Agent's Compliance Search feature.
+-- This file contains sample NERC compliance documents and internal utility standards
+-- for the Grid Intelligence Agent's Compliance Search feature.
 --
 -- IMPORTANT: This is Snowflake SQL, not PostgreSQL.
 --   - Uses TRUNCATE + INSERT (not ON CONFLICT) for idempotent loading
@@ -227,7 +227,7 @@ Critical Infrastructure Priority:
 'ERCOT Control Room Operators, QSEs, Transmission Operators',
 'extreme weather, winter storm, heat wave, load shedding, cascade prevention'),
 
-('CNP-STD-001', 'Internal Standard', 'CenterPoint Energy Transformer Loading Standards',
+('GS-STD-001', 'Internal Standard', 'GridStar Energy Transformer Loading Standards',
 'Purpose: Establish loading limits and monitoring requirements for distribution transformers to prevent thermal damage and cascading failures.
 
 Normal Loading Limits:
@@ -256,7 +256,7 @@ Summer Peak Procedures:
 - Pre-position mobile transformers in high-risk areas
 - Enable enhanced oil cooling systems
 - Monitor thermal stress accumulation
-- Coordinate with ERCOT for system-wide conditions
+- Coordinate with regional grid operator for system-wide conditions
 
 Violation of these standards may result in equipment damage and potential cascading outages affecting customer service.',
 'Internal Standards', '2024-01-15', '2024.1',

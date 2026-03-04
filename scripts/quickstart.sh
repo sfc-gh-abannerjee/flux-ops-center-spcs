@@ -1697,7 +1697,7 @@ step_12_setup_cortex() {
     #
     #   1. Source data tables (sample docs loaded from data/cortex_search_data/)
     #      - PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS  (equipment manuals, procedures)
-    #      - ML_DEMO.COMPLIANCE_DOCS                  (NERC/ERCOT regulations)
+    #      - ML_DEMO.COMPLIANCE_DOCS                  (NERC/regulatory compliance)
     #
     #   2. Cortex Search Services (created from 07_create_cortex_search.sql)
     #      - PRODUCTION.TECHNICAL_DOCS_SEARCH   (indexes technical manuals)
