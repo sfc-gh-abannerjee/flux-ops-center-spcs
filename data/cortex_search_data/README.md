@@ -78,13 +78,14 @@ SHOW AGENTS IN SCHEMA SNOWFLAKE_INTELLIGENCE.AGENTS;
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `CHUNK_ID` | VARCHAR | Unique chunk identifier (e.g., `DOC_1_CHUNK_1`) |
-| `DOCUMENT_ID` | VARCHAR | Parent document ID (e.g., `DOC_1`) |
-| `DOCUMENT_TYPE` | VARCHAR | Type: Maintenance Procedure, Equipment Guide, etc. |
+| `CHUNK_ID` | NUMBER | Primary key — integer chunk identifier (1, 2, 3, ...) |
+| `DOCUMENT_ID` | VARCHAR(100) | Parent document ID (e.g., `DOC_1`) |
+| `DOCUMENT_TYPE` | VARCHAR(200) | Type: Maintenance Procedure, Equipment Guide, etc. |
 | `CHUNK_TEXT` | VARCHAR | Full text content of the chunk |
-| `CHUNK_INDEX` | NUMBER | Order within the parent document |
-| `SOURCE_SYSTEM` | VARCHAR | Origin system (e.g., `MAXIMO`, `SHAREPOINT`) |
-| `LANGUAGE` | VARCHAR | Language code (default: `en`) |
+| `SOURCE_SYSTEM` | VARCHAR(100) | Default: `TECHNICAL_MANUALS_PDF` |
+| `LANGUAGE` | VARCHAR(10) | Language code (default: `en`) |
+| `LANGUAGE_NAME` | VARCHAR(50) | Language name (default: `English`) |
+| `LANGUAGE_NATIVE` | VARCHAR(50) | Native language name (default: `English`) |
 
 ### COMPLIANCE_DOCS
 

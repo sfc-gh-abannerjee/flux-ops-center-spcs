@@ -670,6 +670,8 @@ step_1_prerequisites() {
         # Cortex configuration
         if confirm "Setup Cortex AI (search services for chat)?" "n"; then
             SETUP_CORTEX=true
+        else
+            SETUP_CORTEX=false
         fi
     else
         # Non-interactive (--all): validate required environment variables
