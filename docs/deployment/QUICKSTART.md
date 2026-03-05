@@ -301,6 +301,61 @@ Use pre-built images instead:
 docker pull --platform linux/amd64 ghcr.io/sfc-gh-abannerjee/flux-ops-center-spcs:main
 ```
 
+### pgaudit "stack is not empty" when creating PostGIS
+
+This error occurs when the Postgres instance has corrupted state from prior extension
+manipulation (e.g., `DROP EXTENSION pgaudit`, `ALTER SYSTEM SET`, `LOAD 'pgaudit'`).
+It is **not** a platform bug or PostgreSQL version issue — it happens on any version.
+
+**Fix:** Drop and recreate the Postgres instance, then run `CREATE EXTENSION postgis`
+on the fresh instance. Do not manipulate pgaudit settings before creating PostGIS.
+
+```sql
+-- Drop the corrupted instance
+DROP POSTGRES INSTANCE IF EXISTS FLUX_OPS_POSTGRES;
+
+-- Recreate (quickstart.sh or 05_postgres_setup.sql will handle this)
+-- Then on the fresh instance:
+CREATE EXTENSION IF NOT EXISTS postgis;  -- Works immediately
+```
+
+### VPN + Docker proxy conflict (corporate networks)
+
+Corporate VPN is needed for Snowflake access, but VPN proxy settings can block
+Docker registry pulls (GHCR and Snowflake registry).
+
+**Fix:** Add these to Docker Desktop > Settings > Resources > Proxies > Bypass list:
+```
+sfsenorthamerica-*.registry.snowflakecomputing.com,*.registry.snowflakecomputing.com,ghcr.io
+```
+
+### Postgres credentials lost
+
+Credentials are shown only once at instance creation and cannot be retrieved later.
+If lost, you must drop and recreate the instance:
+
+```sql
+DROP POSTGRES INSTANCE IF EXISTS FLUX_OPS_POSTGRES;
+-- Re-run 05_postgres_setup.sql or the quickstart to get new credentials
+```
+
+### Postgres connections refused (network policy)
+
+Snowflake Postgres requires a network policy with `POSTGRES_INGRESS` mode.
+Without it, all connections are blocked.
+
+```sql
+-- Check if the network policy exists
+SHOW NETWORK POLICIES LIKE 'FLUX_POSTGRES%';
+
+-- If missing, create one (0.0.0.0/0 allows all IPs — restrict in production):
+CREATE NETWORK RULE IF NOT EXISTS FLUX_POSTGRES_INGRESS_RULE
+    TYPE = IPV4 VALUE_LIST = ('0.0.0.0/0') MODE = POSTGRES_INGRESS;
+CREATE NETWORK POLICY IF NOT EXISTS FLUX_POSTGRES_NETWORK_POLICY
+    ALLOWED_NETWORK_RULE_LIST = (FLUX_POSTGRES_INGRESS_RULE);
+ALTER POSTGRES INSTANCE FLUX_OPS_POSTGRES SET NETWORK_POLICY = FLUX_POSTGRES_NETWORK_POLICY;
+```
+
 ---
 
 ## See Also

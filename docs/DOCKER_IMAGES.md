@@ -245,6 +245,37 @@ curl -s https://api.github.com/users/sfc-gh-abannerjee/packages/container/flux-o
 
 Large images (~1GB). Use a wired connection or wait. Subsequent pulls use cached layers.
 
+### Docker pull fails behind corporate VPN
+
+Corporate VPN proxy settings can block pulls from GHCR and Snowflake registries.
+
+**Fix:** Add these to Docker Desktop > Settings > Resources > Proxies > Bypass list:
+```
+sfsenorthamerica-*.registry.snowflakecomputing.com,*.registry.snowflakecomputing.com,ghcr.io
+```
+
+You may need to disconnect VPN for Docker pulls, then reconnect for Snowflake operations.
+
+### "docker push" to Snowflake registry hangs or times out
+
+Same VPN proxy issue as above. Ensure the Snowflake registry hostname is in Docker's
+proxy bypass list. Also verify you're logged in:
+
+```bash
+docker login <org>-<account>.registry.snowflakecomputing.com
+# Use your Snowflake username and password
+```
+
+### SPCS says "image not found" after push
+
+Verify the image exists in the repository:
+```sql
+SHOW IMAGES IN IMAGE REPOSITORY FLUX_DB.PUBLIC.FLUX_OPS_CENTER_IMAGES;
+```
+
+The tag path must match exactly. Common mistake: pushing to `flux_db/public/...` when
+the service spec references `flux_db/applications/...` (or vice versa). Check the schema.
+
 ---
 
 ## See Also
