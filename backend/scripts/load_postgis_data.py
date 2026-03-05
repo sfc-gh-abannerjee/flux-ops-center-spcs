@@ -791,8 +791,10 @@ def verify_postgis(conn_args: list) -> bool:
             create_sql = "CREATE EXTENSION IF NOT EXISTS postgis;"
             if not run_psql(create_sql, conn_args, "Create PostGIS"):
                 print("  ERROR: Failed to create PostGIS extension.")
-                print("  If using PostgreSQL 18, this may fail due to a known pgaudit bug.")
-                print("  Workaround: Use PostgreSQL 17 instead (POSTGRES_VERSION = 17).")
+                print("  If you see 'pgaudit stack is not empty', the instance state may be")
+                print("  corrupted from prior extension manipulation. Fix: drop and recreate")
+                print("  the Postgres instance, then run CREATE EXTENSION postgis on the")
+                print("  fresh instance. This works on any supported PG version.")
                 return False
             # Verify it worked after creation
             result = subprocess.run(cmd, capture_output=True, text=True)
