@@ -9,18 +9,26 @@
 -- Current coverage: 91,829 nodes (275 substations + 91,554 transformers)
 -- Target coverage:  750,721 nodes (+62,038 poles + 596,906 meters)
 --
+-- Variables (Jinja2):
+--   <% database %>   - Target database (e.g., FLUX_DB)
+--   <% warehouse %>  - Compute warehouse (e.g., FLUX_WH)
+--
+-- Usage:
+--   snow sql -c $CONN -f scripts/sql/09_extend_cascade_hierarchy.sql \
+--       -D "database=FLUX_DB" -D "warehouse=FLUX_WH"
+--
 -- Prerequisites:
---   - FLUX_DB.PRODUCTION.GRID_POLES_INFRASTRUCTURE populated
---   - FLUX_DB.PRODUCTION.METER_INFRASTRUCTURE populated
---   - FLUX_DB.ML_DEMO.GRID_NODES exists
---   - FLUX_DB.ML_DEMO.GRID_EDGES exists
+--   - <% database %>.PRODUCTION.GRID_POLES_INFRASTRUCTURE populated
+--   - <% database %>.PRODUCTION.METER_INFRASTRUCTURE populated
+--   - <% database %>.ML_DEMO.GRID_NODES exists
+--   - <% database %>.ML_DEMO.GRID_EDGES exists
 --
 -- Author: Cortex Code
 -- Date: 2026-02-06
 -- ============================================================================
 
-USE DATABASE FLUX_DB;
-USE WAREHOUSE FLUX_WH;
+USE DATABASE IDENTIFIER('<% database %>');
+USE WAREHOUSE IDENTIFIER('<% warehouse %>');
 
 -- ============================================================================
 -- STEP 1: Create Extended Node Table

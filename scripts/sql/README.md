@@ -56,6 +56,7 @@ snow sql -c $CONN -f scripts/sql/04_validation.sql \
 | 7 | `07_create_cortex_search.sql` | **ACCOUNTADMIN** | Cortex Search services for RAG |
 | 8 | `08_create_cortex_agent.sql` | **ACCOUNTADMIN** | Grid Intelligence Agent |
 | 9 | `09_extend_cascade_hierarchy.sql` | SYSADMIN | Extend topology to poles + meters |
+| 10 | `10_create_cascade_ml_data.sql` | SYSADMIN | Create ML tables + synthetic data for cascade analysis |
 
 > **Note**: Scripts marked **ACCOUNTADMIN** will fail or produce internal errors if run with SYSADMIN. Each script sets its own role via `USE ROLE`.
 
@@ -77,7 +78,7 @@ Common variables used across scripts:
 | Variable | Default | Used In |
 |----------|---------|---------|
 | `database` | `FLUX_DB` | All scripts |
-| `warehouse` | `FLUX_WH` | 03, 07, 08 |
+| `warehouse` | `FLUX_WH` | 03, 07, 08, 09, 10 |
 | `schema` | `APPLICATIONS` | 03, 05a, 05b |
 | `compute_pool` | `FLUX_OPS_CENTER_POOL` | 02, 03 |
 | `service_name` | `FLUX_OPS_CENTER_SERVICE` | 03, 04 |

@@ -22,18 +22,26 @@
 --     - REAL_TIME_CASCADE_PREDICTIONS    (live risk predictions)
 --     - PRECOMPUTED_CASCADES             (updated with correct schema)
 --
+-- Variables (Jinja2):
+--   <% database %>   - Target database (e.g., FLUX_DB)
+--   <% warehouse %>  - Compute warehouse (e.g., FLUX_WH)
+--
+-- Usage:
+--   snow sql -c $CONN -f scripts/sql/10_create_cascade_ml_data.sql \
+--       -D "database=FLUX_DB" -D "warehouse=FLUX_WH"
+--
 -- PREREQUISITES:
---   - FLUX_DB database exists with ML_DEMO and CASCADE_ANALYSIS schemas
---   - FLUX_DB.PRODUCTION.TRANSFORMER_METADATA has data (100 rows)
+--   - <% database %> database exists with ML_DEMO and CASCADE_ANALYSIS schemas
+--   - <% database %>.PRODUCTION.TRANSFORMER_METADATA has data (100 rows)
 --   - Run after 00_standalone_quickstart.sql
 --
--- RUNTIME: ~2-3 minutes on FLUX_WH (X-Small warehouse)
+-- RUNTIME: ~2-3 minutes on a X-Small warehouse
 --
 -- Author: Cortex Code
 -- ============================================================================
 
-USE DATABASE FLUX_DB;
-USE WAREHOUSE FLUX_WH;
+USE DATABASE IDENTIFIER('<% database %>');
+USE WAREHOUSE IDENTIFIER('<% warehouse %>');
 
 -- ============================================================================
 -- PART 1: REBUILD T_TRANSFORMER_TEMPORAL_TRAINING

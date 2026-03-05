@@ -114,7 +114,7 @@ SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'GOOGLE_%';
 -- =============================================================================
 -- If you already have a running service without these integrations, update it:
 --
--- ALTER SERVICE <% database %>.<% schema %>.FLUX_OPS_CENTER
+-- ALTER SERVICE <% database %>.<% schema %>.<your_service_name>
 --     SET EXTERNAL_ACCESS_INTEGRATIONS = (
 --         FLUX_POSTGRES_INTEGRATION,
 --         FLUX_CARTO_INTEGRATION,
@@ -122,6 +122,6 @@ SHOW EXTERNAL ACCESS INTEGRATIONS LIKE 'GOOGLE_%';
 --     );
 --
 -- Then restart the service:
---   ALTER SERVICE <% database %>.<% schema %>.FLUX_OPS_CENTER SUSPEND;
---   ALTER SERVICE <% database %>.<% schema %>.FLUX_OPS_CENTER RESUME;
+--   ALTER SERVICE <% database %>.<% schema %>.<your_service_name> SUSPEND;
+--   ALTER SERVICE <% database %>.<% schema %>.<your_service_name> RESUME;
 -- =============================================================================
