@@ -1035,7 +1035,7 @@ SET postgres_network_policy = 'FLUX_POSTGRES_NETWORK_POLICY';
 SET postgres_ingress_rule = 'FLUX_POSTGRES_INGRESS_RULE';
 SET postgres_compute_family = 'HIGHMEM_XL';  -- Options: HIGHMEM_XL (recommended), STANDARD_M, STANDARD_L
 SET postgres_storage_gb = 100;  -- 10-65535 GB (100GB recommended for production)
-SET postgres_version = 17;     -- 16, 17, or 18
+SET postgres_version = 17;     -- Any supported version works; 17 is tested/recommended
 
 -- Switch to ACCOUNTADMIN for network policy and Postgres creation
 USE ROLE ACCOUNTADMIN;

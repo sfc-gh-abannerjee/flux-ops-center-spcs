@@ -117,7 +117,7 @@ snow sql -c $CONN -f scripts/sql/05_postgres_setup.sql \
     -D "postgres_instance=FLUX_OPS_POSTGRES" \
     -D "postgres_compute=HIGHMEM_XL" \
     -D "postgres_storage_gb=100" \
-    -D "postgres_version=17"
+    -D "postgres_version=17"  # Any supported version; 17 is tested/recommended
 ```
 
 **⚠️ IMPORTANT:** Save the credentials displayed! They cannot be retrieved later.
@@ -211,7 +211,7 @@ snow sql -c $CONN -q "SHOW ENDPOINTS IN SERVICE FLUX_DB.PUBLIC.FLUX_OPS_CENTER_S
 | `postgres_instance` | Instance name | `FLUX_OPS_POSTGRES` |
 | `postgres_compute` | Compute family | `HIGHMEM_XL` |
 | `postgres_storage_gb` | Storage size | `100` |
-| `postgres_version` | PostgreSQL version | `17` |
+| `postgres_version` | PostgreSQL version (any supported; 17 tested/recommended) | `17` |
 | `postgres_host` | Postgres host URL | `abc123.postgres.snowflake.app` |
 
 ### Postgres Compute Families
