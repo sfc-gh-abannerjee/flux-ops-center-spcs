@@ -4,7 +4,11 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue?logo=docker)](https://github.com/sfc-gh-abannerjee/flux-ops-center-spcs/pkgs/container/flux-ops-center-spcs)
 
-**Real-time utility grid visualization and GNN-based cascade failure prediction on Snowflake.**
+**See your grid. Predict cascade failures before they happen.** Real-time visualization of 66K+ grid assets with GNN-based risk prediction — giving operations teams the situational awareness to prevent outages, not just respond to them.
+
+> *"Whether it's keeping the grid secure, protecting critical assets, or balancing supply and demand in volatile markets, energy companies need a trusted data foundation that can activate AI everywhere."* — Fred Cohagan, Global Head of Energy, Snowflake
+>
+> Built to demonstrate the grid resilience and asset health monitoring capabilities at the heart of [Snowflake Energy Solutions](https://www.snowflake.com/en/solutions/industries/energy/).
 
 <p align="center">
   <img width="49%" alt="Grid Map View" src="https://github.com/user-attachments/assets/0125a740-b678-4271-bbf2-aac7694b5b7e" />
@@ -15,14 +19,16 @@
 
 ## Why Flux Ops Center?
 
-This repository demonstrates interactive grid operations capabilities:
+Utilities today manage aging infrastructure across thousands of miles of transmission and distribution lines — but most lack real-time visibility into how failures propagate. A single transformer outage can cascade through interconnected feeders, affecting thousands of customers. NERC TPL-001 reliability standards require utilities to model these scenarios, yet many still rely on static spreadsheets and post-event analysis.
 
-| What You Get | Description |
-|--------------|-------------|
-| **Interactive grid maps** | 66K+ assets visualized with DeckGL and PostGIS geospatial queries |
-| **Cascade failure simulation** | GNN-based risk prediction showing how failures propagate through the grid |
-| **Grid Intelligence Agent** | Natural language queries about grid status via Cortex |
-| **Multi-arch Docker images** | Pre-built images for both local development (ARM64) and SPCS deployment (AMD64) |
+This repository delivers **real-time grid situational awareness and AI-powered failure prediction** on Snowflake:
+
+| What You Get | Why It Matters |
+|--------------|----------------|
+| **Interactive grid maps** | 66K+ assets visualized with DeckGL and PostGIS — real-time situational awareness for control rooms and field teams |
+| **Cascade failure simulation** | GNN-based risk prediction showing how failures propagate — identify vulnerable assets before outages happen |
+| **Grid Intelligence Agent** | Natural language queries about grid status — operations staff and field engineers get answers without writing SQL |
+| **Multi-arch Docker images** | Pre-built images for both local development (ARM64) and SPCS deployment (AMD64) — deploy in minutes |
 
 ---
 
@@ -75,20 +81,22 @@ The quickstart script handles all 13 steps: Docker image build/push, compute poo
 
 ## Features
 
+Each feature addresses a core grid operations challenge — from real-time monitoring to predictive risk management and natural language access for non-technical staff.
+
 ### Interactive Map
-- 66K+ grid assets with DeckGL
-- Real-time status visualization
-- Geospatial layers (vegetation risk, flood zones)
+- 66K+ grid assets with DeckGL — real-time situational awareness
+- Live status visualization across substations, transformers, and feeders
+- Geospatial layers (vegetation risk, flood zones) for proactive risk assessment
 
 ### Cascade Failure Analysis
-- Simulate failures from any node
-- GNN-based risk prediction
-- Wave-by-wave propagation
+- Simulate failures from any node — model how outages propagate before they happen
+- GNN-based risk prediction aligned with NERC TPL-001 reliability planning
+- Wave-by-wave propagation visualization for engineering and planning teams
 
 ### Grid Intelligence Agent
-- Natural language queries via Cortex Agent
-- RAG-powered search across technical docs and compliance regulations
-- Two Cortex Search services: equipment manuals + NERC/regulatory standards
+- Ask grid questions in plain English — no SQL required for operations staff and field engineers
+- 5-tool AI agent: text-to-SQL analytics, customer search, meter lookup, technical docs, and NERC compliance docs
+- RAG-powered search across 20K technical manual chunks and regulatory standards
 - Set up automatically by `quickstart.sh` Step 12
 
 **[Agent Setup Details →](docs/deployment/QUICKSTART.md#grid-intelligence-agent)**
@@ -129,13 +137,13 @@ flowchart TB
 
 ## Flux Platform Ecosystem
 
-Part of a suite of Snowflake solutions:
+Part of a complete grid intelligence stack built on Snowflake — from data foundation through real-time operations:
 
 | Repository | Purpose |
 |------------|---------|
-| [**flux-utility-solutions**](https://github.com/sfc-gh-abannerjee/flux-utility-solutions) | Core platform, Cortex AI, semantic models |
-| [flux-data-forge](https://github.com/sfc-gh-abannerjee/flux-data-forge) | Synthetic AMI data generation |
-| **flux-ops-center** (this repo) | Grid visualization, cascade analysis |
+| [**flux-utility-solutions**](https://github.com/sfc-gh-abannerjee/flux-utility-solutions) | Core data foundation — unified grid data model, Cortex AI agent, semantic views |
+| [flux-data-forge](https://github.com/sfc-gh-abannerjee/flux-data-forge) | Synthetic AMI data generation — simulate millions of meter readings |
+| **flux-ops-center** (this repo) | Real-time grid visualization and cascade failure prediction — operational situational awareness |
 
 **Standalone deployment** creates everything locally. **Integrated deployment** shares data across all apps.
 
@@ -213,3 +221,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 ## License
 
 Apache 2.0 - see [LICENSE](LICENSE)
+
+---
+
+<p align="center">
+  <strong>Built on Snowflake AI Data Cloud</strong><br/>
+  <em>Part of the <a href="https://www.snowflake.com/en/solutions/industries/energy/">Snowflake Energy Solutions</a> ecosystem</em>
+</p>
