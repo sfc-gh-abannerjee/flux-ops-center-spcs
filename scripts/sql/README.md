@@ -57,12 +57,17 @@ snow sql -c $CONN -f scripts/sql/04_validation.sql \
 | 8 | `08_create_cortex_agent.sql` | **ACCOUNTADMIN** | Grid Intelligence Agent |
 | 9 | `09_extend_cascade_hierarchy.sql` | SYSADMIN | Extend topology to poles + meters |
 | 10 | `10_create_cascade_ml_data.sql` | SYSADMIN | Create ML tables + synthetic data for cascade analysis |
+| 11 | `11_create_semantic_view.sql` | **ACCOUNTADMIN** | Semantic View for Cortex Analyst |
 
 > **Note**: Scripts marked **ACCOUNTADMIN** will fail or produce internal errors if run with SYSADMIN. Each script sets its own role via `USE ROLE`.
 
 ---
 
 ## Jinja2 Template Variables
+
+> **First time?** Run `quickstart.sh` instead — it prompts for every value
+> interactively so you never need to think about `-D` flags.
+> These individual scripts are for advanced users or CI/CD pipelines.
 
 All scripts use `<% variable %>` syntax for Snow CLI's `-D` flag:
 
@@ -73,15 +78,24 @@ snow sql -c my_conn -f scripts/sql/03_create_service.sql \
     -D "service_name=FLUX_OPS_CENTER_SERVICE"
 ```
 
+If you forget a `-D` flag, you'll see an error like:
+```
+001003 (42000): SQL compilation error:
+syntax error line 1 at position 13 unexpected '<'.
+```
+This means an unresolved `<% variable %>` was sent to Snowflake. Add the missing
+`-D` flag — check each script's header comment for required variables.
+
 Common variables used across scripts:
 
 | Variable | Default | Used In |
 |----------|---------|---------|
 | `database` | `FLUX_DB` | All scripts |
-| `warehouse` | `FLUX_WH` | 03, 07, 08, 09, 10 |
+| `warehouse` | `FLUX_WH` | 03, 07, 08, 09, 10, 11 |
 | `schema` | `APPLICATIONS` | 03, 05a, 05b |
 | `compute_pool` | `FLUX_OPS_CENTER_POOL` | 02, 03 |
 | `service_name` | `FLUX_OPS_CENTER_SERVICE` | 03, 04 |
+| `user_role` | `PUBLIC` | 11 |
 
 ---
 

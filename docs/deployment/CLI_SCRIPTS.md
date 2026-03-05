@@ -30,6 +30,7 @@ Deploy Flux Operations Center using Snow CLI with Jinja2-templated SQL scripts.
 | 6 | `06_postgres_sync.sql` | Dynamic data sync procedures |
 | 7 | `07_create_cortex_search.sql` | Cortex Search services |
 | 8 | `08_create_cortex_agent.sql` | Grid Intelligence Agent |
+| 11 | `11_create_semantic_view.sql` | Semantic View for Cortex Analyst |
 
 ---
 
@@ -49,6 +50,32 @@ snow sql -f script.sql -D "database=FLUX_DB" -D "schema=PUBLIC"
 USE DATABASE FLUX_DB;
 CREATE SCHEMA FLUX_DB.PUBLIC;
 ```
+
+> **First time deploying?** Use [`quickstart.sh`](./QUICKSTART.md) instead — it prompts
+> for every value interactively and handles Jinja2 substitution automatically.
+> The individual SQL scripts below are for users who want step-by-step control
+> or need to integrate into CI/CD pipelines.
+
+### What happens if you forget a `-D` variable
+
+If you omit a required `-D` flag, Snow CLI passes the raw Jinja2 placeholder
+to Snowflake, which then fails with a syntax error. For example:
+
+```bash
+# Missing -D "database=FLUX_DB"
+snow sql -c $CONN -f scripts/sql/03_create_service.sql \
+    -D "schema=APPLICATIONS"
+```
+
+Produces:
+```
+001003 (42000): SQL compilation error:
+syntax error line 1 at position 13 unexpected '<'.
+```
+
+The `<` comes from the unresolved `<% database %>` placeholder. **Fix:** Add the
+missing `-D "database=FLUX_DB"` flag. Check each script's header comment for the
+full list of required variables.
 
 ---
 
@@ -244,6 +271,16 @@ snow sql -c $CONN -f scripts/sql/08_create_cortex_agent.sql \
     -D "agent_schema=AGENTS" \
     -D "agent_name=GRID_INTELLIGENCE_AGENT"
 ```
+
+### Semantic View (Cortex Analyst)
+
+```bash
+snow sql -c $CONN -f scripts/sql/11_create_semantic_view.sql \
+    -D "database=FLUX_DB" \
+    -D "warehouse=FLUX_WH"
+```
+
+This creates `UTILITY_SEMANTIC_VIEW` in the APPLICATIONS schema, enabling natural language queries like "average energy consumption by city" via Cortex Analyst.
 
 ---
 

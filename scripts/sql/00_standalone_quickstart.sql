@@ -10,6 +10,8 @@
 --   - Application views for the Ops Center UI
 --   - ML and cascade analysis tables
 --   - Sample data to get started immediately
+--   - Cortex AI: Search Services, Grid Intelligence Agent, Semantic View
+--   - Snowflake Postgres instance with sync procedures
 --
 -- HOW TO USE:
 --   Option 1: Copy this entire script into a Snowflake Worksheet and run it
@@ -94,6 +96,8 @@ CREATE TABLE IF NOT EXISTS SUBSTATIONS (
 );
 
 -- Transformers (connected to substations)
+-- Includes AGE_YEARS, RATED_KVA, LOCATION_AREA, CIRCUIT_ID for semantic view compatibility
+-- with flux-utility-solutions/scripts/08_semantic_view.sql
 CREATE TABLE IF NOT EXISTS TRANSFORMER_METADATA (
     TRANSFORMER_ID VARCHAR(50) PRIMARY KEY,
     TRANSFORMER_NAME VARCHAR(200),
@@ -101,15 +105,19 @@ CREATE TABLE IF NOT EXISTS TRANSFORMER_METADATA (
     LATITUDE FLOAT,
     LONGITUDE FLOAT,
     CAPACITY_KVA NUMBER(10,2),
+    RATED_KVA NUMBER(10,2),            -- Semantic view: same as CAPACITY_KVA (alias for parity)
     PRIMARY_VOLTAGE_KV NUMBER(8,2),
     SECONDARY_VOLTAGE_KV NUMBER(8,2),
     INSTALL_YEAR NUMBER(4,0),
+    AGE_YEARS NUMBER(5,1),             -- Semantic view: computed from INSTALL_YEAR
     MANUFACTURER VARCHAR(100),
     MODEL VARCHAR(100),
     LAST_MAINTENANCE_DATE DATE,
     CURRENT_LOAD_KVA NUMBER(10,2),
     HEALTH_SCORE NUMBER(5,2),
-    RISK_CATEGORY VARCHAR(20)
+    RISK_CATEGORY VARCHAR(20),
+    LOCATION_AREA VARCHAR(100),        -- Semantic view: geographic area
+    CIRCUIT_ID VARCHAR(50)             -- Semantic view: circuit/feeder assignment
 );
 
 -- Circuits/Feeders
@@ -176,26 +184,33 @@ CREATE TABLE IF NOT EXISTS AMI_INTERVAL_READINGS (
 CLUSTER BY (DATE_TRUNC('DAY', READING_TIMESTAMP), METER_ID);
 
 -- Transformer Hourly Load
+-- Includes LOAD_KW, THERMAL_STRESS_CATEGORY for semantic view compatibility
 CREATE TABLE IF NOT EXISTS TRANSFORMER_HOURLY_LOAD (
     TRANSFORMER_ID VARCHAR(50),
     LOAD_HOUR TIMESTAMP_NTZ,
     CURRENT_LOAD_KW NUMBER(10,2),
+    LOAD_KW NUMBER(10,2),              -- Semantic view: alias for CURRENT_LOAD_KW
     LOAD_FACTOR_PCT NUMBER(5,2),
     TEMPERATURE_C NUMBER(5,1),
+    THERMAL_STRESS_CATEGORY VARCHAR(20), -- Semantic view: LOW/MODERATE/HIGH/CRITICAL
     PRIMARY KEY (TRANSFORMER_ID, LOAD_HOUR)
 );
 
 -- Customers
+-- Includes FULL_NAME, PRIMARY_METER_ID, CUSTOMER_SEGMENT for semantic view compatibility
 CREATE TABLE IF NOT EXISTS CUSTOMERS_MASTER_DATA (
     CUSTOMER_ID VARCHAR(50) PRIMARY KEY,
     FIRST_NAME VARCHAR(100),
     LAST_NAME VARCHAR(100),
+    FULL_NAME VARCHAR(200),             -- Semantic view: concatenation of FIRST_NAME + LAST_NAME
     METER_ID VARCHAR(50),
+    PRIMARY_METER_ID VARCHAR(50),       -- Semantic view: same as METER_ID (alias for parity)
     SERVICE_ADDRESS VARCHAR(500),
     CITY VARCHAR(100),
     STATE VARCHAR(2),
     ZIP_CODE VARCHAR(10),
     CUSTOMER_CLASS VARCHAR(50),
+    CUSTOMER_SEGMENT VARCHAR(50),       -- Semantic view: same as CUSTOMER_CLASS (alias for parity)
     ACCOUNT_STATUS VARCHAR(20) DEFAULT 'ACTIVE'
 );
 
@@ -276,6 +291,45 @@ CREATE TABLE IF NOT EXISTS TECHNICAL_MANUALS_PDF_CHUNKS (
     EMBEDDING VECTOR(FLOAT, 1024),
     CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
+
+-- AMI_READINGS_FINAL compatibility view for semantic view parity
+-- The semantic view (08_semantic_view.sql) references AMI_READINGS_FINAL with columns
+-- TIMESTAMP, USAGE_KWH, VOLTAGE. The ops center uses AMI_INTERVAL_READINGS with
+-- READING_TIMESTAMP, USAGE_KWH, VOLTAGE_V. This view bridges the gap.
+-- NOTE: Cannot rename AMI_INTERVAL_READINGS — backend/server_fastapi.py references it directly.
+CREATE OR REPLACE VIEW AMI_READINGS_FINAL AS
+SELECT
+    READING_ID,
+    METER_ID,
+    READING_TIMESTAMP AS TIMESTAMP,
+    USAGE_KWH,
+    VOLTAGE_V AS VOLTAGE,
+    CURRENT_A,
+    POWER_FACTOR,
+    DATA_QUALITY
+FROM AMI_INTERVAL_READINGS;
+
+-- ============================================================================
+-- SECTION 2B: ML_DEMO TABLES - Cortex Search Source Data
+-- ============================================================================
+USE SCHEMA ML_DEMO;
+
+-- Compliance Docs (Required by 07_create_cortex_search.sql for Cortex Search)
+-- This table stores NERC and regulatory compliance documents for the Grid Intelligence Agent
+CREATE TABLE IF NOT EXISTS COMPLIANCE_DOCS (
+    DOC_ID VARCHAR(50) PRIMARY KEY,
+    DOC_TYPE VARCHAR(100),
+    TITLE VARCHAR(500),
+    CONTENT VARCHAR(16777216),
+    CATEGORY VARCHAR(100),
+    EFFECTIVE_DATE DATE,
+    REVISION VARCHAR(50),
+    APPLICABILITY VARCHAR(16777216),
+    KEYWORDS VARCHAR(16777216),
+    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+USE SCHEMA PRODUCTION;
 
 -- ============================================================================
 -- SECTION 3: APPLICATIONS VIEWS - Ops Center UI
@@ -738,8 +792,8 @@ SELECT
 FROM numbered_rows
 WHERE NOT EXISTS (SELECT 1 FROM SUBSTATIONS LIMIT 1);
 
--- Insert sample transformers
-INSERT INTO TRANSFORMER_METADATA (TRANSFORMER_ID, TRANSFORMER_NAME, SUBSTATION_ID, LATITUDE, LONGITUDE, CAPACITY_KVA, PRIMARY_VOLTAGE_KV, INSTALL_YEAR, HEALTH_SCORE)
+-- Insert sample transformers (includes semantic view columns)
+INSERT INTO TRANSFORMER_METADATA (TRANSFORMER_ID, TRANSFORMER_NAME, SUBSTATION_ID, LATITUDE, LONGITUDE, CAPACITY_KVA, RATED_KVA, PRIMARY_VOLTAGE_KV, INSTALL_YEAR, AGE_YEARS, HEALTH_SCORE, LOCATION_AREA, CIRCUIT_ID)
 WITH numbered_rows AS (
     SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn
     FROM TABLE(GENERATOR(ROWCOUNT => 100))
@@ -751,9 +805,17 @@ SELECT
     29.7 + UNIFORM(0::FLOAT, 0.3::FLOAT, RANDOM()),
     -95.7 + UNIFORM(0::FLOAT, 0.7::FLOAT, RANDOM()),
     CASE MOD(rn, 4) WHEN 0 THEN 50 WHEN 1 THEN 100 WHEN 2 THEN 250 ELSE 500 END,
+    CASE MOD(rn, 4) WHEN 0 THEN 50 WHEN 1 THEN 100 WHEN 2 THEN 250 ELSE 500 END,  -- RATED_KVA = CAPACITY_KVA
     12.47,
     2000 + FLOOR(UNIFORM(0::FLOAT, 24::FLOAT, RANDOM())),
-    ROUND(60 + UNIFORM(0::FLOAT, 40::FLOAT, RANDOM()), 1)
+    ROUND(YEAR(CURRENT_DATE()) - (2000 + FLOOR(UNIFORM(0::FLOAT, 24::FLOAT, RANDOM()))), 1),  -- AGE_YEARS
+    ROUND(60 + UNIFORM(0::FLOAT, 40::FLOAT, RANDOM()), 1),
+    CASE MOD(rn, 8) 
+        WHEN 0 THEN 'Downtown' WHEN 1 THEN 'Midtown' WHEN 2 THEN 'Heights' 
+        WHEN 3 THEN 'Montrose' WHEN 4 THEN 'Galleria' WHEN 5 THEN 'Memorial'
+        WHEN 6 THEN 'Energy Corridor' ELSE 'Westchase'
+    END,  -- LOCATION_AREA
+    'CKT_' || LPAD(MOD(rn, 50 + 1)::VARCHAR, 4, '0')  -- CIRCUIT_ID (references CIRCUIT_METADATA)
 FROM numbered_rows
 WHERE NOT EXISTS (SELECT 1 FROM TRANSFORMER_METADATA LIMIT 1);
 
@@ -852,6 +914,101 @@ SELECT
     CASE WHEN UNIFORM(0::FLOAT, 1::FLOAT, RANDOM()) > 0.2 THEN 'GOOD' WHEN UNIFORM(0::FLOAT, 1::FLOAT, RANDOM()) > 0.5 THEN 'FAIR' ELSE 'POOR' END
 FROM numbered_rows
 WHERE NOT EXISTS (SELECT 1 FROM GRID_POLES_INFRASTRUCTURE LIMIT 1);
+
+-- Insert sample AMI readings (required by semantic view via AMI_READINGS_FINAL view)
+INSERT INTO AMI_INTERVAL_READINGS (METER_ID, READING_TIMESTAMP, USAGE_KWH, VOLTAGE_V, CURRENT_A, POWER_FACTOR)
+WITH meter_hours AS (
+    SELECT 
+        m.METER_ID,
+        DATEADD('hour', -seq.rn, CURRENT_TIMESTAMP()) AS ts,
+        seq.rn
+    FROM METER_INFRASTRUCTURE m
+    CROSS JOIN (
+        SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS rn
+        FROM TABLE(GENERATOR(ROWCOUNT => 48))
+    ) seq
+    WHERE m.METER_ID IN (SELECT METER_ID FROM METER_INFRASTRUCTURE LIMIT 50)
+)
+SELECT
+    METER_ID,
+    ts,
+    ROUND(0.5 + UNIFORM(0::FLOAT, 3.5::FLOAT, RANDOM()), 4),        -- USAGE_KWH
+    ROUND(118 + UNIFORM(0::FLOAT, 6::FLOAT, RANDOM()), 2),           -- VOLTAGE_V (118-124V)
+    ROUND(2 + UNIFORM(0::FLOAT, 13::FLOAT, RANDOM()), 2),            -- CURRENT_A
+    ROUND(0.85 + UNIFORM(0::FLOAT, 0.14::FLOAT, RANDOM()), 3)        -- POWER_FACTOR
+FROM meter_hours
+WHERE NOT EXISTS (SELECT 1 FROM AMI_INTERVAL_READINGS LIMIT 1);
+
+-- Insert sample transformer hourly load (includes semantic view columns)
+INSERT INTO TRANSFORMER_HOURLY_LOAD (TRANSFORMER_ID, LOAD_HOUR, CURRENT_LOAD_KW, LOAD_KW, LOAD_FACTOR_PCT, TEMPERATURE_C, THERMAL_STRESS_CATEGORY)
+WITH xfmr_hours AS (
+    SELECT 
+        t.TRANSFORMER_ID,
+        DATEADD('hour', -seq.rn, CURRENT_TIMESTAMP()) AS ts,
+        t.CAPACITY_KVA,
+        seq.rn
+    FROM TRANSFORMER_METADATA t
+    CROSS JOIN (
+        SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS rn
+        FROM TABLE(GENERATOR(ROWCOUNT => 24))
+    ) seq
+)
+SELECT
+    TRANSFORMER_ID,
+    ts,
+    ROUND(CAPACITY_KVA * (0.2 + UNIFORM(0::FLOAT, 0.7::FLOAT, RANDOM())), 2) AS current_load,
+    ROUND(CAPACITY_KVA * (0.2 + UNIFORM(0::FLOAT, 0.7::FLOAT, RANDOM())), 2) AS load_kw,  -- Same as CURRENT_LOAD_KW
+    ROUND((0.2 + UNIFORM(0::FLOAT, 0.7::FLOAT, RANDOM())) * 100, 2),                       -- LOAD_FACTOR_PCT
+    ROUND(25 + UNIFORM(0::FLOAT, 40::FLOAT, RANDOM()), 1),                                  -- TEMPERATURE_C
+    CASE 
+        WHEN UNIFORM(0::FLOAT, 1::FLOAT, RANDOM()) < 0.5 THEN 'LOW'
+        WHEN UNIFORM(0::FLOAT, 1::FLOAT, RANDOM()) < 0.7 THEN 'MODERATE'
+        WHEN UNIFORM(0::FLOAT, 1::FLOAT, RANDOM()) < 0.9 THEN 'HIGH'
+        ELSE 'CRITICAL'
+    END                                                                                      -- THERMAL_STRESS_CATEGORY
+FROM xfmr_hours
+WHERE NOT EXISTS (SELECT 1 FROM TRANSFORMER_HOURLY_LOAD LIMIT 1);
+
+-- Insert sample customers (includes semantic view columns)
+INSERT INTO CUSTOMERS_MASTER_DATA (CUSTOMER_ID, FIRST_NAME, LAST_NAME, FULL_NAME, METER_ID, PRIMARY_METER_ID, SERVICE_ADDRESS, CITY, STATE, ZIP_CODE, CUSTOMER_CLASS, CUSTOMER_SEGMENT)
+WITH numbered_rows AS (
+    SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn
+    FROM TABLE(GENERATOR(ROWCOUNT => 500))
+)
+SELECT
+    'CUST_' || LPAD(rn::VARCHAR, 8, '0'),
+    CASE MOD(rn, 10) 
+        WHEN 0 THEN 'James' WHEN 1 THEN 'Maria' WHEN 2 THEN 'Robert' WHEN 3 THEN 'Patricia'
+        WHEN 4 THEN 'John' WHEN 5 THEN 'Jennifer' WHEN 6 THEN 'Michael' WHEN 7 THEN 'Linda'
+        WHEN 8 THEN 'David' ELSE 'Elizabeth'
+    END,
+    CASE MOD(rn, 8) 
+        WHEN 0 THEN 'Smith' WHEN 1 THEN 'Garcia' WHEN 2 THEN 'Johnson' WHEN 3 THEN 'Williams'
+        WHEN 4 THEN 'Brown' WHEN 5 THEN 'Jones' WHEN 6 THEN 'Davis' ELSE 'Martinez'
+    END,
+    -- FULL_NAME = FIRST_NAME || ' ' || LAST_NAME
+    CASE MOD(rn, 10) 
+        WHEN 0 THEN 'James' WHEN 1 THEN 'Maria' WHEN 2 THEN 'Robert' WHEN 3 THEN 'Patricia'
+        WHEN 4 THEN 'John' WHEN 5 THEN 'Jennifer' WHEN 6 THEN 'Michael' WHEN 7 THEN 'Linda'
+        WHEN 8 THEN 'David' ELSE 'Elizabeth'
+    END || ' ' ||
+    CASE MOD(rn, 8) 
+        WHEN 0 THEN 'Smith' WHEN 1 THEN 'Garcia' WHEN 2 THEN 'Johnson' WHEN 3 THEN 'Williams'
+        WHEN 4 THEN 'Brown' WHEN 5 THEN 'Jones' WHEN 6 THEN 'Davis' ELSE 'Martinez'
+    END,
+    'MTR_' || LPAD(rn::VARCHAR, 8, '0'),                               -- METER_ID
+    'MTR_' || LPAD(rn::VARCHAR, 8, '0'),                               -- PRIMARY_METER_ID = METER_ID
+    FLOOR(100 + UNIFORM(0::FLOAT, 9900::FLOAT, RANDOM()))::VARCHAR || ' ' ||
+        CASE MOD(rn, 6) WHEN 0 THEN 'Main St' WHEN 1 THEN 'Oak Ave' WHEN 2 THEN 'Westheimer Rd'
+            WHEN 3 THEN 'Richmond Ave' WHEN 4 THEN 'Memorial Dr' ELSE 'Kirby Dr' END,
+    CASE MOD(rn, 5) WHEN 0 THEN 'Houston' WHEN 1 THEN 'Katy' WHEN 2 THEN 'Sugar Land' 
+        WHEN 3 THEN 'The Woodlands' ELSE 'Pearland' END,
+    'TX',
+    '77' || LPAD(MOD(rn, 100)::VARCHAR, 3, '0'),
+    CASE MOD(rn, 10) WHEN 0 THEN 'COMMERCIAL' WHEN 1 THEN 'INDUSTRIAL' ELSE 'RESIDENTIAL' END,
+    CASE MOD(rn, 10) WHEN 0 THEN 'COMMERCIAL' WHEN 1 THEN 'INDUSTRIAL' ELSE 'RESIDENTIAL' END  -- CUSTOMER_SEGMENT = CUSTOMER_CLASS
+FROM numbered_rows
+WHERE NOT EXISTS (SELECT 1 FROM CUSTOMERS_MASTER_DATA LIMIT 1);
 
 -- ============================================================================
 -- SECTION 6B: ML_DEMO SAMPLE DATA
@@ -1328,8 +1485,340 @@ SELECT
     END AS STATUS;
 
 -- ============================================================================
+-- SECTION 10: CORTEX AI - Search Data, Services, Agent, and Semantic View
+-- ============================================================================
+-- This section sets up the full Cortex AI pipeline for the Grid Intelligence
+-- Assistant and semantic analytics:
+--   1. Sample data for Cortex Search (technical docs + compliance docs)
+--   2. Cortex Search Services (indexes the sample data for RAG)
+--   3. Grid Intelligence Agent (uses search services for chat)
+--   4. Semantic View (enables natural language analytics via Cortex Analyst)
+--
+-- IMPORTANT: Requires ACCOUNTADMIN for Cortex Search and Agent creation.
+-- ============================================================================
+
+USE ROLE ACCOUNTADMIN;
+USE DATABASE FLUX_DB;
+USE WAREHOUSE FLUX_WH;
+
+-- ----------------------------------------------------------------------------
+-- 10a: Load Sample Data for Cortex Search
+-- ----------------------------------------------------------------------------
+-- Technical documentation chunks for the TECHNICAL_DOCS_SEARCH service.
+-- A representative subset of equipment manuals and procedures.
+
+USE SCHEMA PRODUCTION;
+
+INSERT INTO TECHNICAL_MANUALS_PDF_CHUNKS (CHUNK_ID, DOCUMENT_ID, CHUNK_TEXT, DOCUMENT_TYPE)
+SELECT column1, column2, column3, column4
+FROM VALUES
+(1, 'DOC_1', 'Transformer Oil Sampling and Analysis Procedure - Model 345kV Substation Units. To perform quarterly oil sampling on high-voltage transformers, follow these critical steps: 1) De-energize the transformer and allow minimum 4-hour cooling period. 2) Connect grounding cable to transformer tank using approved clamp assembly (Part #TG-4401). 3) Remove sampling valve cap located on lower tank section. 4) Purge initial 500ml of oil to clear contaminants from valve assembly. 5) Collect 1-liter sample in pre-cleaned glass container (Specification: ASTM D923 compliant). Sample must be analyzed within 72 hours for dissolved gas analysis (DGA). Critical thresholds: Hydrogen >150ppm indicates potential arcing, Acetylene >35ppm suggests severe overheating.', 'Maintenance Procedure'),
+(2, 'DOC_1', 'Bushing Insulation Resistance Testing Protocol for 138kV and 345kV Equipment. Configure Megger MIT1025 insulation tester to 10kV test voltage for porcelain bushings rated above 69kV. Acceptable readings: >5000 MOhm for new bushings, >1000 MOhm for in-service units over 10 years. Values below 500 MOhm require immediate investigation and potential replacement.', 'Testing Procedure'),
+(3, 'DOC_2', 'Smart Meter Installation Procedure - Landis+Gyr Focus AX Series. Safety Requirements: De-energize meter socket before installation. Verify absence of voltage using approved non-contact voltage tester (minimum CAT III rating). Communication Setup: The Focus AX supports RF mesh (900 MHz), cellular (LTE Cat-M1), and Wi-Fi. For RF mesh deployment, ensure minimum -85 dBm signal strength. Set voltage monitoring thresholds: Under-voltage alert at 114V, Over-voltage alert at 126V.', 'Installation Guide'),
+(4, 'DOC_3', 'Substation Battery Maintenance - VRLA Lead-Acid Systems. Monthly Inspection: Visual check for signs of thermal runaway. Verify float voltage within 2.25-2.30 V/cell for VRLA batteries at 77F (25C). Annual Capacity Test: Discharge battery string at C/8 rate to 1.75 V/cell endpoint. Capacity must exceed 80% of nameplate to remain in service. Batteries below 80% capacity require replacement planning.', 'Maintenance Procedure'),
+(5, 'DOC_4', 'Underground Cable Fault Location - Time Domain Reflectometry. Equipment Required: Megger TDR2050 or equivalent. Set velocity factor based on cable type - XLPE insulated: VF = 0.54, EPR insulated: VF = 0.48. Fault signatures: Open circuit shows positive reflection, Short circuit shows negative reflection. Distance to fault = (Time x VF x c) / 2.', 'Testing Procedure'),
+(6, 'DOC_5', 'Vegetation Management Safety Procedures - Line Clearance Tree Trimming. Minimum Approach Distance (MAD) for qualified line-clearance workers: 69kV: 3.17 feet, 138kV: 4.25 feet, 345kV: 8.17 feet. Weather Restrictions: Suspend climbing when wind exceeds 25 mph sustained. Lightning: All personnel must be grounded when lightning observed within 10 miles.', 'Safety Procedure'),
+(7, 'DOC_6', 'SCADA System Architecture - DNP3 Protocol Implementation. Poll interval for critical measurements (breaker status, transformer load): 2 seconds. Poll interval for analog values (voltage, current, power): 10 seconds. Security: Enable Secure Authentication (SA) per IEEE 1815 for all critical infrastructure.', 'System Configuration'),
+(8, 'DOC_7', 'Storm Response and Emergency Restoration Procedure. Pre-Storm Preparation: Activate Emergency Operations Center with minimum staffing. Pre-position mobile generators at critical facilities. Classification system: Priority 1 (public safety hazards) dispatch immediately. Priority 2 (critical facilities) restore within 4 hours. Priority 3 (backbone feeders >500 customers) restore within 8 hours.', 'Emergency Procedure')
+WHERE NOT EXISTS (SELECT 1 FROM TECHNICAL_MANUALS_PDF_CHUNKS LIMIT 1);
+
+-- Compliance documentation for the COMPLIANCE_DOCS_SEARCH service.
+USE SCHEMA ML_DEMO;
+
+INSERT INTO COMPLIANCE_DOCS (DOC_ID, DOC_TYPE, TITLE, CONTENT, CATEGORY, EFFECTIVE_DATE, REVISION, APPLICABILITY, KEYWORDS)
+SELECT column1, column2, column3, column4, column5, column6::DATE, column7, column8, column9
+FROM VALUES
+('NERC-TPL-001-5.1', 'Reliability Standard', 'Transmission System Planning Performance Requirements',
+ 'Purpose: Establish Transmission system planning performance requirements. Requirements: R1. Each Planning Coordinator shall maintain System models. R2. Each shall perform assessments of Transmission system performance. Cascade Prevention: System must maintain stability following N-1 contingencies. Cascading shall not occur for any single Contingency.',
+ 'Transmission Planning', '2024-01-01', '5.1', 'Transmission Planners, Planning Coordinators', 'cascade prevention, N-1 contingency, transmission planning'),
+
+('NERC-FAC-001-3', 'Reliability Standard', 'Facility Interconnection Requirements',
+ 'Purpose: To avoid adverse impacts on the reliability of the Bulk Electric System at or beyond the Point of Interconnection. Cascade Protection: Adequate fault clearing capability to prevent cascade propagation. Proper coordination of protection systems between interconnected systems.',
+ 'Facility Design', '2023-07-01', '3', 'Transmission Owners, Generator Owners', 'interconnection, fault clearing, cascade prevention'),
+
+('NERC-TOP-001-5', 'Reliability Standard', 'Transmission Operations',
+ 'Purpose: To prevent instability, uncontrolled separation, or Cascading outages. Requirements: R1. Perform operational planning analysis. R2. Monitor Transmission Operator Area. R3. Take corrective action when anticipating equipment overloads, abnormal frequency, or voltage deviations.',
+ 'System Operations', '2024-04-01', '5', 'Transmission Operators, Reliability Coordinators', 'real-time operations, system limits, cascade prevention'),
+
+('NERC-EOP-011-3', 'Reliability Standard', 'Emergency Operations',
+ 'Purpose: Address capacity and energy emergencies. Emergency Levels: EEA1 - All resources in use. EEA2 - Load management in effect. EEA3 - Firm load interruption imminent. Automatic Load Shedding: UFLS programs activated at specific frequency thresholds. UVLS for voltage collapse prevention.',
+ 'Emergency Operations', '2023-10-01', '3', 'Balancing Authorities, Transmission Operators', 'emergency operations, load shedding, UFLS, cascade prevention'),
+
+('NERC-PRC-006-5', 'Reliability Standard', 'Automatic Underfrequency Load Shedding',
+ 'Purpose: Establish requirements for UFLS programs to arrest declining frequency. Load Shedding Thresholds: 59.5 Hz first stage (5% shed), 59.0 Hz second stage (10% shed), 58.5 Hz third stage (15% shed). Strategy: Rapid load reduction, islanding detection, automatic restoration.',
+ 'Protection Systems', '2024-01-01', '5', 'Planning Coordinators, Distribution Providers', 'UFLS, underfrequency, load shedding'),
+
+('GS-STD-001', 'Internal Standard', 'GridStar Energy Transformer Loading Standards',
+ 'Normal Loading Limits: 100% nameplate continuous. Emergency: Up to 120% for 4 hours, 140% for 30 minutes. Temperature Monitoring: Hot spot alarm at 110C, trip at 130C. Top oil alarm at 95C, trip at 105C. Cascade Prevention: Transformers >90% load for >2 hours require investigation.',
+ 'Internal Standards', '2024-01-15', '2024.1', 'Distribution Operations, Engineering', 'transformer loading, thermal limits, cascade prevention')
+WHERE NOT EXISTS (SELECT 1 FROM COMPLIANCE_DOCS LIMIT 1);
+
+-- ----------------------------------------------------------------------------
+-- 10b: Create Cortex Search Services
+-- ----------------------------------------------------------------------------
+-- These services index the source tables for RAG-based search.
+-- Indexing starts immediately and typically completes within a few minutes.
+
+USE SCHEMA PRODUCTION;
+
+CREATE OR REPLACE CORTEX SEARCH SERVICE TECHNICAL_DOCS_SEARCH
+    ON CHUNK_TEXT
+    ATTRIBUTES CHUNK_ID, DOCUMENT_ID, DOCUMENT_TYPE, SOURCE_SYSTEM, LANGUAGE
+    WAREHOUSE = FLUX_WH
+    TARGET_LAG = '1 hour'
+    COMMENT = 'Technical documentation search for Grid Intelligence Agent'
+AS (
+    SELECT
+        CHUNK_ID::VARCHAR AS CHUNK_ID,
+        DOCUMENT_ID,
+        DOCUMENT_TYPE,
+        SOURCE_SYSTEM,
+        LANGUAGE,
+        CHUNK_TEXT
+    FROM FLUX_DB.PRODUCTION.TECHNICAL_MANUALS_PDF_CHUNKS
+    WHERE CHUNK_TEXT IS NOT NULL
+);
+
+SELECT 'Created: FLUX_DB.PRODUCTION.TECHNICAL_DOCS_SEARCH' AS STATUS;
+
+USE SCHEMA ML_DEMO;
+
+CREATE OR REPLACE CORTEX SEARCH SERVICE COMPLIANCE_DOCS_SEARCH
+    ON CONTENT
+    ATTRIBUTES DOC_ID, DOC_TYPE, TITLE, CATEGORY, KEYWORDS, APPLICABILITY
+    WAREHOUSE = FLUX_WH
+    TARGET_LAG = '1 hour'
+    COMMENT = 'Regulatory compliance document search for Grid Intelligence Agent'
+AS (
+    SELECT 
+        DOC_ID,
+        DOC_TYPE,
+        TITLE,
+        CONTENT,
+        CATEGORY,
+        KEYWORDS,
+        APPLICABILITY,
+        EFFECTIVE_DATE::VARCHAR AS EFFECTIVE_DATE,
+        REVISION
+    FROM FLUX_DB.ML_DEMO.COMPLIANCE_DOCS
+    WHERE CONTENT IS NOT NULL
+);
+
+SELECT 'Created: FLUX_DB.ML_DEMO.COMPLIANCE_DOCS_SEARCH' AS STATUS;
+
+-- ----------------------------------------------------------------------------
+-- 10c: Create Grid Intelligence Agent
+-- ----------------------------------------------------------------------------
+-- The agent ties together the search services and provides the chat interface.
+-- Uses Claude Sonnet for orchestration and the search services for RAG.
+
+CREATE DATABASE IF NOT EXISTS SNOWFLAKE_INTELLIGENCE;
+CREATE SCHEMA IF NOT EXISTS SNOWFLAKE_INTELLIGENCE.AGENTS;
+USE DATABASE SNOWFLAKE_INTELLIGENCE;
+USE SCHEMA AGENTS;
+USE WAREHOUSE FLUX_WH;
+
+CREATE OR REPLACE AGENT GRID_INTELLIGENCE_AGENT
+  COMMENT = 'Grid Intelligence Assistant for Flux Operations Center - searches technical docs and compliance regulations'
+  PROFILE = '{"display_name": "Grid Intelligence", "avatar": "ChartAgentIcon", "color": "blue"}'
+  FROM SPECIFICATION
+$$
+models:
+  orchestration: claude-sonnet-4-5
+
+orchestration:
+  budget:
+    seconds: 60
+    tokens: 4096
+
+instructions:
+  response: "Provide clear, actionable answers based on the documentation. When citing compliance requirements, include the specific standard number (e.g., TPL-001-5). For technical issues, include relevant equipment identifiers and procedures."
+  orchestration: "You are the Grid Intelligence Assistant for utility operations. Help users find information in technical documentation and compliance regulations. Always search relevant sources before answering. Be concise and cite your sources."
+
+tools:
+  - tool_spec:
+      type: cortex_search
+      name: search_technical_docs
+      description: "Search technical manuals, equipment documentation, maintenance procedures, and operational guides."
+  - tool_spec:
+      type: cortex_search
+      name: search_compliance_docs
+      description: "Search NERC and regulatory compliance documents including TPL-001, FAC-003, EOP-011, CIP standards."
+
+tool_resources:
+  search_technical_docs:
+    name: "FLUX_DB.PRODUCTION.TECHNICAL_DOCS_SEARCH"
+    max_results: "5"
+    id_column: "CHUNK_ID"
+    title_column: "DOCUMENT_TYPE"
+  search_compliance_docs:
+    name: "FLUX_DB.ML_DEMO.COMPLIANCE_DOCS_SEARCH"
+    max_results: "5"
+    id_column: "DOC_ID"
+    title_column: "TITLE"
+$$;
+
+SELECT 'Created Agent: SNOWFLAKE_INTELLIGENCE.AGENTS.GRID_INTELLIGENCE_AGENT' AS STATUS;
+
+-- Grant permissions so the SPCS service (running as PUBLIC role) can invoke the agent
+GRANT USAGE ON DATABASE SNOWFLAKE_INTELLIGENCE TO ROLE PUBLIC;
+GRANT USAGE ON SCHEMA SNOWFLAKE_INTELLIGENCE.AGENTS TO ROLE PUBLIC;
+GRANT USAGE ON AGENT GRID_INTELLIGENCE_AGENT TO ROLE PUBLIC;
+GRANT USAGE ON CORTEX SEARCH SERVICE FLUX_DB.PRODUCTION.TECHNICAL_DOCS_SEARCH TO ROLE PUBLIC;
+GRANT USAGE ON CORTEX SEARCH SERVICE FLUX_DB.ML_DEMO.COMPLIANCE_DOCS_SEARCH TO ROLE PUBLIC;
+
+-- ----------------------------------------------------------------------------
+-- 10d: Create Semantic View
+-- ----------------------------------------------------------------------------
+-- This semantic view is identical to flux-utility-solutions/scripts/08_semantic_view.sql.
+-- It enables natural language analytics via Cortex Analyst over the core grid tables.
+-- The APPLICATIONS schema houses it alongside other analytical objects.
+
+USE DATABASE FLUX_DB;
+USE SCHEMA APPLICATIONS;
+
+CREATE OR REPLACE SEMANTIC VIEW UTILITY_SEMANTIC_VIEW
+TABLES (
+    -- AMI Readings (via compatibility view that maps column names)
+    ami AS FLUX_DB.PRODUCTION.AMI_READINGS_FINAL
+        WITH SYNONYMS = ('meter readings', 'interval data', 'energy data'),
+    
+    -- Customers table - note UNIQUE constraint on PRIMARY_METER_ID for relationship
+    customers AS FLUX_DB.PRODUCTION.CUSTOMERS_MASTER_DATA
+        PRIMARY KEY (CUSTOMER_ID)
+        UNIQUE (PRIMARY_METER_ID)
+        WITH SYNONYMS = ('customer profiles', 'accounts'),
+    
+    -- Transformer hourly load
+    xfmr_load AS FLUX_DB.PRODUCTION.TRANSFORMER_HOURLY_LOAD
+        WITH SYNONYMS = ('transformer loading', 'hourly load'),
+    
+    -- Transformer metadata
+    xfmr AS FLUX_DB.PRODUCTION.TRANSFORMER_METADATA
+        PRIMARY KEY (TRANSFORMER_ID)
+        WITH SYNONYMS = ('transformers', 'transformer assets')
+)
+RELATIONSHIPS (
+    -- AMI readings link to customers via meter ID
+    ami(METER_ID) REFERENCES customers(PRIMARY_METER_ID),
+    -- Transformer load links to transformer metadata
+    xfmr_load(TRANSFORMER_ID) REFERENCES xfmr(TRANSFORMER_ID)
+)
+FACTS (
+    -- Energy consumption facts
+    ami.USAGE_KWH AS USAGE_KWH 
+        WITH SYNONYMS = ('consumption', 'energy usage', 'kwh')
+        COMMENT = 'Energy consumption in kilowatt-hours',
+    ami.VOLTAGE AS VOLTAGE
+        WITH SYNONYMS = ('volts', 'voltage reading')
+        COMMENT = 'Voltage reading in volts',
+    
+    -- Transformer load facts
+    xfmr_load.LOAD_KW AS LOAD_KW
+        WITH SYNONYMS = ('load', 'power')
+        COMMENT = 'Current load in kilowatts',
+    xfmr_load.LOAD_FACTOR_PCT AS LOAD_FACTOR_PCT
+        WITH SYNONYMS = ('utilization', 'loading percent')
+        COMMENT = 'Load as percentage of rated capacity',
+    
+    -- Transformer asset facts
+    xfmr.HEALTH_SCORE AS HEALTH_SCORE
+        COMMENT = 'Asset health score 0-100',
+    xfmr.AGE_YEARS AS AGE_YEARS
+        COMMENT = 'Transformer age in years',
+    xfmr.RATED_KVA AS RATED_KVA
+        WITH SYNONYMS = ('capacity', 'rating')
+        COMMENT = 'Rated capacity in kVA'
+)
+DIMENSIONS (
+    -- AMI dimensions
+    ami.METER_ID AS METER_ID
+        WITH SYNONYMS = ('meter', 'meter number')
+        COMMENT = 'Unique smart meter identifier',
+    ami.TIMESTAMP AS TIMESTAMP
+        WITH SYNONYMS = ('reading time', 'time', 'date')
+        COMMENT = '15-minute interval timestamp',
+    
+    -- Customer dimensions
+    customers.CUSTOMER_ID AS CUSTOMER_ID
+        WITH SYNONYMS = ('customer', 'account')
+        COMMENT = 'Unique customer identifier',
+    customers.FULL_NAME AS FULL_NAME
+        WITH SYNONYMS = ('name', 'customer name')
+        COMMENT = 'Customer full name',
+    customers.CITY AS CITY
+        COMMENT = 'Service city',
+    customers.ZIP_CODE AS ZIP_CODE
+        WITH SYNONYMS = ('zip', 'postal code')
+        COMMENT = 'Service ZIP code',
+    customers.CUSTOMER_SEGMENT AS CUSTOMER_SEGMENT
+        WITH SYNONYMS = ('segment', 'type')
+        COMMENT = 'Customer type (RESIDENTIAL, COMMERCIAL, INDUSTRIAL)',
+    
+    -- Transformer dimensions
+    xfmr.TRANSFORMER_ID AS TRANSFORMER_ID
+        WITH SYNONYMS = ('transformer', 'xfmr')
+        COMMENT = 'Transformer identifier',
+    xfmr.LOCATION_AREA AS LOCATION_AREA
+        COMMENT = 'Geographic area',
+    xfmr.SUBSTATION_ID AS SUBSTATION_ID
+        COMMENT = 'Parent substation',
+    xfmr.CIRCUIT_ID AS CIRCUIT_ID
+        COMMENT = 'Circuit/feeder assignment',
+    
+    -- Transformer load dimensions
+    xfmr_load.THERMAL_STRESS_CATEGORY AS THERMAL_STRESS_CATEGORY
+        WITH SYNONYMS = ('stress level', 'thermal risk')
+        COMMENT = 'Thermal stress category (LOW, MODERATE, HIGH, CRITICAL)',
+    xfmr_load.LOAD_HOUR AS LOAD_HOUR
+        WITH SYNONYMS = ('hour')
+        COMMENT = 'Hour of measurement'
+)
+METRICS (
+    -- Energy consumption metrics
+    ami.TOTAL_CONSUMPTION AS SUM(ami.USAGE_KWH)
+        WITH SYNONYMS = ('total kwh', 'total usage')
+        COMMENT = 'Total energy consumption in kWh',
+    ami.AVG_CONSUMPTION AS AVG(ami.USAGE_KWH)
+        WITH SYNONYMS = ('average kwh', 'avg usage')
+        COMMENT = 'Average energy consumption per interval',
+    ami.METER_COUNT AS COUNT(DISTINCT ami.METER_ID)
+        COMMENT = 'Count of distinct meters reporting',
+    ami.AVG_VOLTAGE AS AVG(ami.VOLTAGE)
+        COMMENT = 'Average voltage across readings',
+    
+    -- Customer metrics
+    customers.CUSTOMER_COUNT AS COUNT(DISTINCT customers.CUSTOMER_ID)
+        COMMENT = 'Total number of customers',
+    
+    -- Transformer metrics
+    xfmr.TRANSFORMER_COUNT AS COUNT(DISTINCT xfmr.TRANSFORMER_ID)
+        COMMENT = 'Total transformers',
+    xfmr.AVG_AGE AS AVG(xfmr.AGE_YEARS)
+        COMMENT = 'Average transformer age',
+    xfmr.AVG_HEALTH_SCORE AS AVG(xfmr.HEALTH_SCORE)
+        COMMENT = 'Average health score',
+    
+    -- Load metrics
+    xfmr_load.AVG_LOAD_FACTOR AS AVG(xfmr_load.LOAD_FACTOR_PCT)
+        COMMENT = 'Average load factor percentage',
+    xfmr_load.PEAK_LOAD_FACTOR AS MAX(xfmr_load.LOAD_FACTOR_PCT)
+        COMMENT = 'Maximum load factor percentage'
+)
+COMMENT = 'Utility grid analytics semantic model for AMI readings, transformer health, and customer profiles. Compatible with flux-utility-solutions semantic view.';
+
+-- Grant access to PUBLIC so the SPCS service and Cortex Analyst can use it
+GRANT SELECT ON SEMANTIC VIEW UTILITY_SEMANTIC_VIEW TO ROLE PUBLIC;
+
+SHOW SEMANTIC VIEWS IN SCHEMA APPLICATIONS;
+
+SELECT 'Cortex AI setup complete: Search Services + Agent + Semantic View' AS STATUS;
+
+-- ============================================================================
 -- VERIFICATION
 -- ============================================================================
+
+USE DATABASE FLUX_DB;
 
 SELECT 
     '=== STANDALONE DEPLOYMENT COMPLETE ===' AS MESSAGE
@@ -1340,7 +1829,11 @@ SELECT 'Schemas: PRODUCTION, APPLICATIONS, ML_DEMO, CASCADE_ANALYSIS, POSTGRES_S
 UNION ALL
 SELECT 'Sample Data: ' || (SELECT COUNT(*) FROM PRODUCTION.SUBSTATIONS) || ' substations, ' || 
        (SELECT COUNT(*) FROM PRODUCTION.TRANSFORMER_METADATA) || ' transformers, ' ||
-       (SELECT COUNT(*) FROM PRODUCTION.METER_INFRASTRUCTURE) || ' meters'
+       (SELECT COUNT(*) FROM PRODUCTION.METER_INFRASTRUCTURE) || ' meters, ' ||
+       (SELECT COUNT(*) FROM PRODUCTION.AMI_INTERVAL_READINGS) || ' AMI readings, ' ||
+       (SELECT COUNT(*) FROM PRODUCTION.CUSTOMERS_MASTER_DATA) || ' customers'
+UNION ALL
+SELECT 'Cortex AI: Search Services + Grid Intelligence Agent + Semantic View'
 UNION ALL
 SELECT 'Postgres Instance: ' || $postgres_instance_name || ' (check above for credentials)'
 UNION ALL
@@ -1352,7 +1845,13 @@ SELECT '  1. SAVE the Postgres credentials shown above - they cannot be retrieve
 UNION ALL
 SELECT '  2. Run: ALTER TASK POSTGRES_SYNC.TASK_POSTGRES_SYNC RESUME; to enable auto-sync'
 UNION ALL
-SELECT '  3. Run scripts 01-03 to deploy the SPCS service';
+SELECT '  3. Run scripts 01-03 to deploy the SPCS service'
+UNION ALL
+SELECT '  4. Verify Cortex: SHOW CORTEX SEARCH SERVICES IN DATABASE FLUX_DB;'
+UNION ALL
+SELECT '  5. Verify Agent: SHOW AGENTS IN SCHEMA SNOWFLAKE_INTELLIGENCE.AGENTS;'
+UNION ALL
+SELECT '  6. Verify Semantic View: SHOW SEMANTIC VIEWS IN SCHEMA FLUX_DB.APPLICATIONS;';
 
 -- Show what was created
 SHOW SCHEMAS IN DATABASE FLUX_DB;

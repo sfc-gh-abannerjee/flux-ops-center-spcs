@@ -1832,8 +1832,39 @@ step_12_setup_cortex() {
         fi
     fi
     
+    # --- Step 12d: Create Semantic View ---
+    # The semantic view enables natural language analytics via Cortex Analyst
+    # over the core grid tables (AMI, customers, transformers).
+    step_12d_setup_semantic_view
+    
     STEP_12_DONE=true
     print_success "Cortex AI setup completed - Grid Intelligence Agent is ready"
+}
+
+# =============================================================================
+# STEP 12D: SETUP SEMANTIC VIEW (called from step_12_setup_cortex)
+# =============================================================================
+# This is automatically called at the end of step 12 to deploy the semantic view.
+# The semantic view enables natural language analytics via Cortex Analyst.
+
+step_12d_setup_semantic_view() {
+    local semantic_sql="$PROJECT_ROOT/scripts/sql/11_create_semantic_view.sql"
+    if [ -f "$semantic_sql" ]; then
+        print_step "Creating Semantic View for Cortex Analyst..."
+        print_info "View: ${SNOWFLAKE_DATABASE}.APPLICATIONS.UTILITY_SEMANTIC_VIEW"
+        if snow sql -c "$SNOWFLAKE_CONNECTION" -f "$semantic_sql" \
+            -D "database=${SNOWFLAKE_DATABASE}" \
+            -D "warehouse=${SNOWFLAKE_WAREHOUSE}" 2>&1 | \
+            grep -E "^(CREATE|SELECT|STATUS|GRANT|SHOW)" | while read line; do print_substep "$line"; done; then
+            print_success "Semantic View created"
+        else
+            print_warning "Semantic View creation had issues - check manually"
+            print_info "You can deploy manually: snow sql -c $SNOWFLAKE_CONNECTION -f scripts/sql/11_create_semantic_view.sql -D \"database=${SNOWFLAKE_DATABASE}\" -D \"warehouse=${SNOWFLAKE_WAREHOUSE}\""
+        fi
+    else
+        print_warning "Semantic View SQL not found at $semantic_sql"
+        print_info "Semantic View is optional but enables natural language analytics"
+    fi
 }
 
 # =============================================================================
@@ -1909,6 +1940,17 @@ step_13_health_check() {
             print_success "Cortex Search Services: $cortex_count found"
         else
             print_warning "Cortex Search Services: none found"
+        fi
+        
+        # Check Semantic View
+        local sv_count=$(snow sql -c "$SNOWFLAKE_CONNECTION" -q \
+            "SHOW SEMANTIC VIEWS IN SCHEMA ${SNOWFLAKE_DATABASE}.APPLICATIONS" 2>/dev/null | \
+            grep -c "UTILITY_SEMANTIC_VIEW" || echo "0")
+        
+        if [ "$sv_count" -gt 0 ]; then
+            print_success "Semantic View: UTILITY_SEMANTIC_VIEW found"
+        else
+            print_warning "Semantic View: not found (run 11_create_semantic_view.sql)"
         fi
     fi
     
