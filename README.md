@@ -8,7 +8,7 @@
 
 > *"Whether it's keeping the grid secure, protecting critical assets, or balancing supply and demand in volatile markets, energy companies need a trusted data foundation that can activate AI everywhere."* — Fred Cohagan, Global Head of Energy, Snowflake
 >
-> Built to demonstrate the grid resilience and asset health monitoring capabilities at the heart of [Snowflake Energy Solutions](https://www.snowflake.com/en/solutions/industries/energy/).
+> Built to demonstrate the grid resilience and asset health monitoring capabilities at the heart of [Snowflake Energy Solutions](https://www.snowflake.com/en/solutions/industries/manufacturing/energy/).
 
 <p align="center">
   <img width="49%" alt="Grid Map View" src="https://github.com/user-attachments/assets/0125a740-b678-4271-bbf2-aac7694b5b7e" />
@@ -226,5 +226,5 @@ Apache 2.0 - see [LICENSE](LICENSE)
 
 <p align="center">
   <strong>Built on Snowflake AI Data Cloud</strong><br/>
-  <em>Part of the <a href="https://www.snowflake.com/en/solutions/industries/energy/">Snowflake Energy Solutions</a> ecosystem</em>
+  <em>Part of the <a href="https://www.snowflake.com/en/solutions/industries/manufacturing/energy/">Snowflake Energy Solutions</a> ecosystem</em>
 </p>
