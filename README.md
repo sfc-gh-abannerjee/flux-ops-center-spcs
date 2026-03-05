@@ -6,7 +6,7 @@
 
 **See your grid. Predict cascade failures before they happen.** Real-time visualization of 66K+ grid assets with GNN-based risk prediction — giving operations teams the situational awareness to prevent outages, not just respond to them.
 
-> *"Whether it's keeping the grid secure, protecting critical assets, or balancing supply and demand in volatile markets, energy companies need a trusted data foundation that can activate AI everywhere."* — Fred Cohagan, Global Head of Energy, Snowflake
+> *"Whether it's keeping the grid secure, protecting critical assets, or balancing supply and demand in volatile markets, energy companies need a trusted data foundation that can activate AI everywhere."* — Fred Cohagan, Industry Principal, Energy, Snowflake
 >
 > Built to demonstrate the grid resilience and asset health monitoring capabilities at the heart of [Snowflake Energy Solutions](https://www.snowflake.com/en/solutions/industries/manufacturing/energy/).
 
