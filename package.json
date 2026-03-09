@@ -16,7 +16,7 @@
     "@mui/material": "^5.14.20",
     "deck.gl": "^9.2.6",
     "mapbox-gl": "^3.17.0",
-    "maplibre-gl": "^3.6.2",
+    "maplibre-gl": "^5.17.0",
     "pg": "^8.11.3",
     "prism-react-renderer": "^2.4.1",
     "react": "^18.2.0",
